@@ -1045,9 +1045,9 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**15 routes across 7 Recipes** still page by a parameter nobody named.
-Twenty-two providers have been settled. Five were read from that provider's own
-description, none of them guessable:
+**11 routes across 5 Recipes** still page by a parameter nobody named.
+Twenty-five providers have been settled. Eight were read from that provider's
+own description or reference, none of them guessable:
 
 | Provider | What the description said |
 |---|---|
@@ -1056,6 +1056,9 @@ description, none of them guessable:
 | OneSignal | `limit` and `offset` on both listings |
 | Webflow | Eleven query parameters on the items listing including `limit` and `offset`, and none whatsoever on the two site-level listings, which are now `limit_param: "-"` |
 | Pipedrive | `start` and `limit` in v1. Not `cursor` and `limit`, which is v2 -- and v2's `/deals`, `/persons` and `/organizations` live under `/api/v2` while v1's description no longer declares them at all. A Recipe modelling v1 paths pages the v1 way |
+| AssemblyAI | `limit`, defaulting to ten and capped at two hundred, and a position that is another transcript's id: `before_id` for older, `after_id` for newer. `before_id` is the continuation, because the listing is newest first -- and AssemblyAI's own `page_details` calls that one `prev_url` while `next_url` points at transcripts newer than the ones you have. A loop following `next_url` walks towards the present and stops on its first page |
+| Mercury | Two listings on one API paging two different ways, both from the OpenAPI document published with the reference. Accounts is cursor-based on `start_after`, with `end_before` for the other direction and the two mutually exclusive; account transactions is `limit` and `offset`. Nothing in either response says which one you are on. And both default to **a thousand**, where this Recipe had guessed twenty-five and fifty |
+| Vonage | `size` and `index` on the Numbers API, `index` being a page number starting at one rather than an offset. `size` defaults to ten and caps at a hundred -- and the hundred was what this Recipe had written down as the default, so every page it served was ten times the real one. The SMS Search listing beside it is still unnamed: its reference page answered 504 twice and Vonage publishes the retired API's parameters nowhere else |
 
 Chargebee is the one to remember. Filling that in from the parameter's name --
 which is exactly what filling it in from memory would do -- declares a numeric
