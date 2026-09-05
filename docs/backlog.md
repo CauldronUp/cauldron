@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**31 routes across 16 Recipes** still page by a parameter nobody named.
+**30 routes across 15 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**192 more listings across 125 Recipes declare no paging at all**, and the
+**176 more listings across 113 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,37 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Sixteen more came out of the providers' own descriptions rather than out of a
+response, and one of them argues against trusting a machine-readable spec on its
+own. Aha!'s `openapi.json` declares **no query parameters at all** on
+`/custom_field_definitions`, and its prose documentation, two clicks away, says
+`page` is 1-indexed and `per_page` defaults to 30 "up to a maximum of 200". A
+generator reading the spec produces a client that cannot page; a Recipe checked
+against the spec would have concluded `none` and been confidently wrong. The
+prose was the better source, which is not the direction that usually runs.
+
+Transitland supplies the other warning. Its cursor is `after`, documented as "an
+opaque value created by the server" -- with the immediate caveat that "for
+historical reasons, this is based on the integer record ID values", which is an
+opaque token that is not opaque and will be depended on by accident. And the same
+route takes a query parameter literally named **`next`** that has nothing to do
+with the next page: it selects "departures leaving within the next specified
+number of seconds". Guessing from the parameter list would have produced a client
+asking for the next ten minutes of departures and calling it page two.
+
+Replicate names its cursor nowhere except inside the URL it hands back --
+`"next": "https://api.replicate.com/v1/models/.../examples?cursor=..."` -- and
+takes no size parameter at all. Tavily's `max_results` defaults to **5** and
+lives in the POST body, next to a `chunks_per_source` that defaults to 3 and is
+not a page size; Exa's is `numResults`, also in the body, next to a
+`startPublishedDate` that looks like a position and is a date filter. Seven more
+settle as `none` because the request already is the collection: Plaid's accounts,
+Metronome's events by transaction id, Budibase's table search, Exa's contents by
+id, Finch's pay statements by request, Adyen's payment methods for one
+transaction, and Nexus's repository list, which is configuration rather than
+data. Nexus's *components* listing keeps its `continuationToken` and gains a
+`limit_param: "-"`: the spec lists two query parameters and neither is a size.
 
 Sixteen more settled in one sweep of the anonymously reachable, and the pattern
 holds: every provider probed was doing something the fake was not. Three of them
