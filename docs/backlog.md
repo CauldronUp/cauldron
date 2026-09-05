@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**252 more listings across 164 Recipes declare no paging at all**, and the
+**245 more listings across 161 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,15 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+iTunes cannot be paged past its first two hundred results, and nothing said so.
+`?limit=200` answers two hundred, `?limit=201` answers two hundred as well, and
+`?limit=2&offset=2` answers the same two records `?limit=2` does, beginning with
+the same track -- so `offset` is not read and there is no other name for a
+position. CoinGecko's `/coins/list` answers all 19,616 coins to a bare request
+and the same 19,616 to `?per_page=2` and `?limit=2`; its price endpoint answers
+exactly the ids the caller named. Carbon Intensity answers one reading in an
+array of one. None of the four pages, and all four were being paged at ten.
 
 Deezer and Gutendex went the same way. Deezer's own next link carries both
 names -- a bare search answers twenty-five with `?q=eminem&index=25`, and
