@@ -251,3 +251,34 @@ func severalCarriers() *recipe.Recipe {
 		},
 	}
 }
+
+// A route's own credential inherits the alternatives its Recipe declares.
+//
+// Everything else a route does not name it inherits, and the carriers are no
+// different: a Recipe whose secret arrives two ways does not stop being that
+// Recipe on a route that names its own key. This replaced the list outright,
+// so a route override silently removed every alternative -- the fake going
+// stricter than its provider on exactly the routes a Recipe had taken the
+// trouble to describe more precisely.
+func TestARoutesCredentialKeepsTheRecipesAlternativeCarriers(t *testing.T) {
+	r := severalCarriers()
+	r.Routes = append(r.Routes, recipe.Route{
+		Method: "GET", Path: "/v1/others", Resource: "thing", Operation: "list",
+		Auth: &recipe.Auth{Keys: []string{"the-other-key"}},
+	})
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	// The route's own key, through the Recipe's alternative carrier.
+	if got := ask(t, s, "/v1/others", "the-other-key"); got != http.StatusOK {
+		t.Errorf("the alternative carrier answered %d on a route with its own key, want 200", got)
+	}
+
+	// And through the primary, which is the half that never broke.
+	if got := ask(t, s, "/v1/others?key=the-other-key", ""); got != http.StatusOK {
+		t.Errorf("the primary carrier answered %d on a route with its own key, want 200", got)
+	}
+}

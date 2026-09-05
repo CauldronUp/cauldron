@@ -191,7 +191,18 @@ func inherit(base, override recipe.Auth) recipe.Auth {
 		merged.AfterRouting = true
 	}
 
-	merged.Also = override.Also
+	// The alternatives are inherited like everything else, and replaced only
+	// when the override names its own. A route that names its own key does not
+	// stop the Recipe's secret arriving the ways the Recipe says it arrives --
+	// and replacing the list outright made a route override quietly strip
+	// every alternative, so the fake went stricter than its provider on
+	// exactly the routes somebody had described more carefully.
+	//
+	// The alternative-carrier loop clears this itself after calling here,
+	// because alternatives do not nest.
+	if len(override.Also) > 0 {
+		merged.Also = override.Also
+	}
 
 	return merged
 }

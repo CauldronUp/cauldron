@@ -6,6 +6,8 @@ Emulates the Unleash API (v8), for local development and tests.
 
 Unleash publishes a public demo instance, and its credential failures needed no account of their own to check. Doing so found this Recipe's single error model wrong twice over.
 
+It also **refused a credential Unleash accepts**. Unleash's own document declares `apiKey` in `Authorization` and `bearerToken` beside it -- the same header carrying the same token, raw or behind `Bearer `. This Recipe served one and refused the other, with a conformance case pinning the refusal and a note calling it "the wrong half of a true statement". That was honest when it was written, because authentication was one setting for a whole Recipe. It is two carriers now, and the case asserts the acceptance.
+
 ## What this Recipe found
 
 The same field, `enabled`, means something different on each of Unleash's three APIs, and none of the three meanings is "this flag is on." On the Frontend API it's a constant, always `true`, because the endpoint only returns flags that already evaluated on -- code checking `.enabled` there is asking a question whose answer is always yes when it doesn't throw. On the Client API it's one input ANDed with a separately-evaluated strategies list, so a flag is only truly on when both agree, and nothing states that rule in one place. On the Admin API it's a single boolean summarising an `environments` array whose members can disagree with it -- a flag can be on in development and off in production while the top-level field says just one thing.
