@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**101 more listings across 66 Recipes declare no paging at all**, and the
+**97 more listings across 64 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,19 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Backblaze puts a price on its page size, which is a thing no key here can hold.
+maxFileCount defaults to 100 and caps at 10,000 -- and B2 counts a call returning
+more than a thousand files as several transactions for billing. A client that
+raises the page size to walk a bucket faster is choosing to be billed ten times
+per call, and nothing in the response says so. max_limit can hold the ceiling and
+has nowhere to put the cost, so the cost is in prose beside it. Its bucket
+listing, meanwhile, takes filters and no paging at all: one provider, two
+listings, and the one that pages is the one that can grow without bound.
+
+Navitia is the second zero-based page numbering in this survey after Braze --
+start_page defaults to 0, count to 25 -- with a ceiling Navitia states in bold:
+"The number of objects returned for a request can not be superior than 200."
 
 Better Stack retires a reason rather than a claim. Its header said route-level
 paging was left undeclared because "what query parameter actually requests a
