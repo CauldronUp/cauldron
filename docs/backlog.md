@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**97 more listings across 64 Recipes declare no paging at all**, and the
+**91 more listings across 61 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,15 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+BambooHR's directory is the bluntest statement of the problem in any provider's
+own words: "this endpoint returns the whole directory in one response and accepts
+no name, department, or field filters, so narrow the results on the client side."
+A company with four thousand employees receives four thousand employees. Its
+newer `/v1/employees` listing is BambooHR's own answer to that, paging by
+`page[limit]` and `page[after]` -- and the cursor is base64 of a JSON object that
+decodes to `{"nextEmployee":125}`, so it is opaque by convention rather than by
+construction, and somebody will eventually depend on the id inside it.
 
 Backblaze puts a price on its page size, which is a thing no key here can hold.
 maxFileCount defaults to 100 and caps at 10,000 -- and B2 counts a call returning
