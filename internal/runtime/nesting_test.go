@@ -188,7 +188,11 @@ func TestDeclaredConstantsMergeWithComputedValues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/contacts?limit=2", nil)
+	// per_page, which is what Intercom's own description names. This sent
+	// limit, and passed while the Recipe read limit too -- so the test agreed
+	// with the Recipe about a parameter the provider does not have, and the
+	// page it asserted was one it never asked for.
+	req := httptest.NewRequest(http.MethodGet, "/contacts?per_page=2", nil)
 	req.Header.Set("Authorization", "Bearer dG9rOmNhdWxkcm9u")
 
 	rec := httptest.NewRecorder()

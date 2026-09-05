@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**99 routes across 47 Recipes** still page by a parameter nobody named.
+**93 routes across 44 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1074,10 +1074,22 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
 
+Six more from the same source. Dub's is the one to remember: it declares
+`startingAfter` and `endingBefore` as its cursors and `pageSize` as the size,
+and it declares `page` too -- whose entire description is "DEPRECATED. Use
+`startingAfter` instead." The parameter that reads like the obvious one is the
+retired one, and a Recipe filled in from the names alone would have picked it.
+Intercom pages its contacts and conversations by `starting_after` and its
+companies by `page`, on the same API, with nothing in the response saying which.
+Daily had named its cursor and not its size, and the size happened to be the
+word the runtime supplies -- right by coincidence rather than by checking -- and
+its presence listing takes no position parameter at all, which is `"-"`.
+
 Notion's own case is the whole failure in one place. It sent `?limit=1`, a
 parameter Notion does not have, against a Recipe that was reading `limit` too --
 so the two wrongs agreed, a full page came back, and the case asserted a page it
-never asked for. It sends `page_size` now.
+never asked for. It sends `page_size` now. Intercom's case had the same
+shape and now sends `per_page`.
 
 Vercel's three are settled the same way and are the sharper example: its
 deployments and domains listings take `until`, its projects listing takes
