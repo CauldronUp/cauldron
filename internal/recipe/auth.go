@@ -142,9 +142,19 @@ type Auth struct {
 	// using another channel, and the first verdict is the one about what the
 	// caller actually did.
 	//
+	// A prefix of "-" clears an inherited one, which a carrier taking the bare
+	// secret under a primary taking a prefixed one needs. Doppler found that by
+	// being wired: its Basic channel inherited "Bearer " and refused every key
+	// legitimately sent through it, which made the fake stricter than the
+	// provider -- the failure this field exists to prevent, reintroduced one
+	// level down.
+	//
 	// This is for one credential in several places. Two genuinely different
 	// credentials on one route -- ClickHouse accepts an undocumented JWT beside
-	// its own scheme -- is a different thing and is not this.
+	// its own scheme, Kit an OAuth token beside an API key, each with its own
+	// refusal -- is a different thing and is not this. An alternative reports
+	// through the primary's error mapping, so a second credential's own sentence
+	// would be lost.
 	Also []Auth `yaml:"also"`
 	// Credential says which half of a basic credential carries the secret:
 	// "username" (the default, which is what Twilio does with the account SID)

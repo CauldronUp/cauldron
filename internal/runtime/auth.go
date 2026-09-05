@@ -89,7 +89,19 @@ func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict,
 			merged.Param = alternative.Param
 		}
 
-		if alternative.Prefix != "" {
+		// "-" clears it. An alternative inherits what it does not name, and a
+		// carrier that takes the bare secret under a primary that takes a
+		// prefixed one had no way to say so -- Doppler's Basic channel
+		// inherited "Bearer " and refused every key legitimately sent through
+		// it, which made the fake stricter than the provider. That is the
+		// failure this whole field exists to prevent, reintroduced one level
+		// down. "-" is what clear already means for a list key and an
+		// identifier field.
+		switch alternative.Prefix {
+		case "":
+		case "-":
+			merged.Prefix = ""
+		default:
 			merged.Prefix = alternative.Prefix
 		}
 
@@ -106,8 +118,13 @@ func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict,
 			return alternate, sent
 		}
 
-		// Absent means this channel was not the one used, which says nothing.
-		if verdict == recipe.Absent && alternate != recipe.Absent {
+		// The better-informed verdict wins. A carrier that could not read what
+		// was sent knows less about it than one that could: Clearbit takes a
+		// bearer or Basic in the same Authorization header, so a bearer value
+		// is unreadable to the Basic check and merely wrong to the bearer one.
+		// Reporting "malformed" there describes the carrier's confusion rather
+		// than the caller's mistake.
+		if informativeness(alternate) > informativeness(verdict) {
 			verdict, presented = alternate, sent
 		}
 	}
@@ -262,4 +279,26 @@ func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, stri
 	}
 
 	return recipe.Rejected, presented
+}
+
+// informativeness ranks what a verdict tells the caller about their own
+// request, for choosing between the answers several carriers give.
+//
+// Absent says only that this carrier was not the one used. Malformed says
+// something arrived that this carrier could not read. Rejected and unentitled
+// say it was read and refused, which is the most any of them knows.
+func informativeness(v recipe.Verdict) int {
+	switch v {
+	case recipe.Absent:
+		return 0
+	case recipe.Malformed:
+		return 1
+	case recipe.Rejected, recipe.Unentitled:
+		return 2
+	case recipe.Accepted:
+		// Never compared -- an accepted credential returns before this.
+		return 3
+	}
+
+	return 0
 }

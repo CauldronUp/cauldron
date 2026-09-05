@@ -120,6 +120,98 @@ func TestAlternativesDoNotNest(t *testing.T) {
 	}
 }
 
+// An alternative can take the bare secret where the primary takes a prefixed
+// one, which needs a way to say "no prefix" rather than inherit.
+//
+// Doppler found this by being wired: its bearer token also works as a Basic
+// username with a blank password, and the Basic alternative inherited the
+// primary's "Bearer " and refused every key legitimately sent that way. A fake
+// stricter than its provider is exactly what this field exists to prevent, so
+// reintroducing it one level down was worse than not having the field.
+func TestAnAlternativeCanClearAnInheritedPrefix(t *testing.T) {
+	r := severalCarriers()
+	r.Auth = recipe.Auth{
+		Scheme: "bearer",
+		Prefix: "Bearer ",
+		Keys:   []string{"the-one-key"},
+		Also: []recipe.Auth{{
+			Scheme: "header",
+			Header: "X-Api-Key",
+			Prefix: "-",
+		}},
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if got := ask(t, s, "/v1/things", "the-one-key"); got != http.StatusOK {
+		t.Errorf("the bare secret through the alternative answered %d, want 200", got)
+	}
+
+	// And the primary still wants its prefix.
+	req := httptest.NewRequest(http.MethodGet, "/v1/things", nil)
+	req.Header.Set("Authorization", "Bearer the-one-key")
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("the prefixed primary answered %d, want 200", w.Code)
+	}
+}
+
+// Two carriers can share one header, and then the one that could read the
+// value knows more about it than the one that could not.
+//
+// Clearbit takes a bearer or Basic with a blank password, both in
+// Authorization. A bearer value is unreadable to the Basic check and merely
+// wrong to the bearer one, and reporting "malformed" describes the carrier's
+// confusion rather than the caller's mistake.
+func TestTheCarrierThatCouldReadItDecides(t *testing.T) {
+	r := severalCarriers()
+	r.Auth = recipe.Auth{
+		Scheme:        "basic",
+		Keys:          []string{"the-one-key"},
+		RejectedError: "wrong_key",
+		Also: []recipe.Auth{{
+			Scheme: "bearer",
+			Header: "Authorization",
+			Prefix: "Bearer ",
+		}},
+	}
+	r.Errors["wrong_key"] = recipe.Error{Status: 403, Message: "Bad key."}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	// A good key through the bearer channel is accepted.
+	req := httptest.NewRequest(http.MethodGet, "/v1/things", nil)
+	req.Header.Set("Authorization", "Bearer the-one-key")
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("a good key through the bearer channel answered %d, want 200", w.Code)
+	}
+
+	// A wrong one is rejected, not called malformed by the Basic check that
+	// could not read it.
+	req = httptest.NewRequest(http.MethodGet, "/v1/things", nil)
+	req.Header.Set("Authorization", "Bearer not-the-key")
+
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("a wrong bearer answered %d, want the rejected sentence's 403", w.Code)
+	}
+}
+
 func ask(t *testing.T, s *Sandbox, target, header string) int {
 	t.Helper()
 
