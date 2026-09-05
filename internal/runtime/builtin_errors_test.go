@@ -28,16 +28,37 @@ func TestABuiltinFailureBorrowsAShapeTheRecipeDeclares(t *testing.T) {
 		expects map[string]string
 	}{
 		{
+			// Stripe declares both of these itself now, having been struck
+			// live: a 404 for an unrecognised URL, the identical sentence and
+			// status for a method a real path does not take, and no
+			// error.code on either -- where every other Stripe failure has
+			// one. That is the same claim from the other side: what a Recipe
+			// does not say the runtime fills in with a name no provider uses,
+			// so a Recipe that has looked says what it saw.
 			recipe: "stripe", key: "sk_test_cauldron",
 			method: http.MethodGet, path: "/v1/nope", status: http.StatusNotFound,
-			expects: map[string]string{"error.type": "invalid_request_error", "error.code": "resource_missing"},
+			absent:  []string{"error.code"},
+			expects: map[string]string{"error.type": "invalid_request_error"},
 		},
 		{
-			// A method the path does not take is still a failure the Recipe
-			// has a shape for, and the shape must be the same one.
 			recipe: "stripe", key: "sk_test_cauldron",
-			method: http.MethodDelete, path: "/v1/customers", status: http.StatusMethodNotAllowed,
+			method: http.MethodDelete, path: "/v1/customers", status: http.StatusNotFound,
+			absent:  []string{"error.code"},
 			expects: map[string]string{"error.type": "invalid_request_error"},
+		},
+		{
+			// And a Recipe that has not looked still borrows a shape it does
+			// declare rather than inventing one, which is what this test was
+			// written for. Front declares no unknown_route, so the failure
+			// takes the wording and the title of the resource_missing it does
+			// declare -- and "Not found" is a phrase Front uses, where
+			// "unknown_route" is a phrase nobody does.
+			recipe: "front", key: "cauldron_front_token",
+			method: http.MethodGet, path: "/v1/nope", status: http.StatusNotFound,
+			expects: map[string]string{
+				"_error.message": "Unknown resource ID: /v1/nope",
+				"_error.title":   "Not found",
+			},
 		},
 		{
 			recipe: "gitlab", key: "glpat-cauldron",
@@ -79,6 +100,12 @@ func TestABuiltinFailureBorrowsAShapeTheRecipeDeclares(t *testing.T) {
 		for _, internal := range []string{"unknown_route", "method_not_allowed", "invalid_request\"", "unsupported_operation"} {
 			if strings.Contains(body, internal) {
 				t.Errorf("%s %s: the response carries the runtime's internal name %q\n%s", c.recipe, c.path, internal, body)
+			}
+		}
+
+		for _, path := range c.absent {
+			if got := lookupString(decode(t, rec), path); got != "" {
+				t.Errorf("%s %s: %s = %q, and the provider sends no such field\n%s", c.recipe, c.path, path, got, body)
 			}
 		}
 

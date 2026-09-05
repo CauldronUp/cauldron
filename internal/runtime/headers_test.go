@@ -232,7 +232,13 @@ func TestAQueryStringCredential(t *testing.T) {
 
 	// The same credential in a header gets nowhere, which is the exposure a
 	// header-based fake would hide.
-	viaHeader := httptest.NewRequest(http.MethodGet, "/1/boards/000000000000000000000b01", nil)
+	//
+	// On a route that is not exempt. Trello's board route was struck live and
+	// answers a request carrying no credential as an ordinary anonymous one,
+	// so it is public: when-absent -- and a header credential is, to a query
+	// carrier, nothing presented at all. The lists route needs a key, which is
+	// where this claim can still be made.
+	viaHeader := httptest.NewRequest(http.MethodGet, "/1/boards/000000000000000000000b01/lists", nil)
 	viaHeader.Header.Set("Authorization", "Bearer cauldronkey")
 
 	rec = httptest.NewRecorder()

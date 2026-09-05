@@ -253,6 +253,14 @@ func TestAuthIsEnforcedUsingTheRecipesOwnError(t *testing.T) {
 	}
 }
 
+// Stripe answers a path it does not have and a method a path does not take
+// the same way: 404, the identical sentence, and no Allow header anywhere.
+//
+// This asserted a 405 with an Allow listing POST, which is the engine's own
+// default and not what Stripe does. Struck live on 2026-09-05, DELETE
+// /v1/customers answers "Unrecognized request URL (DELETE: /v1/customers)" at
+// 404 -- so a client branching on 405, or reading Allow to discover what a path
+// takes, gets nothing from Stripe and got both from this fake.
 func TestUnknownRouteAndMethod(t *testing.T) {
 	s := stripe(t)
 
@@ -261,12 +269,39 @@ func TestUnknownRouteAndMethod(t *testing.T) {
 	}
 
 	rec := call(t, s, http.MethodPatch, "/v1/customers", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("wrong method = %d, want the 404 Stripe answers", rec.Code)
+	}
+
+	if allow := rec.Header().Get("Allow"); allow != "" {
+		t.Errorf("Allow = %q, and Stripe sends none", allow)
+	}
+}
+
+// The default, for the Recipes that have not said otherwise: a method a path
+// does not take is a 405 naming the ones it does.
+//
+// On a Recipe written here rather than a shipped one, because the shipped one
+// this used to be written against went and found out what its provider really
+// does. An engine default is not a claim about any particular provider.
+func TestAMethodAPathDoesNotTakeIsA405NamingTheOnesItDoes(t *testing.T) {
+	s, err := New(twoSurfaces(), Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/things", nil)
+	req.Header.Set("Authorization", "Bearer the-main-key")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("wrong method = %d, want 405", rec.Code)
 	}
 
-	if allow := rec.Header().Get("Allow"); !strings.Contains(allow, "POST") {
-		t.Errorf("Allow = %q, want it to include POST", allow)
+	if allow := rec.Header().Get("Allow"); !strings.Contains(allow, "GET") {
+		t.Errorf("Allow = %q, want it to include GET", allow)
 	}
 }
 
