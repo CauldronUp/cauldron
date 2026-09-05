@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**51 routes across 26 Recipes** still page by a parameter nobody named.
+**50 routes across 25 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,14 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Dropbox writes both names down now, and records the one thing this format
+cannot do about it: Dropbox does not take a cursor on `list_folder` at all. It
+takes one at `/2/files/list_folder/continue`, a separate path whose only
+argument is the cursor, and sending one to `list_folder` is an error there. The
+Recipe accepts it on the listing because a listing is addressed by one route
+here, and a fake that cannot serve a second page would be the worse of the two
+inaccuracies -- but the file says so rather than leaving a reader to find out.
 
 Shopify and Zendesk both advertise their next page somewhere this Recipe was
 not looking, and both take a page size called something else. Shopify takes
