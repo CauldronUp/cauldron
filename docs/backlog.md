@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**238 more listings across 154 Recipes declare no paging at all**, and the
+**235 more listings across 151 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,14 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+The Bank of Canada's Valet API names its size `recent`, and the name is the
+point: a bare request answers the whole 2,415-observation series and `?recent=2`
+answers the last two, counting backwards from today rather than forwards from a
+start -- which is why there is no offset to go with it. Football-Data answers
+all 189 competitions with `count: 189` beside them and ignores a `limit`.
+deps.dev answers a whole dependency graph, 71 nodes and 128 edges, and the
+runtime serving ten nodes of that was not a short answer but a broken one.
 
 Deck of Cards is the one that changed a case. It draws **one** card when
 nothing asks for more -- struck live, `remaining` 51 -- and its Recipe was
