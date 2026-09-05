@@ -74,44 +74,8 @@ func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict,
 	for _, alternative := range auth.Also {
 		// An alternative inherits everything it does not name, so a Recipe
 		// says only what differs -- usually just the carrier.
-		merged := auth
+		merged := inherit(auth, alternative)
 		merged.Also = nil
-
-		if alternative.Scheme != "" {
-			merged.Scheme = alternative.Scheme
-		}
-
-		if alternative.Header != "" {
-			merged.Header = alternative.Header
-		}
-
-		if alternative.Param != "" {
-			merged.Param = alternative.Param
-		}
-
-		// "-" clears it. An alternative inherits what it does not name, and a
-		// carrier that takes the bare secret under a primary that takes a
-		// prefixed one had no way to say so -- Doppler's Basic channel
-		// inherited "Bearer " and refused every key legitimately sent through
-		// it, which made the fake stricter than the provider. That is the
-		// failure this whole field exists to prevent, reintroduced one level
-		// down. "-" is what clear already means for a list key and an
-		// identifier field.
-		switch alternative.Prefix {
-		case "":
-		case "-":
-			merged.Prefix = ""
-		default:
-			merged.Prefix = alternative.Prefix
-		}
-
-		if alternative.Credential != "" {
-			merged.Credential = alternative.Credential
-		}
-
-		if len(alternative.Keys) > 0 {
-			merged.Keys = alternative.Keys
-		}
 
 		alternate, sent := s.judge(r, merged)
 		if alternate == recipe.Accepted {
@@ -130,6 +94,98 @@ func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict,
 	}
 
 	return verdict, presented
+}
+
+// inherit resolves an Auth written as a difference against the one it sits
+// under, so a Recipe says only what changes.
+//
+// Two places write a partial Auth. An alternative carrier under auth.also
+// usually names nothing but its own header. A route's own credential usually
+// names nothing but its own keys -- Customer.io's app surface and its track
+// surface take the same shape of bearer token and different secrets.
+//
+// The route case is why this exists as a function. That path replaced the
+// Recipe's Auth wholesale, while the comment beside it said a route inherits
+// what it does not name. Wholesale replacement is the more dangerous of the
+// two readings: a route naming only after_routing, or only its own refusal
+// sentence, would have replaced the Recipe's credential with one holding no
+// scheme -- and an Auth with no scheme accepts every request. A route
+// adjusting one detail of how its credential is checked would have switched
+// the check off entirely.
+func inherit(base, override recipe.Auth) recipe.Auth {
+	merged := base
+
+	if override.Scheme != "" {
+		merged.Scheme = override.Scheme
+	}
+
+	if override.Header != "" {
+		merged.Header = override.Header
+	}
+
+	if override.Param != "" {
+		merged.Param = override.Param
+	}
+
+	// "-" clears it. A carrier that takes the bare secret under a primary that
+	// takes a prefixed one had no way to say so -- Doppler's Basic channel
+	// inherited "Bearer " and refused every key legitimately sent through it,
+	// which made the fake stricter than the provider. That is the failure
+	// auth.also exists to prevent, reintroduced one level down. "-" is what
+	// clear already means for a list key and an identifier field.
+	switch override.Prefix {
+	case "":
+	case "-":
+		merged.Prefix = ""
+	default:
+		merged.Prefix = override.Prefix
+	}
+
+	if override.Credential != "" {
+		merged.Credential = override.Credential
+	}
+
+	if len(override.Keys) > 0 {
+		merged.Keys = override.Keys
+	}
+
+	if override.Pattern != "" {
+		merged.Pattern = override.Pattern
+	}
+
+	if len(override.Unentitled) > 0 {
+		merged.Unentitled = override.Unentitled
+	}
+
+	// The refusal sentences, which a second surface often does have its own
+	// of: Unleash's frontend routes answer a different wording from its admin
+	// ones for the same missing token.
+	if override.AbsentError != "" {
+		merged.AbsentError = override.AbsentError
+	}
+
+	if override.MalformedError != "" {
+		merged.MalformedError = override.MalformedError
+	}
+
+	if override.RejectedError != "" {
+		merged.RejectedError = override.RejectedError
+	}
+
+	if override.UnentitledError != "" {
+		merged.UnentitledError = override.UnentitledError
+	}
+
+	// Ordering is a boolean, so an override can only turn it on -- there is no
+	// way to write "and this one resolves the credential first" under a Recipe
+	// that resolves routing first. Nothing has needed the other direction.
+	if override.AfterRouting {
+		merged.AfterRouting = true
+	}
+
+	merged.Also = override.Also
+
+	return merged
 }
 
 func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, string) {

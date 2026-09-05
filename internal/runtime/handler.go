@@ -129,7 +129,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// right one: a path that does not exist belongs to no surface.
 	auth := s.recipe.Auth
 	if ok && matched.spec.Auth != nil {
-		auth = *matched.spec.Auth
+		auth = inherit(auth, *matched.spec.Auth)
 	}
 
 	public := false

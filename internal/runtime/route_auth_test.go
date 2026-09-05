@@ -3,6 +3,7 @@ package runtime
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -51,7 +52,12 @@ func TestARoutesCredentialCanArriveInItsOwnHeader(t *testing.T) {
 	r := twoSurfaces()
 	r.Routes[1].Auth.Scheme = "header"
 	r.Routes[1].Auth.Header = "X-Report-Key"
-	r.Routes[1].Auth.Prefix = ""
+
+	// "-" rather than empty, because empty means inherit and this carrier
+	// takes the bare secret where the Recipe's takes a prefixed one. It is
+	// the same word auth.also already uses for the same reason, and the same
+	// failure it was added to prevent: a fake stricter than its provider.
+	r.Routes[1].Auth.Prefix = "-"
 
 	s, err := New(r, Options{Seed: 1})
 	if err != nil {
@@ -146,6 +152,47 @@ func TestARouteCannotBeBothPublicAndCredentialled(t *testing.T) {
 
 	if err := r.Validate(); err == nil {
 		t.Fatal("a route that is public and names a scheme validated")
+	}
+}
+
+// A route that adjusts one detail of its credential still has one.
+//
+// The comment beside this resolution has always said a route inherits
+// anything it does not name, and the code replaced the Recipe's credential
+// wholesale. The two readings agree for every Recipe shipping today, because
+// all five that scope a credential to a route write the whole thing out. They
+// disagree the moment one does not, and they disagree in the worst available
+// direction: an Auth with no scheme accepts every request, so a route naming
+// only its own refusal sentence -- or only that it resolves routing first --
+// would have switched its own credential off while reading as though it had
+// tightened it.
+func TestARouteThatNamesOnlyPartOfACredentialStillHasTheRest(t *testing.T) {
+	r := twoSurfaces()
+	r.Errors = map[string]recipe.Error{"reporting_unauthorized": {Status: 401, Message: "No reporting token."}}
+	r.Routes[1].Auth = &recipe.Auth{AbsentError: "reporting_unauthorized"}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	// Nothing at all is refused, rather than served.
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/reports", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a route naming only a refusal sentence answered %d to a request with no credential, want 401", w.Code)
+	}
+
+	// And it is refused in the route's own words, which is the whole reason
+	// to name one.
+	if got := w.Body.String(); !strings.Contains(got, "No reporting token.") {
+		t.Errorf("the route's own sentence was not used: %s", got)
+	}
+
+	// The Recipe's key, inherited, still opens it.
+	if got := askKey(t, s, "/v1/reports", "the-main-key"); got != http.StatusOK {
+		t.Errorf("the inherited key answered %d, want 200", got)
 	}
 }
 

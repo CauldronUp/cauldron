@@ -148,6 +148,18 @@ func (r *Recipe) Validate() error {
 		if route.Public.Declared() && route.Auth.Scheme != "" {
 			add("%s names a scheme on a route that is also public, so nothing would ever check it", where)
 		}
+
+		// A route inherits everything it does not name, which is right for
+		// every field except the prefix: a prefix belongs to a carrier, and a
+		// route moving to another one almost never wants the old one's.
+		// Doppler found this on the alternative-carrier side, where its Basic
+		// channel inherited "Bearer " and refused every key legitimately sent
+		// through it -- a fake stricter than its provider, which is the
+		// failure the whole mechanism exists to prevent. Saying so explicitly
+		// turns that into a refusal to boot.
+		if carrierMoved(r.Auth, *route.Auth) {
+			add("%s moves to the %s scheme without saying what happens to the prefix, so it inherits %q; write prefix: \"-\" if this carrier takes the bare secret", where, route.Auth.Scheme, r.Auth.Prefix)
+		}
 	}
 
 	// An alternative carrier is held to the same rules, and may not itself
@@ -172,6 +184,12 @@ func (r *Recipe) Validate() error {
 		// serves no purpose and reads as a claim about a second channel.
 		if alternative.Scheme == "" && alternative.Header == "" && alternative.Param == "" {
 			add("%s names no scheme, header or param, so it is the primary carrier again", where)
+		}
+
+		// And the prefix, for the reason above -- this is the side that found
+		// it, with Doppler.
+		if carrierMoved(r.Auth, alternative) {
+			add("%s moves to the %s scheme without saying what happens to the prefix, so it inherits %q; write prefix: \"-\" if this carrier takes the bare secret", where, alternative.Scheme, r.Auth.Prefix)
 		}
 	}
 
@@ -692,6 +710,25 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A scheme with nothing behind it checks nothing.
+	//
+	// The runtime reads an auth block holding no keys and no pattern as
+	// "accept anything", so an author can model routes first and tighten the
+	// credential later. Naming a scheme is not modelling routes first: it
+	// reads as a claim that the credential is checked, and two Recipes made
+	// exactly that claim while enforcing nothing. Attio and CometChat both
+	// named a scheme, named the header it travels in, wrote paragraphs about
+	// it, and listed no key -- CometChat's file said in three places that its
+	// routes were gated on "the one apikey this Recipe holds", and it held
+	// none. Code written against either passed with no credential and would
+	// have failed against the provider.
+	//
+	// scheme: none says "this surface needs no credential" in words, so the
+	// route-first case keeps a way to say itself.
+	if r.Auth.Scheme != "" && r.Auth.Scheme != "none" && len(r.Auth.Keys) == 0 && r.Auth.Pattern == "" {
+		add("auth names the %s scheme and holds neither keys nor a pattern, so every request is accepted; scheme: none says that deliberately", r.Auth.Scheme)
+	}
+
 	// A key cannot both authenticate and be refused for lack of entitlement.
 	// The runtime resolves it by refusing, and a Recipe whose file says both
 	// is not describing a provider -- it is describing a mistake, and the
@@ -1133,4 +1170,20 @@ func hasAnyPrefix(text string, prefixes []string) bool {
 	}
 
 	return false
+}
+
+// carrierMoved reports whether an override -- a route's own credential, or an
+// alternative carrier -- switches to another scheme while leaving the prefix
+// it inherits unspoken.
+//
+// Empty means inherit everywhere else in an Auth written as a difference, and
+// for a prefix that is the wrong default: "Bearer " means nothing to a Basic
+// check or an X-Api-Key header, and inheriting it there refuses credentials
+// the provider accepts.
+func carrierMoved(base, override Auth) bool {
+	if base.Prefix == "" || override.Prefix != "" {
+		return false
+	}
+
+	return override.Scheme != "" && override.Scheme != "none" && override.Scheme != base.Scheme
 }

@@ -392,6 +392,23 @@ type Route struct {
 	// the rest: a route may name its own scheme, header, keys and ordering,
 	// and anything it does not name it inherits.
 	//
+	// Inherits field by field, which is worth stating because it did not at
+	// first: this replaced the Recipe's credential wholesale while the comment
+	// beside it said otherwise. The two readings agree for every Recipe that
+	// scopes a credential to a route today, because all of them write the
+	// whole thing out, and they disagree in the worst available direction the
+	// moment one does not. An Auth with no scheme accepts every request, so a
+	// route naming only its own refusal sentence would have switched its own
+	// credential off while reading as though it had tightened it.
+	//
+	// The prefix is the one field where empty does not mean inherit, and the
+	// validator refuses a route that leaves it unsaid while moving to another
+	// scheme. A prefix belongs to a carrier: "Bearer " means nothing to an
+	// X-Api-Key header, and inheriting it there refuses credentials the
+	// provider accepts. Write prefix: "-" for a carrier taking the bare
+	// secret, which is what clear already means for a list key and an
+	// identifier field.
+	//
 	// Nil means inherit, which is every route in every Recipe shipping today,
 	// so no existing behaviour and no existing fingerprint moves. That is the
 	// same bargain List and Envelope already make one level down.

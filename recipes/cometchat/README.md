@@ -9,6 +9,8 @@ Emulates the CometChat API (v3), for local development and tests.
 Its conversation **has no create route at all** -- it is a
 computed view of a group, and exists the moment the group does.
 
+This Recipe also **enforced no authentication at all** until 2026-09-05. Its auth block named the scheme and the header CometChat's own description gives, and listed no key -- which this engine reads as "accept anything" -- while three separate passages in [`recipe.yaml`](recipe.yaml) described every success route as gated on "the one apikey this Recipe holds". It held none. The key is now listed, and `cauldron verify` refuses any Recipe that names a scheme and holds nothing to check it against.
+
 ## Sources
 
 - Documentation: https://www.cometchat.com/docs
