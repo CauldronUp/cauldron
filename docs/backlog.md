@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**163 more listings across 104 Recipes declare no paging at all**, and the
+**153 more listings across 96 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,37 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Ten more, and the defaults keep getting further from ten. Papertrail's log search
+serves **1000** by default and caps at 10,000 -- a hundred times what the fake was
+answering, on the endpoint where a short answer is least likely to be noticed,
+because a log search that returns fewer lines than you expected looks like a
+quiet system. Missive is the opposite shape: two listings on one provider sharing
+one parameter name, where conversations default to 25 with a ceiling of 50 and
+messages default to 10 with a ceiling of **10**, so a client that walks
+conversations fifty at a time and reuses the number on messages is silently
+answered with ten.
+
+Onfleet supplies the inverse of everything `max_limit` was built for. It has no
+page size parameter at all, and its own reference says the endpoint "will return
+up to 64 tasks but may return fewer". A short page is therefore *not* evidence of
+the end -- the end is `lastId` going absent -- so the loop-termination heuristic
+that breaks against a provider which trims also breaks against one that simply
+undershoots, in the same direction, for the opposite reason. This format can say
+a provider trims (`max_limit`) and can say it refuses (`over_limit`), and has no
+way at all to say it overshoots, which Missive documents too: "A page may return
+more [items] than limit."
+
+Two more positions are not really cursors and are declared as cursors anyway,
+with the mismatch written down rather than hidden. Papertrail's `max_id` is a
+window boundary a client sets to the `min_id` of the page it just read -- and the
+Recipe had already noticed that `min_id`/`max_id` are JSON *strings* in the
+envelope while `id`, the identical magnitude, is a bare number on each event
+inside it, so the value you page with has a different type from the value you
+lifted it off. Missive's `until` is a timestamp the caller computes from the last
+record's own `last_activity_at`. None of cursor, offset or page describes "read it
+off the last record yourself"; cursor is the closest, and saying so beats saying
+nothing.
 
 Thirteen listings settled without reading a single new document, because their
 Recipes had already done the reading and had nowhere to put the answer. Shortcut:
