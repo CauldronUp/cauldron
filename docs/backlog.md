@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**208 more listings across 135 Recipes declare no paging at all**, and the
+**192 more listings across 125 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,31 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Sixteen more settled in one sweep of the anonymously reachable, and the pattern
+holds: every provider probed was doing something the fake was not. Three of them
+answered a question nobody had asked. DataCite's `totalPages` is not the total
+divided by the size -- 400 at size 25, 5000 at size 2, both exactly ten thousand
+records against a real total of 134,263,030. It is a **deep-paging cap wearing
+the name of a total**, and a client that walks to the last page it advertises has
+seen 0.0074% of the collection believing it reached the end. NOAA's search
+service does the same thing in two fields at once: `"count": 10000` printed
+beside `"totalCount": 86045`. And NCBI returns `count`, `retmax` and `retstart`
+all as **strings**, so a client adding position to size to find the next offset
+concatenates `"2"` and `"2"` into `"22"` in every language that overloads `+`.
+
+Three had defaults far from the fake's ten. openFDA serves **one**. OSV serves
+**three thousand** and takes no size parameter at all, its `page_token` riding in
+the POST body rather than the query string -- the first `in: body` this sweep has
+needed. The Food Standards Agency serves **five thousand**, which means the
+paging loop a client writes against it runs exactly once until the first local
+authority with more establishments than that.
+
+Reaching the FSA at all took following its own refusal: an unfiltered
+`/Establishments` answers **403** with "This is a CPU intensive query: please use
+one of the documented filters" -- a 403 about query cost rather than about
+credentials, recorded in that Recipe because a 403 that means "narrow your
+question" is not one a client should retry with better keys.
 
 The USGS earthquake catalogue is another whose answer was already in its own
 header: "ask with one and count is gone, replaced by limit and offset". Both
