@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**56 routes across 28 Recipes** still page by a parameter nobody named.
+**51 routes across 26 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,18 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Shopify and Zendesk both advertise their next page somewhere this Recipe was
+not looking, and both take a page size called something else. Shopify takes
+`limit` (fifty by default, two hundred and fifty at most) and `page_info`, and
+its link relations travel in **link response headers** with no cursor in the
+JSON at all. Zendesk pages two ways: the offset one this Recipe serves takes
+`per_page` and `page` and answers a `next_page` **URL**, where the fake was
+serving a bare number; the newer cursor one takes `page[size]` and `page[after]`
+and answers under `links.next`, which is recorded rather than modelled since a
+route takes one set of names here. Zendesk's own reference is the reason to
+prefer the newer one: offset requests "are limited to the first 100 pages and
+10,000 resources".
 
 A pattern worth naming, since it accounts for several of these: a Recipe that
 has read its provider's document, found no parameter, and written that in prose
