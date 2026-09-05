@@ -1079,7 +1079,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**289 more listings across 185 Recipes declare no paging at all**, and the
+**288 more listings across 184 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1151,6 +1151,16 @@ one half of. CometChat's groups listing takes `page` and `perPage`, a hundred by
 default and a thousand at most, out of the `chat-apis.json` this Recipe already
 recorded -- `cauldron check` cannot match it automatically there, because the
 description's server carries a `/v3` prefix the Recipe's routes do not.
+
+Docker Hub's repositories listing had no paging block while the tags listing
+beside it had a careful one, and both take the same `page` and `page_size` --
+struck live with no credential, `?page_size=2` answering two of a hundred and
+eighty-one. The same probe found something the Recipe had wrong for both:
+`next` comes back as a whole URL, scheme and host and query included, and this
+Recipe served a bare page number under a field whose value a client is meant to
+request as it stands. Its own case asserted `next` matched `.`, which is true of
+a page number and of a URL alike, so a live-verified case had been carrying the
+wrong claim. It now pins the URL.
 
 **And it found a listing that is not one.** AWS SES's `GET /v2/email/account`
 was modelled as a collection, and AWS's own service model describes
