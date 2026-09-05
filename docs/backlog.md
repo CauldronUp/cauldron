@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**37 routes across 18 Recipes** still page by a parameter nobody named.
+**34 routes across 17 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,22 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+Snyk's three were already read -- its v1 API "answers these with everything it
+has", so the size is fixed and no name is accepted -- and only the position was
+left blank, which had the runtime reading `cursor` off a request that carries no
+query string. Both names now say so.
+
+**And the ones that could not be reached now say what was tried.** Brex
+publishes a description per API behind its documentation site, and every address
+that returns anything returns the site's own HTML; the JSON forms 404 and so
+does the pagination guide the site links to. Recurly's v3 reference is a
+single-page application that serves its navigation and not its content to
+anything that is not a browser, and the description its client libraries are
+generated from is not at any address those repositories suggest. Both Recipes
+now carry the date, the addresses tried and the plain statement that their page
+size is a number with no name attached -- a guess, labelled as one, rather than
+a declaration nobody can check.
 
 Duffel had named its cursor and not its size, and the size happened to be the
 word the runtime supplies -- right by coincidence, which is not the same as
