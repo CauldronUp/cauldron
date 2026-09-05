@@ -15,7 +15,8 @@ The revision header is not optional and has no default. Klaviyo pins its behavio
 ## Sources
 
 - Documentation: https://developers.klaviyo.com/en/reference/api_overview
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://raw.githubusercontent.com/klaviyo/openapi/main/openapi/stable.json, last checked 2026-09-05
+  `cauldron drift klaviyo` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**85 routes across 41 Recipes** still page by a parameter nobody named.
+**76 routes across 38 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1074,6 +1074,15 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
 
+Klaviyo, CircleCI and Miro were the same hunt and the sharpest three. Klaviyo
+takes `page[size]` and `page[cursor]`, square brackets included -- JSON:API's
+spelling, and not a parameter anybody arrives at by guessing. CircleCI takes
+`page-token` and **no page size at all**, so `limit_param` there is `"-"`; its
+`next_page_token` is typed "string, nullable", meaning a client testing whether
+the key is present finds it on every page and only the value says whether there
+is another. Miro pages its boards and members by `limit` and `offset` and its
+items by `limit` and `cursor` -- two styles under one Recipe, from one document.
+
 Three more providers publish a description in their own GitHub organisation
 and nobody had recorded it: Square, Slack and Discord, all three now recorded
 and fingerprinted. Square and Slack take `limit` and `cursor`, which are the two
@@ -1098,7 +1107,9 @@ Notion's own case is the whole failure in one place. It sent `?limit=1`, a
 parameter Notion does not have, against a Recipe that was reading `limit` too --
 so the two wrongs agreed, a full page came back, and the case asserted a page it
 never asked for. It sends `page_size` now. Intercom's case had the same
-shape and now sends `per_page`.
+shape and now sends `per_page`; Klaviyo's sent `limit` where Klaviyo wants
+`page[size]`; and CircleCI's sent `limit` to an API that has no page size at
+all, which is four.
 
 Vercel's three are settled the same way and are the sharper example: its
 deployments and domains listings take `until`, its projects listing takes
