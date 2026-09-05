@@ -2,9 +2,11 @@
 
 Emulates the Airtable API (v0), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**9 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+One case was struck live against api.airtable.com on 2026-09-05, and it corrected a mistake: this file had claimed a missing token gets the message "You should provide valid api key to perform this operation", which the live host does not send -- it sends "Authentication required".
+
+A second live finding is modelled but cannot be shipped as a case. Airtable reads a token's shape before its value: a wrong token of the right shape answers type UNAUTHORIZED and "Invalid authentication token", while a value of any other length answers the same AUTHENTICATION_REQUIRED as no header at all. A conformance case exercising that first branch would have to contain a literal of Airtable's token shape, and GitHub's push protection refuses one -- including a literal whose every character is a zero. So the Recipe serves the wrong-real-key answer, which is the one an integration actually meets, and [`recipe.yaml`](recipe.yaml) states the limit: a deliberately short garbage token gets the more informative answer here than it would from Airtable.
 
 ## What this Recipe found
 

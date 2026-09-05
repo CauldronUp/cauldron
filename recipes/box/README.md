@@ -2,9 +2,9 @@
 
 Emulates the Box API (2.0), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**12 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.box.com on 2026-09-05, and corrected a case that had asserted a flat JSON body for an unauthorized request. Box sends no body at all either way -- Content-Length 0 -- and puts the failure entirely in a WWW-Authenticate header, which names an absent token and a present, wrong one differently: "invalid_request" / "The access token was not found." for one, "invalid_token" / "The access token provided is invalid." for the other.
 
 ## What this Recipe found
 

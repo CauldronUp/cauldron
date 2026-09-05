@@ -2,9 +2,9 @@
 
 Emulates the Asana API (1.0), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**12 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+One was struck live against app.asana.com on 2026-09-05, with no Authorization header at all and again with a made-up Bearer token: byte-identical 401. This file had claimed the message was "Not Authorized: authentication is required"; Asana sends plainly "Not Authorized", with no such phrase attached.
 
 ## What this Recipe found
 

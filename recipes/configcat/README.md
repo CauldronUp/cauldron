@@ -2,9 +2,9 @@
 
 Emulates the ConfigCat API (v1), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**8 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live against api.configcat.com on 2026-09-05, on the exact route this Recipe models: an unauthorized request carries no body at all, byte for byte the same whether the header is absent or a made-up Basic credential. This file had claimed a JSON body, {"message":"Unauthorized"}; ConfigCat sends none of it.
 
 ## What this Recipe found
 

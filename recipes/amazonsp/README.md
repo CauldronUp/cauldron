@@ -2,9 +2,9 @@
 
 Emulates the Amazon SP-API API (v0), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against sellingpartnerapi-na.amazon.com on 2026-09-05: an entirely absent token and a present, invented one both answer 403 code Unauthorized, and this file had given both the same empty "details" string. They are not the same sentence live -- an absent token says "Access token is missing in the request header." and a present, wrong one says "The access token you provided is revoked, malformed or invalid."
 
 ## What this Recipe found
 

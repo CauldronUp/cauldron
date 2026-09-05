@@ -114,6 +114,13 @@ auth:
   prefix: "Bearer "
   keys:
     - cauldron.allegro.fixture.token.000
+  # Verified live: a present, wrong Bearer value is a different failure from
+  # an absent header. This file had modelled a present wrong token as the
+  # absent-header message before that was checked. See the cases below.
+  rejected_error: invalid_token_error
+  # Verified live: a wrong method on a real path answers 405 with no
+  # credential sent at all, so routing is decided before authentication.
+  after_routing: true
 
 responses:
   list:
@@ -222,6 +229,12 @@ errors:
   # The version negotiation failing, which is what a client written against
   # any other REST API gets on its first request. Code, message and example
   # are the document's own.
+  # Verified live against api.allegro.pl: the userMessage here was "The
+  # request contains incorrect data. Contact the author of the
+  # application.", and Allegro actually sends "Request contains invalid
+  # data. Contact the application author." -- a different sentence, not a
+  # paraphrase this file had gotten close enough to notice was wrong.
+  # details and path were "" and are null on the wire.
   not_acceptable:
     status: 406
     code: NotAcceptableException
@@ -230,9 +243,32 @@ errors:
       # The second message, which is the one to show a person. "It will not
       # contain any technical information. This message is translated based on
       # the value of the Accept-Language header."
-      userMessage: The request contains incorrect data. Contact the author of the application.
-      details: ""
-      path: ""
+      userMessage: Request contains invalid data. Contact the application author.
+      details: null
+      path: null
+
+  # Verified live: a method this path does not accept, struck with no
+  # credential sent at all -- routing is decided first, see auth above.
+  method_not_allowed:
+    status: 405
+    code: NotAllowedException
+    message: The HTTP method is not allowed
+    fields:
+      userMessage: An error occurred
+      # null on the wire, not an empty string -- checked, unlike the
+      # not_acceptable entry above which was never struck live.
+      details: null
+      path: null
+
+  # Verified live: a path this API has never heard of.
+  unknown_route:
+    status: 404
+    code: NotFoundException
+    message: Not found
+    fields:
+      userMessage: Feature unavailable. Contact the application author.
+      details: null
+      path: null
 
   # "Returned when limit or offset value is outside an acceptable range" --
   # not a clamp, and not the 400 that the same endpoint uses for an illegal
@@ -248,6 +284,8 @@ errors:
   # {error, error_description} -- an OAuth2 body rather than Allegro's own --
   # so a client that unwraps errors[0].message reads undefined on a 401 and
   # reports the reason as "undefined".
+  # Verified live against api.allegro.pl with no Authorization header at
+  # all: exactly this, byte for byte.
   authentication_error:
     status: 401
     style: flat
@@ -256,6 +294,18 @@ errors:
     code_field: error
     code: unauthorized
     message: Full authentication is required to access this resource
+
+  # Verified live: a present Bearer value Allegro cannot parse as a token at
+  # all -- any string, real-token-shaped or not -- gets this instead of the
+  # message above. Same OAuth2 envelope, different error and description.
+  invalid_token_error:
+    status: 401
+    style: flat
+    key: "-"
+    message_field: error_description
+    code_field: error
+    code: invalid_token
+    message: Cannot convert access token to JSON
 
   resource_missing:
     status: 404
@@ -519,7 +569,12 @@ conformance:
         count: 1
 
   - name: and asking for plain JSON is refused
+    # Corrected against a live check: this had asserted "The request
+    # contains incorrect data. Contact the author of the application." for
+    # userMessage. api.allegro.pl actually sends "Request contains invalid
+    # data. Contact the application author." -- a different sentence.
     source: https://developer.allegro.pl/swagger.yaml
+    verified: "2026-09-05"
     fixture: seller
     request:
       method: GET
@@ -540,7 +595,7 @@ conformance:
         # The other message, which is the one to show a person and which the
         # Accept-Language header translates. A client that logs this and
         # displays the one above has them the wrong way round.
-        "errors[0].userMessage": The request contains incorrect data. Contact the author of the application.
+        "errors[0].userMessage": Request contains invalid data. Contact the application author.
       matches:
         "errors[0].message": Please check 'Accept' request header
 
@@ -607,7 +662,14 @@ conformance:
         "errors[0].message": outside an acceptable range
 
   - name: and a bad token is not that shape at all
+    # Corrected against a live check: this had claimed a present, wrong
+    # token gets "unauthorized" / "Full authentication is required to
+    # access this resource" -- which is what api.allegro.pl actually sends
+    # for no Authorization header at all (see the case below). A token that
+    # is present and simply not one Allegro can parse gets a different
+    # error and a different sentence, checked with this exact request.
     source: https://developer.allegro.pl/swagger.yaml
+    verified: "2026-09-05"
     fixture: seller
     request:
       method: GET
@@ -621,9 +683,61 @@ conformance:
       # authentication.
       status: 401
       body:
-        error: unauthorized
-        error_description: Full authentication is required to access this resource
+        error: invalid_token
+        error_description: Cannot convert access token to JSON
       absent:
         # No errors array, so the unwrapping every other failure needs finds
         # nothing here and a client reports the reason as undefined.
         - errors
+
+  - name: and no Authorization header at all is a different failure again
+    # Struck live: the message this file previously (and wrongly) attached
+    # to a present, bad token. An entirely absent header gets it for real.
+    source: https://developer.allegro.pl/swagger.yaml
+    verified: "2026-09-05"
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms
+      headers:
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 401
+      body:
+        error: unauthorized
+        error_description: Full authentication is required to access this resource
+      absent:
+        - errors
+
+  - name: a method this path does not accept is refused with no credential needed to find that out
+    source: https://api.allegro.pl/order/checkout-forms
+    verified: "2026-09-05"
+    fixture: seller
+    request:
+      method: POST
+      path: /order/checkout-forms
+      headers:
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 405
+      body:
+        "errors[0].code": NotAllowedException
+        "errors[0].message": The HTTP method is not allowed
+        "errors[0].userMessage": An error occurred
+
+  - name: a path this API has never heard of is a 404 in the same envelope as everything else
+    source: https://api.allegro.pl/this-is-not-a-real-path
+    verified: "2026-09-05"
+    fixture: seller
+    request:
+      method: GET
+      path: /this-is-not-a-real-path
+      headers:
+        Accept: application/vnd.allegro.public.v1+json
+        Authorization: Bearer not-a-real-token
+    expect:
+      status: 404
+      body:
+        "errors[0].code": NotFoundException
+        "errors[0].message": Not found
+        "errors[0].userMessage": Feature unavailable. Contact the application author.

@@ -2,9 +2,9 @@
 
 Emulates the Deel API (v2), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**13 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.letsdeel.com on 2026-09-05, and found the shape entirely wrong: this file had a flat "The access token is invalid or has expired." for every auth failure. Deel actually sends an errors array with a code -- PAT_REQUIRED for an absent header, INVALID_TOKEN for a present, wrong one -- and a different sentence for each.
 
 ## What this Recipe found
 

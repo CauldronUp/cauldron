@@ -2,9 +2,9 @@
 
 Emulates the Allegro API (v1), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**14 conformance cases, 5 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Five were struck live against api.allegro.pl on 2026-09-05, and they found this file wrong twice over. First: a present, wrong Bearer token had been modelled as getting the same OAuth2 "unauthorized / Full authentication is required" message an absent header gets. It does not -- a token Allegro cannot parse gets "invalid_token / Cannot convert access token to JSON" instead, a different error and a different sentence, and the absent-header message is real but belongs to a different request than the one this file had attached it to. Second: the 406 for asking for plain JSON had the wrong userMessage entirely -- "The request contains incorrect data. Contact the author of the application." was never Allegro's sentence; it sends "Request contains invalid data. Contact the application author." Also verified live and new to this file: a method the endpoint does not accept, and a path this API has never heard of, are both refused before authentication is even checked.
 
 ## What this Recipe found
 

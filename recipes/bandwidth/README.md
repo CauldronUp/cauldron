@@ -2,9 +2,9 @@
 
 Emulates the bandwidth API (v2), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**13 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against messaging.bandwidth.com on 2026-09-05, and found an absent credential and a wrong one are not remotely the same answer. This file had a present, wrong Basic credential getting the same JSON error body an absent header gets; the live host actually sends no body at all for a wrong credential -- Content-Length: 0 -- with a WWW-Authenticate challenge header instead, and reserves the JSON {"type", "description"} shape for when nothing was sent at all. The description text was also wrong: "Authentication failed" was never the sentence; it is "Your request could not be authenticated".
 
 ## What this Recipe found
 

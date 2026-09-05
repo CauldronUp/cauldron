@@ -2,9 +2,9 @@
 
 Emulates the cohere API (v2), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**12 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.cohere.com on 2026-09-05, and corrected the message: this file had "invalid api token" for every auth failure. Cohere actually sends "no api key supplied" for an absent header and, for a present, wrong one, "Incorrect API key provided: *******. You can find your API key at https://dashboard.cohere.com/api-keys." -- redacting the key rather than restating that it was wrong.
 
 ## What this Recipe found
 

@@ -2,9 +2,9 @@
 
 Emulates the Column API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**13 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live against api.column.com on 2026-09-05: an unauthorized request carries no body at all, byte for byte the same whether the credential is absent or a made-up Basic value. This file had claimed a JSON body with code, type and message; Column sends none of it.
 
 ## What this Recipe found
 

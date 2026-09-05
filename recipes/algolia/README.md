@@ -2,13 +2,13 @@
 
 Emulates the Algolia API (1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**12 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against latency-dsn.algolia.net on 2026-09-05, and both corrected this file. The casing was wrong -- Algolia sends "Invalid Application-ID or API key", and this had it as "Application-Id" throughout. More than casing: this had also claimed that omitting the application-id header gets a distinct, differently-worded failure from sending a bad key. Live, with a correct-looking key and no Application-Id header at all, Algolia sends the identical generic message -- it does not say which credential was the problem, and this file's belief that it did was never checked before now.
 
 ## What this Recipe found
 
-Algolia's credentials are two separate headers, and neither is Authorization -- sending a bearer token gets nowhere, and omitting the application-id header is a distinct, differently-worded failure from sending a bad key. The record identifier is objectID, supplied by the caller rather than minted by Algolia, so code that reads hit.id after a search finds nothing.
+Algolia's credentials are two separate headers, and neither is Authorization -- sending a bearer token gets nowhere. The record identifier is objectID, supplied by the caller rather than minted by Algolia, so code that reads hit.id after a search finds nothing.
 
 The only fidelity gap: Cauldron doesn't implement search. A query returns everything in the index rather than the records actually matching the term, so relevance, ranking and highlighting aren't modelled -- only the response shape and the failure modes are.
 

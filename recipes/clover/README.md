@@ -2,9 +2,9 @@
 
 Emulates the Clover API (v3), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**11 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live against apisandbox.dev.clover.com on 2026-09-05, both with no Authorization header at all and with a made-up Bearer token: byte-identical 401, and this file's claim held exactly -- {"message":"401 Unauthorized"}, no code to branch on.
 
 ## What this Recipe found
 

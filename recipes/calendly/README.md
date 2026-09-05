@@ -2,9 +2,9 @@
 
 Emulates the Calendly API (v2), for local development and tests.
 
-**7 conformance cases, none checked against a live API.**
+**7 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live against api.calendly.com on 2026-09-05, both with no Authorization header at all and with a made-up Bearer token: byte-identical 401, and this file's claim held exactly -- title "Unauthenticated", message "The access token is invalid".
 
 ## What this Recipe found
 

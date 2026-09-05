@@ -2,9 +2,9 @@
 
 Emulates the Adyen API (v71), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Most cases here cite documentation rather than an observation. Two were struck live against checkout-test.adyen.com on 2026-09-05, and they corrected one: this file had asserted errorType "authentication_error" for an unauthorised call, which was its own key name leaking through as a default rather than anything Adyen sends. The live host answers errorType "security", and answers it identically whether the X-API-Key header is wrong or missing entirely.
 
 ## What this Recipe found
 

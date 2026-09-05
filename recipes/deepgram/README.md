@@ -2,9 +2,9 @@
 
 Emulates the Deepgram API (v1), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**8 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.deepgram.com on 2026-09-05: the wrong Bearer prefix, a bare key with no scheme at all, and no header whatsoever all come back byte-identical 401 err_code INVALID_AUTH, "Invalid credentials." -- and this file's claim held exactly.
 
 ## What this Recipe found
 

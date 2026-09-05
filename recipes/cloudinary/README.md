@@ -2,9 +2,9 @@
 
 Emulates the Cloudinary API (v1_1), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**11 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.cloudinary.com on 2026-09-05, and found a message borrowed from the wrong place: this file's own "the secret is the half that is checked" case asserted "Invalid Signature", a sentence that belongs to Cloudinary's separate upload-signature mechanism and had never been checked against the Basic-auth admin API this Recipe's scheme actually guards. The real host says "unknown api_key" for a wrong key and "Invalid credentials" for no credential at all -- two different sentences, neither the one this file had.
 
 ## What this Recipe found
 

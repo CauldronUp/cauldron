@@ -2,9 +2,9 @@
 
 Emulates the braze API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**13 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against rest.iad-01.braze.com on 2026-09-05, and corrected the message: this file had "Invalid API key" with no colon and no echo. Braze actually sends "Invalid API key: " followed by whatever value was presented, including nothing at all when no header was sent -- so a wrong key ends up quoted back inside the error a client logs.
 
 ## What this Recipe found
 

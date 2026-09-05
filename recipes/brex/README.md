@@ -2,9 +2,9 @@
 
 Emulates the Brex API (v2), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**11 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live against platform.brexapis.com on 2026-09-05: an unauthorized request carries no body at all, byte for byte the same whether the Authorization header is absent or a made-up Bearer value. This file had claimed the message "The access token is invalid.", which Brex does not send.
 
 ## What this Recipe found
 

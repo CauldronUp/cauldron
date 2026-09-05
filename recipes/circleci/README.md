@@ -2,9 +2,11 @@
 
 Emulates the CircleCI API (v2), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**11 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Three were struck live against circleci.com on 2026-09-05, and the finding is a genuine trap: an absent Circle-Token answers real JSON, {"message":"You must log in first."}, mislabelled Content-Type text/plain, while a present, wrong token answers plain text with no JSON in it at all, "Invalid token provided." A client that calls .json() unconditionally survives the first case by accident and throws on the second. This file's own message, "Authentication failed.", was never a sentence CircleCI sends.
+
+
 
 ## What writing this Recipe changed
 

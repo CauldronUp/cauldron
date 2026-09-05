@@ -2,9 +2,9 @@
 
 Emulates the ClickUp API (v2), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**11 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Two were struck live against api.clickup.com on 2026-09-05, and found a case this file had never modelled: an entirely absent Authorization header is not even the same status code as a present, wrong one. A wrong token is 401 OAUTH_019; no header at all is 400 OAUTH_017 -- the one failure in this collection where the status code itself, not just the message, depends on whether a credential was sent.
 
 ## What this Recipe found
 
