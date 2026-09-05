@@ -47,7 +47,75 @@ func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok b
 // sent by somebody, so it is malformed rather than absent, which is the line
 // the providers themselves draw -- Make answers a bare missing header with
 // "User is not logged in." and a broken one with "Invalid token header."
+// credential judges a request against an Auth and any alternatives it names.
+//
+// A provider often accepts one secret through more than one carrier. Kickbox
+// takes its key as a query parameter or a bearer header, Watchmode takes three
+// channels, Clearbit takes a bearer or Basic with a blank password. Nine
+// Recipes described that in prose and served one channel, so a client written
+// against the other was refused by a fake and accepted by the provider -- the
+// direction of wrongness that lets code ship broken.
+//
+// The alternatives are tried only when the primary carrier holds nothing.
+// Somebody who put a credential in the primary and got it wrong has made a
+// different mistake from somebody who used another channel, and the first
+// verdict is the one about what they did.
+//
+// The verdict returned is the most informative one seen. If the primary is
+// absent and an alternative was present and wrong, the caller presented
+// something somewhere, and saying "absent" would describe a request nobody
+// made.
 func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict, string) {
+	verdict, presented := s.judge(r, auth)
+	if verdict == recipe.Accepted || len(auth.Also) == 0 {
+		return verdict, presented
+	}
+
+	for _, alternative := range auth.Also {
+		// An alternative inherits everything it does not name, so a Recipe
+		// says only what differs -- usually just the carrier.
+		merged := auth
+		merged.Also = nil
+
+		if alternative.Scheme != "" {
+			merged.Scheme = alternative.Scheme
+		}
+
+		if alternative.Header != "" {
+			merged.Header = alternative.Header
+		}
+
+		if alternative.Param != "" {
+			merged.Param = alternative.Param
+		}
+
+		if alternative.Prefix != "" {
+			merged.Prefix = alternative.Prefix
+		}
+
+		if alternative.Credential != "" {
+			merged.Credential = alternative.Credential
+		}
+
+		if len(alternative.Keys) > 0 {
+			merged.Keys = alternative.Keys
+		}
+
+		alternate, sent := s.judge(r, merged)
+		if alternate == recipe.Accepted {
+			return alternate, sent
+		}
+
+		// Absent means this channel was not the one used, which says nothing.
+		if verdict == recipe.Absent && alternate != recipe.Absent {
+			verdict, presented = alternate, sent
+		}
+	}
+
+	return verdict, presented
+}
+
+func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, string) {
 
 	// A Recipe that declares no keys accepts anything, so an author can model
 	// routes first and tighten auth later.

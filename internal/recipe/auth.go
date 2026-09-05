@@ -126,6 +126,26 @@ type Auth struct {
 	Param string `yaml:"param"`
 	// Prefix is stripped from the credential before comparison, e.g. "Bearer ".
 	Prefix string `yaml:"prefix"`
+	// Also names other carriers the same credential may arrive in.
+	//
+	// One host often takes one secret several ways. Kickbox accepts its key as
+	// a query parameter or a bearer header. Watchmode takes three channels.
+	// Clearbit takes a bearer or Basic with a blank password. Geoapify
+	// documents a header as an alternative to its query parameter. Nine Recipes
+	// recorded that and served one channel, which is the wrong direction to be
+	// wrong in: a client using the other was refused by the fake and accepted
+	// by the provider.
+	//
+	// An alternative inherits everything it does not name, so a Recipe usually
+	// writes only the carrier. They are tried only when the primary holds
+	// nothing, because getting the primary wrong is a different mistake from
+	// using another channel, and the first verdict is the one about what the
+	// caller actually did.
+	//
+	// This is for one credential in several places. Two genuinely different
+	// credentials on one route -- ClickHouse accepts an undocumented JWT beside
+	// its own scheme -- is a different thing and is not this.
+	Also []Auth `yaml:"also"`
 	// Credential says which half of a basic credential carries the secret:
 	// "username" (the default, which is what Twilio does with the account SID)
 	// or "password" (Mailgun, whose username is the constant "api"). Checking

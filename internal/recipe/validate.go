@@ -150,6 +150,31 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// An alternative carrier is held to the same rules, and may not itself
+	// name alternatives: a list of lists has no meaning here, and a Recipe
+	// writing one is describing something other than what it thinks.
+	for i, alternative := range r.Auth.Also {
+		where := fmt.Sprintf("auth.also[%d]", i)
+
+		if alternative.Scheme != "" && !contains(validSchemes, alternative.Scheme) {
+			add("%s.scheme %q must be one of %s", where, alternative.Scheme, strings.Join(validSchemes, ", "))
+		}
+
+		if len(alternative.Also) > 0 {
+			add("%s names alternatives of its own, and they would never be reached", where)
+		}
+
+		if alternative.Credential != "" && alternative.Credential != "username" && alternative.Credential != "password" {
+			add("%s.credential %q must be username or password", where, alternative.Credential)
+		}
+
+		// A carrier that names nothing is the primary written twice, which
+		// serves no purpose and reads as a claim about a second channel.
+		if alternative.Scheme == "" && alternative.Header == "" && alternative.Param == "" {
+			add("%s names no scheme, header or param, so it is the primary carrier again", where)
+		}
+	}
+
 	if r.Auth.Credential != "" && r.Auth.Credential != "username" && r.Auth.Credential != "password" {
 		add("auth.credential %q must be username or password", r.Auth.Credential)
 	}
