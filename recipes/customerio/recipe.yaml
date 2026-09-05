@@ -33,20 +33,26 @@
 # one host's WWW-Authenticate header, which only ever names what that host
 # wants, never what was actually sent.
 #
-# WHAT CAULDRON CANNOT DO HERE, STATED RATHER THAN FORCED: this format checks
-# one credential scheme per Recipe, for every request, before it looks at the
-# path (see internal/runtime/auth.go -- auth is read once, off
-# s.recipe.Auth, with no per-route override). Track wants Basic and App wants
-# Bearer, and there is no mechanism in this format to enforce two different
-# schemes on two different routes in the same Recipe. This Recipe declares
-# `basic`, matching Track -- the host named first in the brief and the one
-# whose WWW-Authenticate header this Recipe can reproduce -- which means the
-# /v1/send/email route below is checked against a scheme the real App API
-# does not accept at all. The 401 BODY this Recipe serves for that route is
-# still faithful (both real hosts send the identical bytes), but the SCHEME
-# enforcement on it is not, and is not modelled as anything other than what
-# it is: a limitation of describing two credential types in one Recipe file,
-# not a claim about what api.customer.io actually accepts.
+# THIS IS NOW WIRED: a route can carry its own credential (see route.auth in
+# internal/recipe/route.go), and the /v1/send/email route below declares
+# `scheme: bearer` while the Recipe-wide `scheme: basic` stays exactly what
+# Track wants. Both hosts are now enforced against the scheme they actually
+# require -- Track's Basic key does not open the App route and the App
+# route's own Bearer key does not open Track's, the same shape
+# route_auth_test.go arms this mechanism to prove. The two hosts' error
+# bodies were always byte-identical and stay declared that way; what changes
+# is that the App route now also serves the one difference already verified
+# live and previously left unchecked because asserting it would have meant
+# asserting a header the old single-scheme model could not have produced
+# faithfully: api.customer.io never sends WWW-Authenticate at all, where
+# track.customer.io always does. See `app_authentication_error` below and the
+# route's own `auth.absent_error` / `malformed_error` / `rejected_error`.
+#
+# A route's own Auth replaces the Recipe-wide one wholesale rather than
+# merging field by field -- internal/runtime/handler.go reads
+# `matched.spec.Auth` as a whole struct when it is not nil -- so the App
+# route's auth block below repeats scheme, prefix and keys in full rather
+# than naming only the one field that differs from Track's.
 #
 # A SECOND FINDING, ORTHOGONAL TO THE FIRST: any 404 on either host -- a GET
 # where a route only takes POST, or a path this Recipe has never heard of --
@@ -63,7 +69,6 @@
 #
 # Known fidelity gaps, stated rather than hidden:
 #
-#   - The auth scheme mismatch on /v1/send/email, above -- the central one.
 #   - Track's own 400 for a malformed event is a DIFFERENT shape from
 #     everything else this Recipe models: {"meta": {"errors": [...]}} --
 #     plural, an array of bare sentence strings, confirmed from Track's own
@@ -116,9 +121,9 @@ upstream:
   spec_seen: "2026-09-01"
 
 auth:
-  # Basic, matching the Track host -- see the header comment for why the App
-  # route below is checked against a scheme the real API for it does not
-  # accept.
+  # Basic, matching the Track host. The App host's own Bearer scheme is
+  # declared on the /v1/send/email route below, not here -- see the header
+  # comment.
   scheme: basic
   credential: password
   keys:
@@ -195,6 +200,22 @@ routes:
     path: /v1/send/email
     resource: delivery
     operation: create
+    # The App host's own scheme -- Bearer, not the Recipe-wide Basic Track
+    # holds. A route's auth replaces the Recipe-wide one wholesale rather
+    # than merging field by field, so this repeats the whole shape rather
+    # than naming only scheme. All three verdicts point at
+    # app_authentication_error because the App host, like Track, answers
+    # missing, malformed and wrong-secret identically -- see the header
+    # comment -- and that entry is the one difference from Track's own
+    # authentication_error: no WWW-Authenticate, confirmed live.
+    auth:
+      scheme: bearer
+      prefix: "Bearer "
+      keys:
+        - cauldron0000customerio0000appapikey0000
+      absent_error: app_authentication_error
+      malformed_error: app_authentication_error
+      rejected_error: app_authentication_error
     # send_at only appears in the trimmed response when the record actually
     # holds one, which only happens when the caller supplied it -- Cauldron's
     # trim keeps a declared field only when it is present, so naming it here
@@ -205,14 +226,23 @@ routes:
       - send_at
 
 errors:
-  # Confirmed live, 2026-09-01, identical on both hosts, for a missing
-  # credential, a wrong Basic secret, and a well-formed Bearer token sent to
-  # the Basic-only Track host.
+  # Confirmed live, 2026-09-01, for a missing credential, a wrong Basic
+  # secret, and a well-formed Bearer token sent to the Basic-only Track
+  # host.
   authentication_error:
     status: 401
     message: "Unauthorized request"
     headers:
       WWW-Authenticate: 'Basic realm="Customer.io edge event collection"'
+
+  # api.customer.io's own version of the same body -- byte-identical message,
+  # confirmed live 2026-09-01, and no WWW-Authenticate at all, where Track
+  # always sends one. Named on the App route's own auth.absent_error,
+  # malformed_error and rejected_error, above, because that route's own
+  # scheme is Bearer and not Track's Basic.
+  app_authentication_error:
+    status: 401
+    message: "Unauthorized request"
 
   # Confirmed live, 2026-09-01, byte-identical (Content-Length 3817) for a
   # GET on the Track event route and for a path this Recipe has never heard
@@ -407,7 +437,7 @@ conformance:
       body:
         meta.error: "Unauthorized request"
 
-  - name: the App host's missing-credential body is byte-identical to Track's
+  - name: the App host's missing-credential body is byte-identical to Track's, and it never sends WWW-Authenticate
     source: https://api.customer.io/v1/send/email
     verified: "2026-09-01"
     fixture: empty
@@ -417,12 +447,36 @@ conformance:
       json:
         to: person@example.com
     expect:
-      # This Recipe's single auth scheme cannot enforce Bearer here -- see
-      # the header comment -- so this case checks the body only, which is
-      # genuinely identical between hosts.
       status: 401
       body:
         meta.error: "Unauthorized request"
+      # Track always sends this header on its own 401 -- see the first case
+      # above -- and the App host never does, confirmed live. The route's own
+      # Bearer scheme is what makes this checkable now: see the header
+      # comment.
+      absent_headers:
+        - WWW-Authenticate
+
+  - name: Track's own Basic credential does not open the App route
+    source: https://docs.customer.io/files/journeys-app.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/send/email
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+      json:
+        to: person@example.com
+    expect:
+      # Not observed live -- inferred from App's own OpenAPI description,
+      # which names Bearer-Auth and nothing else. A Basic Authorization
+      # header does not have the Bearer prefix the route's own scheme
+      # requires, so this is the malformed verdict, not the absent one.
+      status: 401
+      body:
+        meta.error: "Unauthorized request"
+      absent_headers:
+        - WWW-Authenticate
 
   - name: a GET on the Track event route is Customer.io's own 404 page, not JSON
     source: https://track.customer.io/api/v1/customers/1/events
@@ -484,10 +538,9 @@ conformance:
     request:
       method: POST
       path: /v1/send/email
-      # Basic, not Bearer -- this Recipe's single global scheme, not what the
-      # real api.customer.io host accepts. See the header comment.
+      # The App route's own Bearer scheme -- see the header comment.
       headers:
-        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+        Authorization: "Bearer cauldron0000customerio0000appapikey0000"
       json:
         to: person@example.com
         transactional_message_id: "3"
@@ -514,7 +567,7 @@ conformance:
       method: POST
       path: /v1/send/email
       headers:
-        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+        Authorization: "Bearer cauldron0000customerio0000appapikey0000"
       json:
         to: person@example.com
         transactional_message_id: "3"

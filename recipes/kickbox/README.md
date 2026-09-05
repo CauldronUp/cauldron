@@ -2,7 +2,7 @@
 
 Emulates the Kickbox API (v2), for local development and tests.
 
-**12 conformance cases, 7 checked against the live API on 2026-09-02.**
+**14 conformance cases, 8 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 
