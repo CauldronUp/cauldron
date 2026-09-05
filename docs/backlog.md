@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**91 more listings across 61 Recipes declare no paging at all**, and the
+**87 more listings across 60 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,27 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+The Guardian named its own paging parameters inside an error this Recipe has been
+pinning all along. `?page=99999` answers "Content API does not support paging this
+far. **Please change page or page-size** or consider filtering using a date
+range" -- struck live, quoted verbatim in that file's errors block. The numbers
+were already there too, in live responses the Recipe asserts: `response.pageSize`
+is 10 and `response.currentPage` is 1. And its `/sections` route has asserted
+since before it could declare it that `response.pageSize` is **absent** there,
+with the comment "sections carries no paging metadata at all, unlike search" --
+which is better evidence for a listing that does not page than any document.
+
+Heroku is the one that stays undeclared on purpose, and the reason is a real gap
+in this format. It pages by HTTP *headers*: `Range: id <start>..; max=200` out,
+`206` and `Next-Range` back, and no query parameter of any kind. `pagination.in`
+accepts `query` and `body`; a third value would need more than a name, because
+Heroku's Range value is compound -- position and page size inside one string -- so
+`limit_param` and `cursor_param` would have nothing separate to point at, and the
+reply side needs a response header this format has no key for. `style: none` would
+be the comfortable lie: it would clear the count and tell every reader Heroku
+serves whole collections, which it does not. A note at each of the four routes
+records why nothing is declared instead.
 
 BambooHR's directory is the bluntest statement of the problem in any provider's
 own words: "this endpoint returns the whole directory in one response and accepts
