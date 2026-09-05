@@ -2,11 +2,13 @@
 
 Emulates the revenuecat API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**13 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real project. The credential check itself was verified directly against api.revenuecat.com on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no Authorization header at all and a fictitious bearer both answer `{"code":7225,"message":"Invalid API Key."}` -- a code this file had never recorded, since no authentication failure was declared here at all and every unauthenticated request fell back to this project's own generic wording instead of RevenueCat's. A wrong method on a real path hits the identical failure, so the credential is checked before the method -- but a genuinely unrouted path does not, answering `{"code":7117,"message":"Page not found."}` with no credential needed. RevenueCat orders the path check and the credential check differently depending on which mistake was made, which this project's routing mechanism cannot express without breaking whichever case it currently gets right, so that finding is recorded rather than encoded.
 
 RevenueCat's own SDK guidance tells you to read `customerInfo.entitlements[id].isActive`, a property the client SDKs compute for you that does not exist in the API response itself. The moment the question moves server-side, a webhook handler, your own entitlement check, somebody has to write that comparison by hand, and the advice they were following no longer applies. The real comparison is `expires_date` against now, with four special cases the SDK property was quietly absorbing: `null` means lifetime access, not expired; an `unsubscribe_detected_at` timestamp means auto-renewal is off but the customer keeps access until `expires_date`, possibly months away; a trial with a future date is a paying-nothing customer who is nonetheless entitled to everything; and `ownership_type: FAMILY_SHARED` is an entitlement from a purchase this customer did not make and cannot manage. The fixture models four active entitlements, no two active for the same reason.
 

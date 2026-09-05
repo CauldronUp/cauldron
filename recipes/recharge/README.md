@@ -2,11 +2,13 @@
 
 Emulates the Recharge API (2021-11), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**14 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real store. Those checks were verified directly against api.rechargeapps.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no access token at all and a fictitious one both answer `{"error":"bad authentication"}` -- singular `error`, not the plural `errors` this file had the message field named for, and different wording too. Routing runs ahead of the credential entirely: an unrouted path answers `{"error":"Not Found"}` and a wrong method on a real path answers `{"error":"method not allowed"}`, neither needing anything sent at all.
 
 Recharge sits on top of Shopify, so one purchase effectively exists as two separate orders -- Recharge bills a `charge`, Shopify records an `order`, and each carries its own identifier for the same money, linked only by a quiet `shopify_order_id` field. Joining the two systems on the wrong identifier either silently loses every subscription order or double-counts every one of them, and it is an easy mistake because both objects are called an order somewhere and both have an `id`.
 

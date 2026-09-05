@@ -2,11 +2,13 @@
 
 Emulates the Rollbar API (1), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 5 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real project. Those checks were verified directly against api.rollbar.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no access token at all and a wrong one are different sentences, "access token required" versus "invalid access token". Routing runs ahead of the credential too: an unrouted path and a wrong method on a real path both answer "not found" needing nothing sent at all.
 
 Every response is wrapped in `{"err": 0, "result": {...}}`, and `err` is a number, not a boolean -- zero means success. A client that checks for the presence of `err` rather than its value treats every successful call as a failure, and one that reads the body directly finds nothing at all.
 

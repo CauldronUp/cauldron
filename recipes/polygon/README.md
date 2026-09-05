@@ -2,11 +2,13 @@
 
 Emulates the polygon API (v2), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 4 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything about bars, counts, and adjustment still cites documentation rather than an observation, because reaching it needs a paid account. The credential and routing checks were verified directly against api.polygon.io, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: a missing API key and a wrong one are different sentences -- `{"error":"API Key was not provided"}` versus `{"error":"Unknown API Key"}` -- and this file had only modelled the second, under a name nothing in the Recipe actually wired to a credential check, so no request the emulator served could ever have reached it. Routing also runs ahead of the credential entirely: an unrouted path and a wrong method both answer Go's own plain-text net/http defaults, "404 page not found" and "405 method not allowed", needing nothing sent at all.
 
 The field `t` means two different things on two endpoints of the same API. On the range/aggregates endpoint it is documented as the start of the window; on the grouped daily endpoint it is the end of the window -- same one-letter field name, same shape, same position in an otherwise identical object. Code that joins bars from the two endpoints on `t` is off by one window on half its data, and nothing about the join looks wrong, because the field is present, numeric, and in the right order.
 

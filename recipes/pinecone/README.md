@@ -2,11 +2,13 @@
 
 Emulates the Pinecone API (2026-04), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**11 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything about the data plane's missing host and the readiness fields still cites documentation, because reaching them needs a real project. The credential checks were verified directly against api.pinecone.io, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+UNAUTHENTICATED is one gRPC-borrowed code covering two different sentences, checked live: no `Api-Key` header at all answers "Missing api-key header", and a syntactically fine but fictitious key answers "Invalid API key" -- the code alone does not say which one happened. An unrouted path and a wrong method both land on the no-header sentence too, so the credential is judged before the route.
 
 Pinecone is two APIs behind two different base URLs, and the response to "create an index" is mostly an address for somewhere else. The control plane (api.pinecone.io) creates and lists indexes; every actual operation an application performs, query, upsert, fetch, delete vectors, lives at the index's own host, which you cannot know until the control plane hands it to you. Pinecone's own data-plane spec is explicit about this: its server URL template defaults the `index_host` variable to the literal string `"unknown"`, so a client generated from that document and left unconfigured posts its first query to `https://unknown/query`.
 

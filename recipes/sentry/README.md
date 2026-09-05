@@ -2,14 +2,18 @@
 
 Emulates the Sentry API (0), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real organisation. The credential check itself was verified directly against sentry.io on 2026-09-05.
 
 ## What writing this Recipe changed
 
 Its entire error body is one string, with no object around it to read a field
 from.
+
+## What checking it live found
+
+No Authorization header at all answers exactly what this file already had, "Authentication credentials were not provided.", but a syntactically fine but fictitious bearer answers a different sentence, "Invalid org token", which was not modelled before. A wrong method on a real path lands on the missing-credential sentence too, so the credential is checked first -- but a genuinely unrouted path does not: it answers a distinctive plain-text 404, "Route not found, did you forget a trailing slash?", with a caret pointing at the fix, needing no credential at all.
 
 ## Sources
 

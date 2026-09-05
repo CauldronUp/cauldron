@@ -2,11 +2,13 @@
 
 Emulates the razorpay API (v1), for local development and tests.
 
-**13 conformance cases, none checked against a live API.**
+**17 conformance cases, 4 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything about orders, payments, and captures still cites documentation rather than an observation, because reaching it needs a real merchant. The credential and routing checks were verified directly against api.razorpay.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no Basic header at all and a well-formed but wrong one are different sentences, neither the one this file had assumed, and neither carries the `reason` field this file's error shape treats as universal. Routing answers two more shapes again: an unrouted path drops the error envelope entirely down to a bare `{"message":"..."}`, needing no credential, while a wrong method on a real path keeps the full envelope but at 400 rather than 404 or 405, with a sentence that names the wrong problem.
 
 Razorpay catches integrators used to Stripe with one specific behavior: capturing an authorized payment is a separate call, and not making it is itself a decision with consequences. A payment that authorizes sits at `authorized`, and if it is not explicitly captured within the account's configured window, Razorpay automatically refunds it -- the customer sees a charge and then a refund, the order stays unpaid, and nothing in anyone's logs records a failure, because there was not one. Doing nothing was the choice that refunded the money.
 

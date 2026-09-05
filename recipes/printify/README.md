@@ -2,11 +2,13 @@
 
 Emulates the Printify API (v1), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**13 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real shop. Those checks were verified directly against api.printify.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no Authorization header at all and a fictitious bearer answer the identical `{"error":"Unauthenticated","request_id":"..."}` -- no code field anywhere in it, which this file had wrong (it declared a numeric 401 code nothing on the wire carries). Routing runs ahead of the credential too: an unrouted path needs nothing sent at all and answers `{"error":"Not found"}`. A wrong method on a real path is its own story, checked but not encoded as a case: the response spells out the allowed methods by name and leaks an internal "public/" route prefix that never appears in the URL a caller sends -- a sentence built per route and per method, too specific to generalise onto a route this Recipe actually models.
 
 Printify splits wholesale and retail differently from Printful's side-by-side fields: the retail total (`total_price`) lives on the order, but what you actually owe lives only on each line item, as `cost` and `shipping_cost` -- there is no `total_cost` anywhere on the order itself. So the margin is not a subtraction between two fields on one record, it is a subtraction between one field and the sum of a nested array, and an order split across two print providers has two costs to add up before the question can even be asked.
 

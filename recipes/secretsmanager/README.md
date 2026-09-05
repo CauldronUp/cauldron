@@ -2,11 +2,13 @@
 
 Emulates the AWS Secrets Manager API (2017-10-17), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**15 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs real AWS credentials. The credential check itself was verified directly against secretsmanager.us-east-1.amazonaws.com, unsigned, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: a request with no Authorization header at all answers 400 `UnrecognizedClientException`, "The security token included in the request is invalid." -- the same sentence this file already had, but paired with the wrong status and code. The 403 `InvalidClientTokenId` this file had instead is a real AWS error too, just for a different failure (a signed request naming a revoked access key) that this probe could not produce without one.
 
 A secret's ARN isn't derivable from its name: Secrets Manager appends six random characters, so `prod/db` becomes an ARN ending `prod/db-AbCdEf`, and code (or an IAM policy) that builds ARNs by hand matches nothing. `SecretString` and `SecretBinary` are alternatives, never both, so `JSON.parse(s.SecretString)` throws on undefined rather than reporting a type problem.
 

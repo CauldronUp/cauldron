@@ -8,6 +8,8 @@ Every case here cites documentation rather than an observation. The Recipe's own
 
 ## What this Recipe found
 
+Checked live against api.planetscale.com, unauthenticated, 2026-09-05: this Recipe's own documentation host, api-docs.planetscale.com, no longer resolves at all (the reference moved to planetscale.com/docs; the API host itself is unchanged). The credential question also answers differently depending on the route -- `GET /v1/organizations` refuses with `{"code":"unauthorized","message":"Requires authentication"}`, not the "Unauthorized." this file had from documentation, while every route this Recipe actually serves takes an `{organization}` path segment and resolves that organization -- 404 if it does not exist -- before ever checking the credential at all. That is the same order-of-checks shape this project's own Auth documentation calls out by name elsewhere; no case here can honestly assert it in context, because doing so would need a route this Recipe does not model, so it is described rather than encoded as verified.
+
 The field called `state` on a PlanetScale deploy request is not the state of the deployment -- it is whether the review is open or closed, while a completely different field, `deployment_state`, tracks whether the schema change actually shipped. A request that was opened and closed without ever deploying reads `state: closed`, identical to one whose migration ran an hour ago, so a dashboard built around the field with the more obvious name is confidently wrong in the safe-looking direction.
 
 The identifier a client would naturally store also cannot address the resource: a deploy request has a globally unique `id`, but every path takes its `number` instead, which is scoped per database -- so `1` exists in every database an organization owns, and storing the id gets a 404 that looks like a deleted record. A deploy request also outlives the branch it came from; `branch` still holds the branch name after that branch is deleted, and only a separate `branch_deleted` boolean says it is gone.
@@ -16,7 +18,7 @@ The ten endpoints that actually move a deploy through its lifecycle, deploy, app
 
 ## Sources
 
-- Documentation: https://api-docs.planetscale.com/reference/
+- Documentation: https://planetscale.com/docs/openapi.yaml (api-docs.planetscale.com, cited historically, no longer resolves)
 - No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.

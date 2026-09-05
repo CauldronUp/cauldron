@@ -2,11 +2,13 @@
 
 Emulates the PayPal API (v2), for local development and tests.
 
-**13 conformance cases, none checked against a live API.**
+**15 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything that needs a sandbox account still cites documentation rather than an observation -- the Recipe's own header says why, and that reason is the finding as often as not. The two auth failures were checked directly against api-m.paypal.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+A missing Authorization header and a fictitious bearer token are not the same failure, checked live: the first answers `{"name":"AUTHENTICATION_FAILURE",...,"links":[...]}` and the second answers a bare OAuth2 shape, `{"error":"invalid_token","error_description":"..."}`, with no field in common between them. Code that learns PayPal's error shape from the easier case to write -- a missing header -- cannot read the one it will actually hit in production: a token that expired.
 
 An order that comes back `APPROVED` has not been paid -- the buyer returned from PayPal, the order says APPROVED, and no money has moved until a separate capture call happens. An order left approved and never captured is a sale that never happened while looking, in every log, exactly like one that did; this is the single most expensive misunderstanding in the API. The `links` array is the actual flow control: a CREATED order carries an approve link and an APPROVED one does not, because approving is already done, so code that indexes `links[1]` instead of matching on `rel` reads a different link at each step and eventually sends a buyer somewhere meaningless.
 

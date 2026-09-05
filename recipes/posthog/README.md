@@ -2,11 +2,13 @@
 
 Emulates the PostHog API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**14 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a project this Recipe cannot fabricate. The credential check itself was verified directly against us.posthog.com on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: an absent credential and a fictitious one are two different DRF error bodies, not one message repeated. No Authorization header at all answers `{"code":"not_authenticated","detail":"Authentication credentials were not provided."}`; a syntactically fine but fake personal key answers `{"code":"authentication_failed","detail":"Personal API key found in request Authorization header is invalid."}` -- a different code and a different sentence. This file had modelled a single generic message under `authentication_failed` for both.
 
 PostHog's feature-flag API serves the rules, active, a rollout percentage, conditions, not the answer for any particular user; evaluating those rules against a person's properties happens locally in the SDK, so reading `active` and treating it as "this user has the flag on" is wrong for everybody outside the rollout. A rollout percentage of zero is not the same as the flag being off, either: the flag is still live and its conditions still evaluated, so anyone matching an override still gets it, which makes turning a flag off and setting it to 0% two different acts with very different blast radii.
 

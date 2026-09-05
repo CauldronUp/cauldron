@@ -2,11 +2,13 @@
 
 Emulates the AWS SES API (v2), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**12 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs real AWS credentials. The credential check itself was verified directly against email.us-east-1.amazonaws.com, unsigned, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: a request with no Authorization header at all answers `{"message":"Missing Authentication Token"}` with the machine type carried in a response header, `x-amzn-ErrorType`, not in the body at all. This REST-routed AWS service puts its error type somewhere different from a JSON-1.1 one like Secrets Manager, and this file had assumed the body convention here too, pairing the right status with the wrong code and the wrong sentence.
 
 A successful send means accepted, not delivered. `SendEmail` answers 200 with a `MessageId`, and that's a promise to try -- the bounce, if there is one, arrives minutes later on a completely separate channel, so code that treats the 200 as delivery reports a hundred percent success rate regardless of what actually happened.
 

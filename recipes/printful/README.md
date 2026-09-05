@@ -2,11 +2,13 @@
 
 Emulates the Printful API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**16 conformance cases, 4 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real store. Those checks were verified directly against api.printful.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: an absent credential and a fictitious one are different sentences under the same code -- `{"code":401,"result":"Unauthorized","error":{"reason":"Unauthorized","message":"Unauthorized"}}` versus the same shape naming the token as the problem, `"The access token provided is invalid."` This file had modelled one message, "Invalid or missing API key.", for both. Routing runs ahead of the credential too, and is not one shape either: an unrouted path answers "Page not found." while a wrong method on a real path answers a genuine 404 (not 405) reading just "Not found" -- neither needs a credential at all.
 
 A Printful order carries two full sets of money with identical field names inside each -- `costs` (what Printful charges you) and `retail_costs` (what you charged your customer) both have their own `subtotal`, `shipping`, `tax`, and `total`, with nothing in either name saying which is which. Reading `costs.total` as revenue reports your supplier's invoice as income; reading `retail_costs.total` as cost of goods reports your own price as what you paid. They are not even guaranteed to share a currency -- Printful bills in the store's currency while `retail_costs` reflects whatever the customer actually paid, so one order can carry two totals in two currencies, each with its own easily-ignored currency field.
 

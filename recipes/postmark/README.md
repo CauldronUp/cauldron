@@ -2,11 +2,13 @@
 
 Emulates the Postmark API (1.0), for local development and tests.
 
-**7 conformance cases, none checked against a live API.**
+**9 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real server token. The credential and routing checks were verified directly against api.postmarkapp.com on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: no Server-Token header at all and a fictitious one answer the identical `{"ErrorCode":10,"Message":"Request does not contain a valid Server token."}` -- this file had assumed different wording for the same code. Routing also runs ahead of the credential: a wrong method on a real path answers a genuinely empty 405, zero bytes, with no token sent at all, while the same path with a real method and no token still gets the 401 above.
 
 A successful Postmark send carries `ErrorCode: 0` and `Message: "OK"`, so a client cannot tell success from failure by whether an error field is present -- it has to actually read the code. Plenty of integrations check for the absence of an error and get it right only by accident, since the field is always there either way.
 

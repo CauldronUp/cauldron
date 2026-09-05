@@ -2,11 +2,13 @@
 
 Emulates the replicate API (v1), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**13 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real account. The credential check itself was verified directly against api.replicate.com on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: a missing credential and a present-but-wrong one (whether the wrong scheme word or the right one with a fictitious value) answer sentences one word apart, "You did not pass an authentication token" versus "You did not pass a valid authentication token" -- both under the title "Unauthenticated", which this file had not modelled at all, and neither the "You did not provide a valid API token" this file had assumed. An unrouted path and a wrong method both land on the missing-credential sentence too, so the credential is checked first.
 
 A newly created Replicate prediction returns immediately with `status: "starting"` and no `output` property at all, not null, absent, and only once it moves to `processing` does output start to appear, incrementally for streaming models. Code reading `prediction.output` right after creation gets undefined, and code waiting for output to become non-null is waiting for a key that does not exist yet.
 

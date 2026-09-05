@@ -2,11 +2,13 @@
 
 Emulates the Resend API (v1), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**11 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real account. The credential check itself was verified directly against api.resend.com on 2026-09-05.
 
 ## What this Recipe found
+
+Checked live: a missing credential and a wrong one are not just different sentences, they are different HTTP statuses. No Authorization header answers 401 `{"name":"missing_api_key","message":"Missing API Key"}`; a syntactically fine but fictitious bearer answers 400, not 401, `{"name":"validation_error","message":"API key is invalid"}` -- a key that is definitely wrong is, on the wire, a bad request rather than an authentication failure.
 
 Resend's `last_event` is exactly that, the last event, not a history, so a message that was delivered and later complained about reads `"complained"` with the delivery outcome simply gone, and there is no other endpoint that remembers it happened. A dashboard built by polling this field for delivered messages undercounts permanently rather than temporarily. A send itself returns only an id, meaning accepted rather than delivered, the same shape and the same available mistake as SES.
 

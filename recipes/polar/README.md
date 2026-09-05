@@ -2,11 +2,13 @@
 
 Emulates the Polar API (2026-10), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**16 conformance cases, 4 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything about grants, benefits, and pagination still cites documentation rather than an observation, because reaching it needs an organization this Recipe cannot fabricate. The credential and routing behaviour was verified directly against api.polar.sh, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+Routing is checked before the credential, checked live: an unrouted path answers 404 and a wrong method answers 405, neither needing anything in the Authorization header -- the opposite arrangement from most bearer APIs in this collection. And an absent credential is not the same failure as a wrong one: no header at all answers `{"error":"Unauthorized","detail":"Unauthorized"}`, while a syntactically fine but fictitious bearer token answers an OAuth2 introspection shape instead, `{"error":"invalid_token","error_description":"..."}`, with no `detail` field at all. This file had modelled one message, "Invalid token.", for both.
 
 Paying for something and receiving it are two different Polar records, and the second one can fail permanently on its own. A `BenefitGrant` carries `is_granted`, `granted_at`, `is_revoked`, `revoked_at`, and a separate `error` object -- four real states rather than two: granted, on its way, revoked, or failed for good with the customer having paid for something they will never get. The order itself still shows as succeeded; nothing about it says the grant behind it died. The default listing view does not separate these either -- `is_granted` is a filter that is off by default, so the ordinary view of a customer's entitlements mixes what they actually have with what silently failed, and counting rows counts both.
 

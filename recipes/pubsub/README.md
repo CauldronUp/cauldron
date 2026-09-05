@@ -2,11 +2,13 @@
 
 Emulates the Google Pub/Sub API (v1), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**13 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real project. Those checks were verified directly against pubsub.googleapis.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+No credential at all and a wrong one are not just different sentences, checked live -- they are different HTTP statuses. No Authorization header answers 403 PERMISSION_DENIED, refused for naming nobody; a syntactically fine but fictitious bearer answers 401 UNAUTHENTICATED instead, and the sentence this file already had was a truncation of the real one. An unrouted path never reaches Pub/Sub's own error handling at all -- it answers Google's generic front-end 404 HTML page, needing no credential either.
 
 Every Pub/Sub message body arrives base64-encoded, and reading `message.data` directly gets a string that looks plausible rather than obviously wrong -- it has a length, it will sit happily in a database, and nothing about it screams "decode me first." This is, per the header, the single most reproduced mistake against this API. Pulling nothing back returns an object with no `receivedMessages` key at all, so a loop written as `for (const m of response.receivedMessages)` throws on the quietest possible input, the same shape SQS has, and not a coincidence.
 

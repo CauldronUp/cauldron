@@ -2,11 +2,13 @@
 
 Emulates the Pusher API (v1), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**13 conformance cases, 6 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything about publishing, channel state, and pagination still cites documentation rather than an observation, because reaching it needs a real app. The credential and routing checks were verified directly against api-mt1.pusher.com, unauthenticated, on 2026-09-05.
 
 ## What this Recipe found
+
+An ordinary unauthenticated request does not get a crafted refusal at all, checked live: it crashes with sixteen bytes of plain text, "expected string" -- a parameter-parsing failure surfacing as the response, not a message about a key or a signature, and true whether the request carries no auth_key or a fictitious one. The signature-mismatch sentence this file already modelled is a different, deeper failure that needs a real app secret to produce. Routing also needs no credential: an unrouted path and a wrong method both answer plain-text "404 NOT FOUND".
 
 Publishing to a Pusher channel answers with a bare empty object, `{}`, not an id, not a count, not a status, so there is nothing to correlate a later event against, and code that reads `response.id` off a successful call gets undefined. The channel list is a map keyed by channel name rather than an array, so looping over it as a list finds nothing, and a channel with no occupants is simply absent from the map rather than present with a zero.
 

@@ -2,13 +2,15 @@
 
 Emulates the QuickBooks API (v3), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real company. The credential check itself was verified directly against quickbooks.api.intuit.com on 2026-09-05.
 
 ## What this Recipe found
 
-A QuickBooks list response is nested two levels deep under a capitalized, resource-specific key -- a customer list arrives as `QueryResponse.Customer`, so code reading `data` or `customers` at either the top level or the first level finds nothing. Failures arrive under `Fault.Error` as an array, and the HTTP status can still be 200 for a batch request, so code reading a top-level error message finds nothing there either. `SyncToken`, the optimistic-concurrency check on every record, is a string of digits -- sending a stale one is refused, and sending none at all silently overwrites whatever changed since the record was last read.
+With no Accept header at all, QuickBooks answers XML, not JSON, for every failure -- checked with no credential, a fictitious bearer, an unrouted path, and a wrong method, all four landing on the identical authentication failure. Adding `Accept: application/json` changes more than the wire format: the envelope this file had modelled as `Fault.Error`, read straight from the XML element names without being tested against the JSON body, is actually bottom-cased on the wire -- `fault.error`, `message`, `code`, all lowercase, with `queryResponse` (also lowercase) sitting right there as a sibling field in the same body. Whether that same rule reaches deeper field names like `Customer.DisplayName` is now an open question this file flags rather than guesses at, since confirming it needs a real company. The failure's own `code` is also a string of digits ("3200"), not the number this file had been sending.
+
+Failures arrive under `fault.error` as an array, and the HTTP status can still be 200 for a batch request, so code reading a top-level error message finds nothing there either. `SyncToken`, the optimistic-concurrency check on every record, is a string of digits -- sending a stale one is refused, and sending none at all silently overwrites whatever changed since the record was last read.
 
 ## Sources
 
