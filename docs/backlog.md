@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**30 routes across 15 Recipes** still page by a parameter nobody named.
+**22 routes across 11 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1345,6 +1345,41 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Eight of the routes that declared paging with a parameter left unnamed are
+settled, and FlightAware is the one worth reading twice. AeroAPI's only two
+paging parameters are `cursor` and `max_pages`, and `max_pages` is not a page
+size -- "Maximum number of **pages** to fetch", so a client that read it as one
+would ask for 2 and be billed for two whole pages. There is no size parameter at
+all. The page is **fifteen**, and FlightAware says so on its *pricing* page
+rather than in its API description: "Pricing is based on result sets, with one
+set equaling 15 records", beside "one page being equivalent to one result set".
+The page size is a billing unit. The Recipe had been declaring fifty, which was
+nobody's number.
+
+That correction broke a conformance case, which is the useful part. The case sent
+`?limit=1` and asserted a `links.next`, and it had always passed -- because the
+Recipe read `limit` too, so the emulator produced a short page in response to a
+parameter AeroAPI has never had, and the next link was the fake answering its own
+invention. With the size named `"-"` the parameter went inert and the link
+vanished. The fix is the one a real caller has: a fixture with sixteen airports
+against a page of fifteen. That is the ninth conformance case this sweep has
+found asserting behaviour that existed only because the Recipe and the case
+shared a mistake.
+
+ClinicalTrials.gov retires a claim rather than adding one. Its Recipe said the
+position was deliberately undeclared because "nothing here ever reached a second
+page, and a name nobody has seen the API answer to is a guess whatever its
+provenance". It was walked on 2026-09-05: `pageSize=2`, follow `pageToken`, and
+records three and four come back -- not eleven and twelve. Worth having checked,
+because the tokens for `pageSize=2` and `pageSize=10` share their first twenty
+characters and only diverge after that, so a client comparing cursors by prefix
+sees two different positions as one page.
+
+100ms has a page size **floor**, which is rarer than a cap: "Default : 10,
+Allowed values : Min : 10, Max : 100". A client asking for two rooms is answered
+with ten and not told. There is a key for the ceiling and none for the floor, so
+that one is written in prose beside the declaration.
 
 Sixteen more came out of the providers' own descriptions rather than out of a
 response, and one of them argues against trusting a machine-readable spec on its
