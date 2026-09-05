@@ -2,14 +2,16 @@
 
 Emulates the HubSpot API (v3), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real portal; the refusal cases were struck live, unauthenticated, against api.hubapi.com.
 
 ## What writing this Recipe changed
 
 It nests every business attribute under `properties`, so a client reading
 `contact.email` finds nothing and has to know to look one level down.
+
+The live probe found this file's error envelope wrong in two ways: the category value lives under a field literally called `category`, not `code`, and every failure carries a constant `"status":"error"` beside it, neither of which this file modelled. The authentication message was also truncated -- the real sentence continues past the first period to explain OAuth 2.0 -- and a missing credential and an invented one get the identical refusal. An unrouted path answers HubSpot's own branded HTML 404 before authentication is ever consulted, and a wrong method on a real path is a genuine empty 405.
 
 ## Sources
 

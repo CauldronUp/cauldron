@@ -77,6 +77,35 @@
 #   - Buckets, ACLs, HMAC keys, notifications and the rest are absent.
 #     Objects only.
 #
+# Probed live, unauthenticated, on 2026-09-05, against storage.googleapis.com:
+#
+#   1. GET .../b/{bucket}/o against a bucket name this task invented, with
+#      no credential at all, answers 404 {"error":{"code":404,"message":
+#      "The specified bucket does not exist.","errors":[...]}} -- GCS
+#      treats an anonymous request as a public-access attempt and checks
+#      whether the bucket exists (and would be readable) before ever
+#      validating a credential that was never sent. The same route with an
+#      invented Bearer token answers a completely different failure first:
+#      401 {"error":{"code":401,"message":"Invalid Credentials",
+#      "errors":[...]}} -- no "status" string anywhere in either body,
+#      which this file's own code_field:status mapping invented; fixed on
+#      authentication_error below. Not modelled as a general absent/present
+#      split: this Recipe's fixture bucket has real seeded objects and is
+#      "existing" from the fixture's own perspective, so importing "no
+#      credential means check existence first" here would teach a bucket
+#      the fixture treats as populated to answer as though it were not
+#      there. Confirmed against a real, live public bucket
+#      (gcp-public-data-landsat) for context: reading a genuinely public
+#      bucket's objects needs no credential at all and answers normally,
+#      which is the reason GCS can tell "does not exist" apart from
+#      "exists and needs a token" without ever checking one.
+#   2. GET .../not-a-real-endpoint and PATCH on the objects-listing route (a
+#      method this Recipe does not declare for it), both with no
+#      credential, answer the identical plain-text "Not Found" -- not JSON,
+#      a different backend layer from the storage API's own error shape --
+#      reached without the credential mattering, which auth.after_routing
+#      below declares.
+#
 # The token and the ids below are fixtures and belong to no project.
 
 recipe: googlecloudstorage
@@ -91,6 +120,10 @@ auth:
   scheme: bearer
   header: Authorization
   prefix: "Bearer "
+  # Struck live with no credential at all: an unrouted path and a wrong
+  # method both answer before authentication is ever consulted. See the
+  # header.
+  after_routing: true
   keys:
     - ya29.cauldron-gcs-fixture-token
 
@@ -107,7 +140,13 @@ responses:
     style: nested
     key: error
     message_field: message
-    code_field: status
+    # Struck live twice, on two different failures: neither carries a
+    # "status" string at all. This is the older v1 JSON API shape --
+    # {code, message, errors[]} -- not the newer google.rpc.Status
+    # convention Gemini and the Address Validation API in this collection
+    # use, and code_field: status borrowed that convention wrongly before
+    # this probe.
+    code_field: "-"
     status_field: code
     type_field: "-"
 
@@ -205,20 +244,33 @@ routes:
       limit: 1000
 
 errors:
+  # Struck live with an invented Bearer token.
   authentication_error:
     status: 401
     message: Invalid Credentials
-    code: UNAUTHENTICATED
+
+  # Struck live with no credential at all: Google's own edge, plain text,
+  # not the storage API's JSON shape. Reached before authentication is
+  # ever consulted, which auth.after_routing declares.
+  unknown_route:
+    status: 404
+    style: text
+    message: "Not Found"
+
+  # Struck live against a real path with a method this Recipe does not
+  # declare for it: the identical plain-text 404 an unrouted path gets.
+  method_not_allowed:
+    status: 404
+    style: text
+    message: "Not Found"
 
   resource_missing:
     status: 404
     message: No such object.
-    code: NOT_FOUND
 
   invalid_request:
     status: 400
     message: Invalid Value
-    code: INVALID_ARGUMENT
 
 fixtures:
   empty: {}
@@ -276,6 +328,10 @@ fixtures:
         softDeleteTime: "2026-01-06T09:00:00.000Z"
         storageClass: NEARLINE
 
+# The resource cases below are read from Google's own discovery document
+# rather than a real project -- no bucket for one was ever created. The
+# refusal cases carrying a verified date were struck live, unauthenticated,
+# against storage.googleapis.com; see the header.
 conformance:
   - name: the flat listing has every object and no folders at all
     source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
@@ -412,7 +468,10 @@ conformance:
         - items[0]
 
   - name: a token the project does not know is refused
-    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    # Struck live: no "status" string anywhere in the real body -- this
+    # file had invented one before the probe.
+    source: https://storage.googleapis.com/storage/v1/b/cauldron-fixtures/o
+    verified: "2026-09-05"
     fixture: bucket
     request:
       method: GET
@@ -422,8 +481,9 @@ conformance:
     expect:
       status: 401
       body:
-        "error.status": UNAUTHENTICATED
         "error.message": Invalid Credentials
+      absent:
+        - "error.status"
 
   - name: a short page is not the last page
     source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
@@ -449,3 +509,30 @@ conformance:
         nextPageToken: '^.+$'
       absent:
         - items[2]
+
+  - name: a path this API does not route needs no credential either
+    # Struck live with no credential at all. Google's own edge, plain
+    # text, not the storage API's JSON shape -- reached before
+    # authentication is ever consulted, which auth.after_routing declares.
+    source: https://storage.googleapis.com/storage/v1/not-a-real-endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /storage/v1/not-a-real-endpoint
+    expect:
+      status: 404
+      body_matches: "Not Found"
+
+  - name: a wrong method on a real path is the identical plain-text 404
+    # PATCH on the objects-listing route, a method this Recipe does not
+    # declare for it. Struck live with no credential at all.
+    source: https://storage.googleapis.com/storage/v1/b/cauldron-fixtures/o
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /storage/v1/b/cauldron-fixtures/o
+    expect:
+      status: 404
+      body_matches: "Not Found"

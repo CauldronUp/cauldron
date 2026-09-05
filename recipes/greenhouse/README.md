@@ -2,9 +2,9 @@
 
 Emulates the Greenhouse API (v1), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**15 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real organisation, because a test candidate would be a fictional person in a real recruiter's pipeline. The refusal cases were struck live, unauthenticated, against harvest.greenhouse.io.
 
 ## What this Recipe found
 
@@ -13,6 +13,8 @@ A candidate is not an application. `GET /candidates` returns people, but the hir
 Rejection is not deletion: a rejected application still shows up in a plain list and still sits in the candidate's applications array, so a pipeline count that doesn't filter on status includes everyone ever turned down. A prospect -- someone sourced but never actually applied -- is a candidate with `is_prospect: true` and an application carrying `prospect: true`, no job attached until someone converts it, so an unfiltered funnel counts sourcing leads as applicants.
 
 Writes also need an `On-Behalf-Of` header naming a Greenhouse user id, while reads don't need it at all -- an integration whose tests only read meets this requirement for the first time in production, and the refusal names the header rather than the missing permission.
+
+The live probe found this file's declared authentication error was already exactly right: Greenhouse checks the credential before it looks at the path or the method at all, so a missing key, a wrong key, an unrouted path, and a wrong method on a real path all answer the identical 401.
 
 ## Sources
 

@@ -2,14 +2,16 @@
 
 Emulates the Discord API (v10), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource shapes cite documentation rather than an observation on a real guild; the refusal cases were struck live, unauthenticated, against discord.com/api/v10.
 
 ## What writing this Recipe changed
 
 Its snowflakes are numeric strings long enough that minting small integers
 would have let a rounding bug through unnoticed.
+
+The live probe found Discord's router resolves a request's path and method before it ever looks at authentication: an unmatched path and a wrong method on a declared route both answer before the credential is consulted, and only a route that genuinely matches falls through to the ordinary 401. The declared authentication error was already exactly right.
 
 ## Sources
 

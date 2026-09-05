@@ -2,9 +2,9 @@
 
 Emulates the Help Scout API (v2), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real mailbox, because a reply sends a real email. The refusal cases were struck live, unauthenticated, against api.helpscout.net.
 
 ## What this Recipe found
 
@@ -13,6 +13,8 @@ A thread of type `"note"` is internal and never shown to the customer, but it si
 The response is HAL: collections live under `_embedded` keyed by resource name, paging under a `page` object, and the next-page cursor as a URL inside `_links`. A client reaching for `data`, `results`, or a bare top-level array finds nothing at any of them.
 
 `status` has four values, and closed is only one of them: `"pending"` is a conversation someone has picked up but not answered, and `"spam"` still belongs to the customer and still comes back from a plain list. Treating anything not closed as still open miscounts both.
+
+The live probe found authentication failures live on a completely different layer from every other error in this API: a missing or invalid token answers a flat OAuth2 object (`{"error":"...","error_description":"..."}`, RFC 6750), not the `_embedded.errors` HAL shape this file's other failures use and had wrongly declared for this one too. A missing token and an invalid one also carry different codes and sentences, and Help Scout checks the credential before it looks at the path or the method at all.
 
 ## Sources
 

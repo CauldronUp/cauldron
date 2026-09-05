@@ -2,13 +2,15 @@
 
 Emulates the Freshdesk API (v2), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**13 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real help desk. Freshdesk is multi-tenant with no shared host, so the refusal cases were struck live, unauthenticated, against support.freshdesk.com -- Freshdesk's own help desk, running on its own product.
 
 ## What this Recipe found
 
 Status and priority are integer enums, not words -- a ticket's status is `2`, not `"open"`, with `4` meaning resolved and `5` meaning closed. Code that compares against a string never matches, and code that treats "not 5" as still open counts every resolved ticket as outstanding too.
+
+The live probe found that not every Freshdesk failure carries its sentence under `description`, the field this file's other errors use: a missing or wrong credential, and a wrong method on a real path, both put it under a plain `message` instead. An unrouted path answers before authentication is ever consulted, while a wrong method on a real path is a genuine 405 with a computed `Allow` header that matched exactly what came back live.
 
 Collections are bare arrays with paging carried in a `Link` header rather than in the body. Freshdesk also has no sandbox on most plans, so a test that creates a ticket against a real help desk can fire a live automation and email an actual customer -- there's no safe environment to point tests at short of a separate account that inevitably drifts.
 

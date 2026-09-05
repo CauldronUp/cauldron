@@ -2,13 +2,15 @@
 
 Emulates the Ecwid API (v3), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**15 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real store; the refusal cases were struck live, unauthenticated, against app.ecwid.com.
 
 ## What this Recipe found
 
 The default order listing quietly excludes abandoned carts. Ecwid's own docs say that with no filters set, the API returns all orders except unfinished ones -- to see them you have to ask for `paymentStatus=INCOMPLETE` by name. The response gives no sign anything was left out: `count` matches the array, paging matches `count`, and every number stays internally consistent. A shop reconciling takings never notices; a shop chasing cart recovery never learns to ask.
+
+The live probe found this file's own claim about authentication wrong: the document's worked example shows a JSON `{"errorMessage":"Access token is invalid."}` on a bad credential, and the real API answers zero bytes -- reproducible with no token, a wrong one, or a right-shaped nonsense one alike. An unrouted path and a wrong method on a real path get the same emptiness at their own status codes, needing no credential either.
 
 A handful of fields carry the same kind of trap. `acceptMarketing` is a boolean where `null` counts as a yes and only `false` means no, so the obvious `if (order.acceptMarketing)` check silently treats a genuine yes as a refusal. `discount` is documented as everything except the coupon discount, so the field with the obvious name is not the total order discount -- `couponDiscount` has to be added back in to get it. And `paymentMessage`, the reason a payment is pending, is cleared the moment the order becomes paid, so it's only ever visible while it doesn't matter yet.
 

@@ -12,6 +12,8 @@ An inactive token is a 200 with exactly one field in it. Introspecting a token t
 
 `scope` is a space-separated string, not an array, so `scope.includes("admin")` returns true for a token holding only `"administrator"` -- any substring test on it is a privilege check that can pass for scopes nobody actually granted. `aud`, sitting right beside it, actually is an array, so a client that learned the shape of one field gets the other wrong. And `exp`, `iat` and `nbf` are all RFC 7519 seconds, not the millisecond timestamps most JavaScript expects, so a date built from one without multiplying by 1000 lands in January 1970.
 
+A live check was attempted on 2026-09-05: Ory Hydra is self-hosted with no vendor-run public instance, and the one candidate found, Ory's own multi-tenant playground, resolves but answers a Cloudflare bot challenge on every Admin API path this Recipe models. The domain is real; nothing behind it was reachable.
+
 ## Sources
 
 - Documentation: https://www.ory.sh/docs/hydra/reference/api

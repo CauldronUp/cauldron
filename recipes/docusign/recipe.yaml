@@ -17,6 +17,33 @@
 #      matches. Emitting a number here would quietly fix a bug the caller has
 #      to handle.
 #
+# Probed live, unauthenticated, on 2026-09-05, against demo.docusign.net:
+#
+#   1. GET .../envelopes with no Authorization header at all does not answer
+#      what a token-shaped one gets. It answers 401
+#      {"errorCode":"PARTNER_AUTHENTICATION_FAILED","message":"The specified
+#      Integrator Key was not found or is disabled. An Integrator key was
+#      not specified."} -- naming an integrator key, not a token, because
+#      Docusign checks for one before it ever gets to looking at a bearer
+#      token. auth.absent_error below carries that split.
+#   2. The same route with a well-formed but invented bearer token answers
+#      401 {"errorCode":"AUTHORIZATION_INVALID_TOKEN","message":"The access
+#      token provided is expired, revoked or malformed."} -- exactly what
+#      this file already declared for authentication_error, unmodified by
+#      this probe.
+#   3. GET .../not-a-real-endpoint and DELETE on the real envelopes path (a
+#      method this Recipe does not declare for it) both answer 404 with zero
+#      bytes and no Content-Type, and both carry the identical non-standard
+#      HTTP reason phrase "The URL provided does not resolve to a resource."
+#      in place of "Not Found" -- checked with no credential presented at
+#      all, so the routing gateway answers before Docusign's application
+#      would. auth.after_routing below carries that ordering.
+#
+# Known fidelity gap: Go's net/http server always writes the canonical
+# reason phrase for a status code and has no way to substitute Docusign's
+# own "The URL provided does not resolve to a resource.", so this Recipe can
+# reproduce the 404 and the empty body and not the status line's own text.
+#
 # Tokens below are fixtures, not secrets.
 
 recipe: docusign
@@ -31,6 +58,14 @@ auth:
   scheme: bearer
   header: Authorization
   prefix: "Bearer "
+  # Struck live: an absent credential names a missing integrator key, not an
+  # invalid token, and that is a different sentence from a well-formed one
+  # that is simply wrong. See the header.
+  absent_error: no_integrator_key
+  # Struck live with no credential at all: an unrouted path and a wrong
+  # method both answer 404 before Docusign's application ever looks at
+  # authentication, and only a matched route falls through to the 401.
+  after_routing: true
   keys:
     - cauldron_docusign_token
 
@@ -182,10 +217,35 @@ errors:
       Retry-After: "3600"
       X-RateLimit-Remaining: "0"
 
+  # Struck live with a well-formed but invented bearer token, unmodified by
+  # the probe.
   authentication_error:
     status: 401
     code: AUTHORIZATION_INVALID_TOKEN
     message: The access token provided is expired, revoked or malformed.
+
+  # Struck live with no Authorization header at all: Docusign checks for an
+  # integrator key before it ever looks at a bearer token, and names that
+  # instead.
+  no_integrator_key:
+    status: 401
+    code: PARTNER_AUTHENTICATION_FAILED
+    message: "The specified Integrator Key was not found or is disabled. An Integrator key was not specified."
+
+  # Struck live with no credential at all. Zero bytes, no Content-Type --
+  # errors.unknown_route.empty reproduces that. What it cannot reproduce is
+  # the non-standard reason phrase live carries in the status line itself
+  # ("The URL provided does not resolve to a resource."); see the header.
+  unknown_route:
+    status: 404
+    empty: true
+
+  # Struck live against a real path with a method this Recipe does not
+  # declare for it (DELETE on the envelopes list). The identical empty body
+  # an unrouted path gets -- Docusign does not appear to distinguish the two.
+  method_not_allowed:
+    status: 404
+    empty: true
 
   resource_missing:
     status: 404
@@ -258,8 +318,11 @@ fixtures:
         status: created
         routingOrder: "2"
 
-# Conformance cases, read from Docusign's eSignature REST reference rather
-# than observed against a live account. The verify report says so.
+# Conformance cases. The resource shapes are read from Docusign's eSignature
+# REST reference rather than observed against a live account -- sending an
+# envelope emails a real person, so no account for one was ever created. The
+# refusal cases at the end are struck live, unauthenticated, and carry a
+# verified date; see the header.
 conformance:
   - name: delivered means opened, not signed
     source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/get/
@@ -404,3 +467,62 @@ conformance:
         envelopes[0].emailSubject: Signed last week
       absent:
         - envelopes[1]
+
+  - name: no credential at all names a missing integrator key, not a token
+    # Struck live. Docusign checks for an integrator key before it ever
+    # looks at a bearer token, so an absent credential gets a different
+    # sentence from a wrong one.
+    source: https://demo.docusign.net/restapi/v2.1/accounts/cauldron/envelopes
+    verified: "2026-09-05"
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes
+    expect:
+      status: 401
+      body:
+        errorCode: PARTNER_AUTHENTICATION_FAILED
+      matches:
+        message: "Integrator key"
+
+  - name: a well-formed invented token is a different failure entirely
+    source: https://demo.docusign.net/restapi/v2.1/accounts/cauldron/envelopes
+    verified: "2026-09-05"
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes
+      headers:
+        Authorization: "Bearer eyFakeTokenInventedForThisProbe0000000000000000"
+    expect:
+      status: 401
+      body:
+        errorCode: AUTHORIZATION_INVALID_TOKEN
+        message: The access token provided is expired, revoked or malformed.
+
+  - name: a path this API does not route needs no credential either
+    # Struck live with no credential at all. The router answers before
+    # Docusign's application ever looks at authentication, which
+    # auth.after_routing declares.
+    source: https://demo.docusign.net/restapi/v2.1/not-a-real-endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /restapi/v2.1/not-a-real-endpoint
+    expect:
+      status: 404
+      no_body: true
+
+  - name: a wrong method on a real path is the identical empty 404
+    # DELETE on the envelopes list, a method this Recipe does not declare
+    # for it. Struck live with no credential at all.
+    source: https://demo.docusign.net/restapi/v2.1/accounts/cauldron/envelopes
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /restapi/v2.1/accounts/cauldron/envelopes
+    expect:
+      status: 404
+      no_body: true

@@ -2,9 +2,9 @@
 
 Emulates the Hookdeck API (2024-03-01), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**15 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite Hookdeck's own OpenAPI description rather than an observation on a real project; the refusal cases were struck live, unauthenticated, against api.hookdeck.com.
 
 ## What this Recipe found
 
@@ -13,6 +13,8 @@ Every case here cites documentation rather than an observation. The Recipe's own
 The states also don't mean what their names suggest across layers: an event whose last two delivery attempts both failed is still `SCHEDULED`, because the next retry hasn't run yet -- `FAILED` on an event specifically means retries are exhausted, a different sentence entirely from `FAILED` on an attempt. Code that alerts on event status stays silent through every retry until the very end; code that alerts on individual attempts fires on failures that go on to succeed.
 
 Thirty-two of thirty-three documented attempt error codes mean the request never reached your server at all (DNS failures, connection resets, TLS errors) -- only one, `BAD_RESPONSE`, means your server actually answered and said no. An attempt that never reached you carries `response_status: null` rather than a 5xx, so code that counts failures by checking `response_status >= 500` misses every transport failure entirely.
+
+The live probe found authentication failures here are 12 bytes of plain text, "Unauthorized", not the JSON envelope this file declared and every other failure in this API actually uses. An unrouted path and a wrong method on a real path both answer Express's own default HTML 404 before authentication is ever consulted, naming the exact request that hit it.
 
 ## Sources
 

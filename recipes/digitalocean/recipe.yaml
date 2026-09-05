@@ -21,6 +21,39 @@
 #      which is a string that looks entirely reasonable right up until it is
 #      used as a key.
 #
+# Probed live, unauthenticated, on 2026-09-05, against api.digitalocean.com:
+#
+#   1. GET /v2/droplets with no Authorization header at all, with a
+#      well-shaped but invented Bearer token (dop_v1_ followed by 64 hex
+#      digits), and with a bare token carrying no "Bearer " prefix all
+#      answer the identical 401: {"id": "Unauthorized", "message":
+#      "Unable to authenticate you" }, Content-Type: application/json,
+#      64 bytes every time. That contradicts what this file's own errors
+#      table said before this probe: code: unauthorized, lowercase, with a
+#      trailing period on the message. Live, the id is capitalised
+#      ("Unauthorized", matching the reason phrase rather than the
+#      snake_case every other DigitalOcean error code below uses) and the
+#      message carries no period. Fixed below rather than left to disagree
+#      with what was actually struck.
+#   2. GET /v2/not-a-real-endpoint -- a path this API does not have --
+#      answers 404 with no credential presented at all: {"id":"not_found",
+#      "message":"Your request could not be routed."}, and POST to the same
+#      path answers identically. This is a different sentence from the
+#      401 above, and it arrives without DigitalOcean ever looking at
+#      authentication: the routing gateway answers before the application
+#      would. auth.after_routing below carries that ordering -- a matched
+#      route with no credential still gets the 401, and only a path this
+#      API does not route at all gets this 404 instead.
+#   3. PATCH /v2/droplets -- a real path, wrong method, no credential --
+#      answers a genuine 405 with zero bytes: Content-Length: 0, no
+#      Content-Type, no Allow header, nothing to parse. Cauldron's own
+#      405 handling always attaches a computed Allow header to a
+#      declared-405 method_not_allowed (see internal/runtime/handler.go,
+#      "Allow belongs on a 405 and nowhere else") -- a real gap between
+#      this emulator and this specific provider, stated here because nothing
+#      in the format lets a Recipe suppress it. The empty body itself is
+#      modelled faithfully with errors.method_not_allowed.empty.
+#
 # Known fidelity gaps, stated rather than hidden. DigitalOcean answers a create
 # with a links.actions array holding the action to poll, and the create route
 # below sends one -- the format attaches it, which this file used to say it
@@ -28,7 +61,9 @@
 # creates an action, so the link points at the one the fixtures carry rather
 # than at a new one. Its rate-limit headers are the draft
 # RateLimit-* set rather than Retry-After, which is modelled, but the per-hour
-# budget itself is not.
+# budget itself is not. And the 405 case just above: Cauldron always sends an
+# Allow header on a genuine 405, which the live gateway does not send at all --
+# modelled as faithfully as the format allows, not exactly.
 #
 # Tokens below are fixtures, not secrets.
 
@@ -47,6 +82,10 @@ auth:
   scheme: bearer
   header: Authorization
   prefix: "Bearer "
+  # Struck live with no credential at all: an unmatched path answers 404
+  # without DigitalOcean's application ever looking at authentication, and
+  # only a matched route falls through to the 401. See the header.
+  after_routing: true
   keys:
     - dop_v1_cauldron
 
@@ -267,10 +306,32 @@ errors:
       RateLimit-Remaining: "0"
       RateLimit-Reset: "1767225600"
 
+  # Struck live four separate ways -- no header, a well-shaped invented
+  # token, a token with no Bearer prefix, all against a real route -- and all
+  # four answer the identical 64 bytes. code is capitalised, matching the
+  # reason phrase rather than the snake_case every other error below uses,
+  # and the message carries no trailing period. Both used to be wrong here.
   authentication_error:
     status: 401
-    code: unauthorized
-    message: Unable to authenticate you.
+    code: Unauthorized
+    message: Unable to authenticate you
+
+  # Struck live with no credential at all: DigitalOcean's routing gateway
+  # answers this before the application ever looks at authentication, which
+  # auth.after_routing declares. A different sentence and a different id
+  # from the 401 above, for a path this API does not route at all.
+  unknown_route:
+    status: 404
+    code: not_found
+    message: Your request could not be routed.
+
+  # Struck live with no credential at all. Zero bytes -- no Content-Type, no
+  # body -- which errors.method_not_allowed.empty reproduces exactly. What
+  # it cannot reproduce is the missing Allow header: Cauldron always attaches
+  # one to a declared 405, and the live gateway sends none. See the header.
+  method_not_allowed:
+    status: 405
+    empty: true
 
   resource_missing:
     status: 404
@@ -369,8 +430,10 @@ fixtures:
         # Attached. Deleting it is refused until the droplet lets go.
         droplet_ids: "3164444"
 
-# Conformance cases, read from DigitalOcean's API reference rather than
-# observed against a live account. The verify report says so.
+# Conformance cases. The resource shapes below are read from DigitalOcean's
+# API reference rather than observed against a live account -- no token for
+# one was ever created or used. The refusal cases at the end are struck
+# live, unauthenticated, and carry a verified date; see the header.
 conformance:
   - name: a new droplet has no address yet
     source: https://docs.digitalocean.com/reference/api/api-reference/#operation/droplets_get
@@ -577,3 +640,67 @@ conformance:
         - code
         - error
         - errors
+
+  - name: no credential at all is Unauthorized, capitalised, no period
+    # Struck live with no Authorization header at all. The id this file
+    # declared before this probe was lowercase with a trailing period on the
+    # message -- neither matches what DigitalOcean actually sends.
+    source: https://api.digitalocean.com/v2/droplets
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/droplets
+    expect:
+      status: 401
+      body:
+        id: Unauthorized
+        message: Unable to authenticate you
+
+  - name: a well-shaped invented token gets the identical refusal
+    # dop_v1_ followed by 64 hex digits -- a syntactically plausible live
+    # token -- struck live and answered the same 64 bytes as no credential
+    # at all. DigitalOcean does not distinguish absent from wrong here.
+    source: https://api.digitalocean.com/v2/droplets
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/droplets
+      headers:
+        Authorization: Bearer dop_v1_0000000000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 401
+      body:
+        id: Unauthorized
+        message: Unable to authenticate you
+
+  - name: a path this API does not route is a different sentence, and needs no credential
+    # Struck live with no credential at all. This is not the 401 above: the
+    # routing gateway answers before DigitalOcean's application ever looks at
+    # authentication, which auth.after_routing declares.
+    source: https://api.digitalocean.com/v2/not-a-real-endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        id: not_found
+        message: Your request could not be routed.
+
+  - name: a wrong method on a real path is a genuine 405 with nothing in it
+    # Struck live with no credential at all: zero bytes, no Content-Type. The
+    # missing Allow header this same request carries live is not reproduced
+    # -- see the header for why the format cannot suppress it.
+    source: https://api.digitalocean.com/v2/droplets
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/droplets
+    expect:
+      status: 405
+      no_body: true

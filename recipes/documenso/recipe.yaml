@@ -29,6 +29,29 @@
 #      sequential signing sends the second signer their link before the first
 #      has done anything.
 #
+# Probed live, unauthenticated, on 2026-09-05, against app.documenso.com:
+#
+#   1. GET /api/v1/documents with no Authorization header at all does not
+#      answer 401. It answers 400, from request validation that runs before
+#      Documenso's own application does, with a completely different
+#      envelope from every other failure on this host: {"message":"Request
+#      validation failed","pathParameterErrors":null,"headerErrors":
+#      {"issues":[{"code":"invalid_type","expected":"string",
+#      "received":"undefined","path":["authorization"],"message":"Required"}],
+#      "name":"ZodError"},"queryParameterErrors":null,"bodyErrors":null}. This
+#      file declared 401 "Unauthorized" for this before the probe, which was
+#      wrong on both the status and the shape.
+#   2. The same route with a well-formed but invented token answers a
+#      completely different, much smaller body: 401 {"message":"Invalid
+#      token"} -- not "Unauthorized" either, which this file also declared
+#      wrongly before this probe. Documenso genuinely distinguishes an absent
+#      credential from a wrong one, in status code and in shape, and
+#      auth.absent_error below carries that split.
+#   3. GET /api/v1/not-a-real-endpoint answers 404 {"message":"Not Found"}.
+#   4. PATCH /api/v1/documents -- a real path, wrong method -- answers the
+#      identical 404 {"message":"Not Found"}, not a 405. Documenso does not
+#      appear to distinguish a wrong method from an unrouted path at all.
+#
 # Known fidelity gaps, stated rather than hidden:
 #
 #   - Cauldron sends no mail and produces no PDF. This Recipe covers the API
@@ -58,6 +81,14 @@ auth:
   # "Bearer" is a habit worth breaking.
   scheme: header
   header: Authorization
+  # Struck live: an absent header and a wrong one are two different statuses
+  # and two different envelopes, not one message covering both. See the
+  # header.
+  absent_error: missing_authorization
+  # Struck live with no credential at all: an unrouted path and a wrong
+  # method both answer 404 before Documenso's request validation ever runs,
+  # and only a route that matches falls through to the credential check.
+  after_routing: true
   keys:
     - api_cauldron000000000000000000000000
 
@@ -208,9 +239,42 @@ errors:
     status: 429
     message: Too many requests
 
+  # Struck live with a well-formed but invented token, header present. Not
+  # "Unauthorized" -- that was this file's guess before the probe.
   authentication_error:
     status: 401
-    message: Unauthorized
+    message: "Invalid token"
+
+  # Struck live with no Authorization header at all: 400, not 401, from
+  # request validation ahead of Documenso's own application, in an envelope
+  # this API's ordinary failures do not use anywhere else. See the header.
+  missing_authorization:
+    status: 400
+    message: "Request validation failed"
+    fields:
+      pathParameterErrors: null
+      queryParameterErrors: null
+      bodyErrors: null
+      headerErrors:
+        name: ZodError
+        issues:
+          - code: invalid_type
+            expected: string
+            received: undefined
+            path: [authorization]
+            message: Required
+
+  # Struck live with no credential at all. The same 404 an unrouted path
+  # gets -- see errors.unknown_route -- because Documenso does not appear to
+  # distinguish a wrong method from a path it does not have.
+  method_not_allowed:
+    status: 404
+    message: "Not Found"
+
+  # Struck live with no credential at all.
+  unknown_route:
+    status: 404
+    message: "Not Found"
 
   resource_missing:
     status: 404
@@ -306,8 +370,10 @@ fixtures:
         createdAt: "2026-01-15T08:00:00.000Z"
 
 
-# Conformance cases, read from the Documenso public API documentation rather
-# than observed against a live instance. The verify report says so.
+# Conformance cases. The resource shapes are read from the Documenso public
+# API documentation rather than observed against a live instance -- no
+# account for one was ever created. The refusal cases at the end are struck
+# live, unauthenticated, and carry a verified date; see the header.
 conformance:
   - name: a document status is not a recipient status
     source: https://docs.documenso.com/developers/public-api
@@ -484,6 +550,10 @@ conformance:
         - signingOrder
 
   - name: the key goes in Authorization with no scheme
+    # A "Bearer " prefix makes the header value not match any key this
+    # Recipe holds, the same Rejected verdict a plain invented token gets --
+    # see "a well-formed invented token is a different failure entirely",
+    # struck live, for the message this now carries.
     source: https://docs.documenso.com/developers/public-api/authentication
     fixture: small-team
     request:
@@ -494,7 +564,7 @@ conformance:
     expect:
       status: 401
       body:
-        message: Unauthorized
+        message: "Invalid token"
       absent:
         - error
         - errors
@@ -610,3 +680,66 @@ conformance:
         absent:
           - type
           - data.object
+
+  - name: no Authorization header at all is a 400, not a 401
+    # Struck live. Request validation runs ahead of Documenso's own
+    # application and answers before any credential is examined -- a
+    # completely different envelope from the 401 a wrong token gets.
+    source: https://app.documenso.com/api/v1/documents
+    verified: "2026-09-05"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents
+    expect:
+      status: 400
+      body:
+        message: "Request validation failed"
+        headerErrors.name: ZodError
+        "headerErrors.issues[0].path[0]": authorization
+        "headerErrors.issues[0].message": Required
+      absent:
+        - documents
+
+  - name: a well-formed invented token is a different failure entirely
+    source: https://app.documenso.com/api/v1/documents
+    verified: "2026-09-05"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents
+      headers:
+        Authorization: api_totallyinventedtoken0000000000000
+    expect:
+      status: 401
+      body:
+        message: "Invalid token"
+      absent:
+        - headerErrors
+        - documents
+
+  - name: a path this API does not route needs no credential either
+    source: https://app.documenso.com/api/v1/not-a-real-endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        message: "Not Found"
+
+  - name: a wrong method is the identical 404, not a 405
+    # Struck live with no credential at all. Documenso does not appear to
+    # distinguish a wrong method from a path it does not have.
+    source: https://app.documenso.com/api/v1/documents
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/v1/documents
+    expect:
+      status: 404
+      body:
+        message: "Not Found"

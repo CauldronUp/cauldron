@@ -2,9 +2,9 @@
 
 Emulates the Google Address Validation API (v1), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite protocol buffer definitions rather than an observation on a real project, because calling this API needs a billed key; the refusal cases were struck live, unauthenticated, against addressvalidation.googleapis.com.
 
 ## What this Recipe found
 
@@ -13,6 +13,8 @@ There is no field that says whether an address is valid. The verdict is spread a
 `OTHER` is the granularity that reads like a shrug and actually means undeliverable -- it's documented as every non-deliverable granularity bucketed together. And Google will silently correct part of an address and only mention it in a boolean nested several levels down inside one component (`replaced`), with the corrected value sitting in `formattedAddress` and no top-level flag announcing that anything changed.
 
 Field names on the wire are also camelCase while the API is published as a snake_case proto -- `address_complete` becomes `addressComplete` -- so a client written straight from the proto definition reads nothing at all.
+
+The live probe found the declared authentication error had never actually been reachable: it was named `invalid_key`, which nothing in this file wired to a credential failure, so every unauthenticated request fell through to a generic default instead. It is now named correctly, its content was already right, and a missing key entirely turns out to be a different failure altogether -- 403 `PERMISSION_DENIED`, naming an unregistered caller rather than a bad key.
 
 ## Sources
 

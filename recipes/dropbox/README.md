@@ -2,9 +2,9 @@
 
 Emulates the Dropbox API (2), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**12 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource shapes cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against api.dropboxapi.com.
 
 ## What writing this Recipe changed
 
@@ -15,6 +15,8 @@ on that field at all.
 
 The emulator had been sending it correctly the whole time, while every case that
 mentioned it failed.
+
+The live probe found that a missing Authorization header and a wrong one fail completely differently: no header at all gets plain text naming the function that was called, while a well-formed invented token gets the JSON `invalid_access_token` shape this file already declared. An unrouted path answers with Dropbox's own branded marketing-site 404 page, a different backend entirely from the API. A wrong method on a real path turned out not to be modellable at all: Dropbox resolves the function from the path alone and checks the credential before ever looking at the HTTP method, which this format cannot reproduce alongside an unrouted path correctly bypassing authentication -- stated in the header rather than asserted around.
 
 ## Sources
 

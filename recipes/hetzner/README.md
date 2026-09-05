@@ -2,9 +2,9 @@
 
 Emulates the hetzner API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**14 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The resource cases cite documentation rather than an observation on a real project, because a token creates real machines and bills for them. The refusal cases were struck live, unauthenticated, against api.hetzner.cloud.
 
 ## What this Recipe found
 
@@ -13,6 +13,8 @@ Powering off a server does not answer with the server. Every mutation in this AP
 An action can fail well after its 201 succeeded -- `status` moves from `running` to `success` or `error` on its own timeline, and the error, when it comes, is an object (`{code, message}`), not a string, so logging it directly prints `[object Object]`. A server itself has nine possible statuses, and "not running" covers eight of them (initializing, starting, stopping, off, deleting, migrating, rebuilding, unknown), so code that only branches on `running` versus `off` mishandles seven cases, two of which are just ordinary booting.
 
 And the one that costs an actual machine: creating a server without an SSH key returns a `root_password` exactly once, alongside the action, and no other endpoint ever surfaces it again. A client that reads the action out of that response and discards the rest ends up with a server it can never reach.
+
+The live probe found this file's authentication error wrong: the real sentence is "the token you have provided is invalid," not "unable to authenticate," and a missing token entirely gets a third sentence, "token is required," under the same code. An unrouted path answers a distinct 404 before authentication is ever consulted -- though a wrong method on a real path does not follow the same rule, and answers the credential refusal instead, a narrower distinction this file's format cannot carry alongside the first.
 
 ## Sources
 

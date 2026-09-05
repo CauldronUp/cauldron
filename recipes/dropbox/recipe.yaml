@@ -18,6 +18,38 @@
 #   3. Every object declares its kind in a field literally named ".tag". A
 #      leading dot is part of the name, not a path.
 #
+# Probed live, unauthenticated, on 2026-09-05, against api.dropboxapi.com:
+#
+#   1. POST /2/files/get_metadata with a valid JSON body and no Authorization
+#      header at all does not answer the JSON invalid_access_token shape
+#      this file already declared. It answers 400, plain text, naming the
+#      function: Error in call to API function "files/get_metadata":
+#      Invalid authorization value in HTTP header/URL parameter. A
+#      well-formed but invented bearer token gets the JSON shape instead --
+#      401 {"error":{".tag":"invalid_access_token"},"error_summary":
+#      "invalid_access_token/"} -- exactly what this file already declared,
+#      unmodified by this probe. auth.absent_error below carries the split.
+#   2. GET on the same path (files/get_metadata takes only POST) answers the
+#      identical plain-text authorization error as point 1, naming the same
+#      function, rather than a 405 -- meaning Dropbox checks the credential
+#      by resolving the function from the path alone, before it ever looks
+#      at the HTTP method. Not modelled: Cauldron's router requires an exact
+#      method match to reach the credential check at all, so this Recipe
+#      cannot jointly reproduce both "an unmatched path is a 404" and "a
+#      wrong method on a matched path fails the same way the right one
+#      would" -- the same structural limit Airbrake's Recipe in this
+#      collection documents for its own method-ordering split.
+#   3. POST /2/files/not_a_real_endpoint -- a function this API does not
+#      have -- answers 404 with Dropbox's own branded marketing-site page,
+#      text/html, not the API's JSON shape at all: a different backend
+#      entirely, the same pattern Airbrake's Recipe found on its own
+#      unrouted path. auth.after_routing below carries the ordering this
+#      implies: the routing gateway answers before the API application
+#      would, which is also what wins the tradeoff in point 2 -- an
+#      unmatched path getting the right failure matters more than a wrong
+#      method on a real one getting a distinct 405 nobody was going to send
+#      on a POST-only API in the first place.
+#
 # Known fidelity gap, stated rather than hidden: list_folder returns the
 # account's files rather than one folder's, because the folder is chosen by a
 # body parameter that Cauldron cannot scope a listing on.
@@ -36,6 +68,13 @@ auth:
   scheme: bearer
   header: Authorization
   prefix: "Bearer "
+  # Struck live: an absent header is a plain-text 400 naming the function,
+  # not the JSON 401 a wrong token gets. See the header.
+  absent_error: missing_authorization
+  # Struck live with no credential at all: an unrouted path answers before
+  # the API application ever looks at authentication. See the header for the
+  # tradeoff this makes against a wrong method on a real path.
+  after_routing: true
   keys:
     - sl.cauldron
 
@@ -175,12 +214,45 @@ errors:
       error:
         ".tag": too_many_requests
 
+  # Struck live with a well-formed but invented bearer token, unmodified by
+  # the probe.
   authentication_error:
     status: 401
     message: invalid_access_token/
     fields:
       error:
         ".tag": invalid_access_token
+
+  # Struck live with no Authorization header at all against
+  # files/get_metadata: plain text, not JSON, naming the function this
+  # Recipe's own test happens to call. Dropbox reuses this shape with the
+  # function name substituted per endpoint -- narrowed here to the one route
+  # this Recipe actually struck.
+  missing_authorization:
+    status: 400
+    style: text
+    message: 'Error in call to API function "files/get_metadata": Invalid authorization value in HTTP header/URL parameter'
+
+  # Struck live with no credential at all: Dropbox's own branded
+  # marketing-site 404, not the API's JSON shape -- a different backend
+  # entirely, answering before the API application would. Not reproduced in
+  # full: almost none of the real page is information rather than
+  # boilerplate, so only a distinctive fragment is kept, the same choice
+  # Airbrake's Recipe in this collection makes for its own branded 404.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    message: |
+      <!DOCTYPE html>
+      <html>
+      <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+      <title>Dropbox - 404</title>
+      <!-- the rest of this page is Dropbox's own marketing-site shell and is
+           not reproduced here -- see the note above this block -->
+      <div id="errorbox">
+      <div class="not-found"> <h1>Error (404)</h1> We can't find the page you're looking for.
 
   # A missing path is 409, not 404. Dropbox reserves the 4xx codes for
   # transport problems and puts the outcome in the body.
@@ -249,8 +321,10 @@ fixtures:
         size: 512
         rev: "0146cauldron00000002"
 
-# Conformance cases, read from Dropbox's HTTP API documentation rather than
-# observed against a live account. The verify report says so.
+# Conformance cases. The resource shapes are read from Dropbox's HTTP API
+# documentation rather than observed against a real account -- no app folder
+# for one was ever created. The refusal cases at the end are struck live,
+# unauthenticated, and carry a verified date; see the header.
 conformance:
   - name: a missing path is a 409, not a 404
     source: https://www.dropbox.com/developers/documentation/http/documentation
@@ -279,6 +353,8 @@ conformance:
     request:
       method: POST
       path: /2/files/list_folder
+      headers:
+        Authorization: Bearer sl.wrong
       json:
         path: ""
     expect:
@@ -450,3 +526,52 @@ conformance:
           - event
           - data
           - data.object
+
+  - name: no credential at all is plain text naming the function, not JSON
+    # Struck live. A different status and a different shape from the JSON
+    # 401 a wrong token gets -- see auth.absent_error.
+    source: https://api.dropboxapi.com/2/files/get_metadata
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      json:
+        path: "/test.txt"
+    expect:
+      status: 400
+      body_matches: 'Invalid authorization value'
+
+  - name: a well-formed invented token is a different failure entirely
+    source: https://api.dropboxapi.com/2/files/get_metadata
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      headers:
+        Authorization: "Bearer sl.faketoken0000000000000000000000000000000000000000"
+      json:
+        path: "/test.txt"
+    expect:
+      status: 401
+      body:
+        error_summary: invalid_access_token/
+        error:
+          ".tag": invalid_access_token
+
+  - name: a path this API does not have is Dropbox's own branded 404
+    # Struck live with no credential at all. A different backend entirely --
+    # the marketing site's 404 page, not the API's JSON shape -- answering
+    # before the API application would.
+    source: https://api.dropboxapi.com/2/files/not_a_real_endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: POST
+      path: /2/files/not_a_real_endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body_matches: "We can't find the page you're looking for"

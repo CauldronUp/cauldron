@@ -13,6 +13,31 @@
 #   2. Timestamps are RFC 3339 strings, not Unix integers. Code that parses one
 #      does not quietly cope with the other.
 #
+# Probed live, unauthenticated, on 2026-09-05, against api.hubapi.com:
+#
+#   1. GET /crm/v3/objects/contacts with no credential at all, and again
+#      with an invented Bearer token, both answer the identical 401:
+#      {"status":"error","message":"Authentication credentials not found.
+#      This API supports OAuth 2.0 authentication and you can find more
+#      details at https://developers.hubspot.com/docs/methods/auth/
+#      oauth-overview","correlationId":"...","category":
+#      "INVALID_AUTHENTICATION"}. This file had declared only the first
+#      sentence and put the category value under a field called code,
+#      which the real body does not have at all -- the field is category,
+#      and a top-level "status":"error" sits beside it, both unmodelled
+#      before this probe. No absent/rejected split needed: HubSpot answers
+#      the identical sentence either way.
+#   2. GET /crm/v3/not-a-real-endpoint, no credential at all, answers 404
+#      with HubSpot's own branded web-app 404 page, HTML -- not the JSON
+#      shape this API's own failures use.
+#   3. PATCH /crm/v3/objects/contacts -- a real path, wrong method -- is a
+#      genuine 405 with zero bytes and an Allow: POST,GET,OPTIONS header,
+#      reached without the credential mattering, which auth.after_routing
+#      below declares for the unrouted-path case; the wrong-method case
+#      is not asserted on the exact Allow value, since Cauldron's computed
+#      header would not reproduce HubSpot's own ordering or its OPTIONS
+#      entry.
+#
 # Tokens below are fixtures, not secrets.
 
 recipe: hubspot
@@ -27,6 +52,10 @@ auth:
   scheme: bearer
   header: Authorization
   prefix: "Bearer "
+  # Struck live with no credential at all: an unrouted path and a wrong
+  # method both answer before authentication is ever consulted. See the
+  # header.
+  after_routing: true
   keys:
     - pat-na1-cauldron
 
@@ -35,9 +64,14 @@ responses:
     style: wrapped
     # HubSpot pages with an opaque "after" token nested two levels down.
     cursor_field: paging.next.after
+  # Struck live: the category value lives under a field called category,
+  # not code, and a constant "status":"error" sits beside the message --
+  # neither modelled before this probe.
   error:
     style: flat
+    code_field: category
     fields:
+      status: error
       correlationId: 00000000-0000-4000-8000-000000000000
 
 resources:
@@ -239,15 +273,42 @@ errors:
       X-HubSpot-RateLimit-Daily-Remaining: "0"
       Retry-After: "1"
 
+  # Struck live with no credential and with an invented Bearer token: the
+  # identical sentence either way, longer than this file declared before
+  # the probe.
   authentication_error:
     status: 401
     code: INVALID_AUTHENTICATION
-    message: Authentication credentials not found.
+    message: "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview"
 
   resource_missing:
     status: 404
     code: OBJECT_NOT_FOUND
     message: "resource not found: {detail}"
+
+  # Struck live with no credential at all: HubSpot's own branded web-app
+  # 404, HTML, not the JSON shape this API's own failures use -- reached
+  # before authentication is ever consulted, which auth.after_routing
+  # declares. Not reproduced in full: almost none of the real page is
+  # information rather than boilerplate framework markup.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html"
+    message: |
+      <!DOCTYPE html> <html lang=en><meta charset=utf-8><title>Error</title>
+      <!-- the rest of this page, a HubSpot-branded single-page-app error
+           shell, is not reproduced here -- see this note above -->
+      <h4>That page is nowhere to be found</h4>
+
+  # Struck live against a real path with a method this Recipe does not
+  # declare for it: a genuine 405, zero bytes, with a computed Allow header
+  # -- not asserted on its exact value, since HubSpot's own ordering and
+  # its OPTIONS entry are not what Cauldron's router would compute.
+  method_not_allowed:
+    status: 405
+    empty: true
 
   parameter_missing:
     status: 400
@@ -287,8 +348,10 @@ fixtures:
         domain: example.com
         industry: COMPUTER_SOFTWARE
 
-# Conformance cases, read from HubSpot's CRM API reference rather than observed
-# against a live portal. The verify report says so.
+# Conformance cases. The resource shapes are read from HubSpot's CRM API
+# reference rather than observed against a live portal -- no portal for one
+# was ever created. The refusal cases at the end are struck live,
+# unauthenticated, and carry a verified date; see the header.
 conformance:
   - name: business attributes are nested under properties
     source: https://developers.hubspot.com/docs/api/crm/contacts
@@ -452,3 +515,63 @@ conformance:
           - '[0].email'
           - data
           - data.object
+
+  - name: no credential at all is the same refusal as an invented one
+    source: https://api.hubapi.com/crm/v3/objects/contacts
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /crm/v3/objects/contacts
+    expect:
+      status: 401
+      body:
+        status: error
+        category: INVALID_AUTHENTICATION
+      matches:
+        message: "OAuth 2.0"
+
+  - name: an invented token gets the identical refusal
+    source: https://api.hubapi.com/crm/v3/objects/contacts
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /crm/v3/objects/contacts
+      headers:
+        Authorization: "Bearer pat-na1-totallyinventedwrongtoken0000"
+    expect:
+      status: 401
+      body:
+        status: error
+        category: INVALID_AUTHENTICATION
+      matches:
+        message: "OAuth 2.0"
+
+  - name: a path this API does not route is HubSpot's own branded 404
+    # Struck live with no credential at all. The router answers before
+    # authentication is ever consulted, which auth.after_routing declares.
+    source: https://api.hubapi.com/crm/v3/not-a-real-endpoint
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: GET
+      path: /crm/v3/not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html"
+      body_matches: "nowhere to be found"
+
+  - name: a wrong method on a real path is a genuine empty 405
+    # PATCH on /crm/v3/objects/contacts, a method this Recipe does not
+    # declare for it. Struck live with no credential at all.
+    source: https://api.hubapi.com/crm/v3/objects/contacts
+    verified: "2026-09-05"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /crm/v3/objects/contacts
+    expect:
+      status: 405
+      no_body: true
