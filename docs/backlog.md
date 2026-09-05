@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**266 more listings across 169 Recipes declare no paging at all**, and the
+**259 more listings across 166 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1326,6 +1326,25 @@ and the first collection large enough to notice will not be one of ours.
 They are counted apart rather than folded in, because they are not the same
 omission: one Recipe looked at paging and did not finish, the other has not
 looked.
+
+### A hundred and four of these can simply be asked
+
+The blocker recorded above is reaching the provider's description. For a large
+part of what is left, there is a better source than a description: the provider
+itself. **104 of the unstated routes sit on 64 Recipes that already carry a
+live-verified 200** -- this project has reached those hosts anonymously, which
+means their paging can be observed rather than read about.
+
+That is a better answer than a document, and the ones done that way have already
+paid. Chuck Norris's search **ignores a page size entirely**: `?query=kick`
+answers all 821 matches and `?query=kick&limit=2` answers the same 821, while
+the fake was paging it at ten -- so a client sending `limit=2` got two here and
+eight hundred and twenty-one from the provider. EPSS echoes `"offset": 0,
+"limit": 100, "total": 368543` straight back in the envelope this Recipe already
+serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
+position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
+and `?offset=5` answers the same hundred beginning with the same word, which is
+how an unrecognised parameter behaves.
 
 ### The Recipe often knew already
 
