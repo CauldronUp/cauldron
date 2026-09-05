@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**216 more listings across 142 Recipes declare no paging at all**, and the
+**212 more listings across 139 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,13 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Spaceflight News prints `limit` and `offset` in its own next link, and its
+default of ten happens to match the runtime's -- so the size was right by
+coincidence and the position never was. Nominatim reads a `limit` and has no
+position at all: a geocoder answers the best matches rather than a collection
+somebody walks. TfL's modes and line statuses come back whole, because London
+has the lines it has.
 
 **openFDA's default page size is one.** A bare request answers a single drug
 label with `meta.results {"skip": 0, "limit": 1, "total": 262663}` -- the API
