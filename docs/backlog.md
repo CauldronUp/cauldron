@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**38 routes across 19 Recipes** still page by a parameter nobody named.
+**37 routes across 18 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,20 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+Duffel had named its cursor and not its size, and the size happened to be the
+word the runtime supplies -- right by coincidence, which is not the same as
+checked. Its reference gives both numbers as well: "default 50, range 1-200".
+
+**Segment is the one that could not be settled, and why is the finding.** Its
+current Public API documents `pagination.count` and `pagination.cursor`, with a
+response carrying `next`, `current`, `previous` and `totalEntries` -- and two of
+those four response names are what this Recipe already declares. Its paths are
+not that API's. They are `/v1beta/workspaces/...`, the Config API, which
+Segment's current documentation does not describe. The envelope in that file
+came from one version and the routes from another, so declaring the current
+API's parameter names would deepen the mix rather than settle it. Recorded in
+the Recipe, left unstated.
 
 Paddle and Cloudinary are the same again, and Paddle is the sharper of the two.
 Its page size is `per_page` and its position is `after`, and its own reference
