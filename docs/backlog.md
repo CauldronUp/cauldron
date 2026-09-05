@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**112 routes across 53 Recipes** still page by a parameter nobody named.
+**99 routes across 47 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1058,6 +1058,26 @@ routes across forty Recipes were in exactly that state and neither counter could
 see one of them -- this one required an empty style, the one below required an
 empty everything. Naming one of the two is not naming them either, which is
 thirteen more.
+
+**Stripe was one of them.** Its own description names limit, "between 1 and 100,
+and the default is 10", and `starting_after` for the position, with
+`ending_before` for the other direction. It has no parameter called `cursor`,
+and this Recipe -- the one most of the collection's vocabulary was copied from,
+which is exactly why nobody looked -- declared the style, named neither, and
+sent one.
+
+Thirteen more went with it, all from descriptions those Recipes already record.
+Asana's `offset` is an opaque continuation token rather than an index, so its
+five listings are cursor paging under a parameter named like a page number.
+Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
+`starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
+Render had named its cursor and not its limit, and was right by luck -- which is
+not the same as having been checked.
+
+Notion's own case is the whole failure in one place. It sent `?limit=1`, a
+parameter Notion does not have, against a Recipe that was reading `limit` too --
+so the two wrongs agreed, a full page came back, and the case asserted a page it
+never asked for. It sends `page_size` now.
 
 Vercel's three are settled the same way and are the sharper example: its
 deployments and domains listings take `until`, its projects listing takes
