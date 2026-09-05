@@ -148,11 +148,18 @@ resources:
         type: boolean
         default: false
 
+  # GetAccount answers one object and not a collection of one. The collection
+  # name below is never sent -- the route that serves this collapses it away --
+  # and is kept only because the format asks every resource for one.
   account:
     collection: Accounts
     id:
       style: opaque
       length: 12
+      # SES sends no identifier for the account: GetAccountResponse has no
+      # such member. "-" is how a resource says the provider does not send
+      # one, and it is why the route below can drop it from returns.
+      field: "-"
     fields:
       # False while the account is in the sandbox, where every send to a
       # verified address succeeds and nothing else is possible.
@@ -167,10 +174,17 @@ resources:
       EnforcementStatus:
         type: string
         default: HEALTHY
+      # Both of these travel under SendQuota, not at the top level. AWS's own
+      # service model puts Max24HourSend, MaxSendRate and SentLast24Hours in a
+      # SendQuota shape, and this file had them flat -- so code reading
+      # account.SendQuota.Max24HourSend found nothing here and works against
+      # SES, which is the direction that ships broken.
       Max24HourSend:
         type: number
+        in: SendQuota
       SentLast24Hours:
         type: number
+        in: SendQuota
 
 routes:
   - method: POST
@@ -210,10 +224,37 @@ routes:
     resource: emailIdentity
     operation: get
 
+  # GetAccount, which is not a listing and was modelled as one. AWS's own
+  # service model gives it no input parameters at all and a GetAccountResponse
+  # whose members sit at the top level: SendingEnabled, ProductionAccessEnabled,
+  # EnforcementStatus and the rest. This Recipe served {"Accounts": [ ... ]},
+  # so code written against it read Accounts[0].SendingEnabled and would have
+  # found undefined against SES.
+  #
+  # It stays an operation: list because the format has no singleton get -- a get
+  # addresses a record by an identifier and this route has none. collapse_single
+  # sends the collection of one as the object, style: bare removes the wrapper,
+  # and returns drops the identifier this Recipe mints and SES does not send.
   - method: GET
     path: /v2/email/account
     resource: account
     operation: list
+    pagination:
+      # GetAccount takes no input at all -- AWS's own service model gives
+      # the operation no members, where ListEmailIdentities and
+      # ListSuppressedDestinations beside it both take NextToken and
+      # PageSize. So there is nothing to page and nothing to page with.
+      style: none
+    list:
+      style: bare
+      collapse_single: true
+      cursor_field: "-"
+    returns:
+      - SendingEnabled
+      - ProductionAccessEnabled
+      - EnforcementStatus
+      - Max24HourSend
+      - SentLast24Hours
 
 webhooks:
   # SES publishes bounces and complaints through SNS or EventBridge rather
@@ -447,7 +488,10 @@ conformance:
         EmailIdentities[1].IdentityName: example.com
         EmailIdentities[1].SendingEnabled: false
 
-  - name: an account can be sending and still be in the sandbox
+  - name: the account is one object, not a collection of one
+    # This case asserted Accounts[0].SendingEnabled, against an API whose own
+    # service model describes GetAccountResponse with its members at the top
+    # level. Corrected here, and the route that serves it changed with it.
     source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_GetAccount.html
     fixture: small-account
     request:
@@ -460,10 +504,15 @@ conformance:
       body:
         # Sending works, to verified addresses, and the account cannot reach
         # anybody else. Nothing about an individual send says so.
-        Accounts[0].SendingEnabled: true
-        Accounts[0].ProductionAccessEnabled: false
+        SendingEnabled: true
+        ProductionAccessEnabled: false
         # Sending still works. This is the last warning before it does not.
-        Accounts[0].EnforcementStatus: PROBATION
+        EnforcementStatus: PROBATION
+        # And the quota is nested, where this file used to send it flat.
+        SendQuota.Max24HourSend: 200
+      absent:
+        - Accounts
+        - id
 
   - name: an empty suppression list omits the key
     source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_ListSuppressedDestinations.html

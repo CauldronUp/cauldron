@@ -1079,7 +1079,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**292 more listings across 188 Recipes declare no paging at all**, and the
+**289 more listings across 185 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1143,7 +1143,25 @@ directions.
 All four were found the same way: those Recipes already served a `next_cursor`,
 a `has_more` or a `next` in the response and said nothing about how a caller
 sends one back. That contradiction is a good place to look -- twenty-four
-listings across sixteen Recipes are still in it.
+listings across sixteen Recipes were in it, and it has already paid for itself
+twice more. Typesense's search takes `page` and `per_page`, from the
+description Typesense publishes in its own GitHub organisation, and documents
+`limit` and `offset` as alternatives for the same job that this Recipe serves
+one half of. CometChat's groups listing takes `page` and `perPage`, a hundred by
+default and a thousand at most, out of the `chat-apis.json` this Recipe already
+recorded -- `cauldron check` cannot match it automatically there, because the
+description's server carries a `/v3` prefix the Recipe's routes do not.
+
+**And it found a listing that is not one.** AWS SES's `GET /v2/email/account`
+was modelled as a collection, and AWS's own service model describes
+`GetAccountResponse` with its members at the top level: no collection, no
+identifier, and `Max24HourSend` and `SentLast24Hours` nested under `SendQuota`
+where this Recipe had them flat. Code written against the fake read
+`Accounts[0].SendingEnabled` and would have found nothing against SES; code
+written against SES read `SendQuota.Max24HourSend` and found nothing here. The
+route now collapses its single record and drops the identifier it was minting,
+and `GetAccount` takes no input at all -- it is the one operation in that
+service with no `NextToken` and no `PageSize`.
 
 Scout APM's endpoints listing is the one to remember. Its description says
 "Omit for the full listing (no default limit). Supplying this switches the
