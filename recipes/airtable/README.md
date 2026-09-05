@@ -2,11 +2,11 @@
 
 Emulates the Airtable API (v0), for local development and tests.
 
-**9 conformance cases, 1 checked against the live API.**
+**9 conformance cases, 2 checked against the live API.**
 
-One case was struck live against api.airtable.com on 2026-09-05, and it corrected a mistake: this file had claimed a missing token gets the message "You should provide valid api key to perform this operation", which the live host does not send -- it sends "Authentication required".
+Two cases were struck live against api.airtable.com on 2026-09-05, and the first corrected a mistake: this file had claimed a missing token gets the message "You should provide valid api key to perform this operation", which the live host does not send -- it sends "Authentication required".
 
-A second live finding is modelled but cannot be shipped as a case. Airtable reads a token's shape before its value: a wrong token of the right shape answers type UNAUTHORIZED and "Invalid authentication token", while a value of any other length answers the same AUTHENTICATION_REQUIRED as no header at all. A conformance case exercising that first branch would have to contain a literal of Airtable's token shape, and GitHub's push protection refuses one -- including a literal whose every character is a zero. So the Recipe serves the wrong-real-key answer, which is the one an integration actually meets, and [`recipe.yaml`](recipe.yaml) states the limit: a deliberately short garbage token gets the more informative answer here than it would from Airtable.
+Airtable also reads a token's shape before its value, and does not tell a wrongly shaped one from a missing one: both answer `AUTHENTICATION_REQUIRED`, while a well-formed token it does not know answers `UNAUTHORIZED` and "Invalid authentication token". Both branches are served. The one thing this Recipe cannot do is ship a well-formed token to prove the second with: GitHub's push protection refuses any literal of Airtable's token shape, including one whose every character is a zero, so [`recipe.yaml`](recipe.yaml) writes the real rule as its shape and exempts the single fixture key it publishes, in the open.
 
 ## What this Recipe found
 

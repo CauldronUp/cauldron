@@ -176,6 +176,40 @@ type Auth struct {
 	// Recipe header has to say plainly that a wrongly signed request is
 	// accepted. Silence about that would be worse than the gap.
 	Pattern string `yaml:"pattern"`
+	// Shape is what a credential has to look like before its value is worth
+	// comparing, for the providers that check those separately.
+	//
+	// Four found this within a week of each other. Airtable reads "pat",
+	// fourteen characters, a dot and sixty-four characters as well formed and
+	// refuses a wrong one with "Invalid authentication token"; anything of
+	// another length gets the same answer as sending no header at all. Modern
+	// Treasury answers invalid_key to a password carrying neither its test-
+	// nor its live- prefix, and something else to a correctly prefixed one
+	// nobody issued. Opsgenie answers "Key format is not valid!" to a key that
+	// is not UUID-shaped and "Could not authenticate" to a UUID nobody issued.
+	// Paddle answers "Authentication header included, but incorrectly
+	// formatted." to a token in a shape it does not recognise.
+	//
+	// All four wrote the same paragraph, because Pattern could not say it:
+	// Pattern IS the acceptance test, so a Recipe declaring one would
+	// authenticate every correctly-shaped string. Shape sits in front of the
+	// keys instead. A credential that fails it is malformed, and one that
+	// passes goes on to be compared as before, so the two failures a provider
+	// distinguishes are two verdicts here.
+	//
+	// Every key must match it. A Recipe whose own fixture key its own shape
+	// calls malformed is describing something that cannot happen, and the
+	// validator refuses it rather than serving a fake that rejects the key it
+	// publishes.
+	Shape string `yaml:"shape"`
+	// ShapeError names the errors entry for a credential the shape ruled out,
+	// where that is not the same sentence as one the carrier could not read at
+	// all. Opsgenie answers 401 "Could not authenticate" to a header with the
+	// wrong prefix and 422 "Key format is not valid!" to a correctly prefixed
+	// value that is not a UUID; without this, one of the two would be
+	// unreachable. Unset falls back to MalformedError, which is what a Recipe
+	// drawing no distinction has already said.
+	ShapeError string `yaml:"shape_error"`
 	// AbsentError names the errors entry raised when a request carries no
 	// credential at all -- no header, no query parameter, nothing.
 	//
@@ -354,6 +388,17 @@ const (
 	Malformed
 	// Rejected: the right shape, and not a credential this Recipe holds.
 	Rejected
+	// Misshapen: read, and ruled out by Auth.Shape before its value was
+	// compared against anything.
+	//
+	// Distinct from Malformed, which says the carrier could not read what
+	// arrived at all -- a missing prefix, or a prefix with nothing after it.
+	// Opsgenie is why they are two verdicts and not one: a header that does
+	// not begin "GenieKey " and a bare "GenieKey" both answer 401 "Could not
+	// authenticate", the same as sending no header, while a GenieKey-prefixed
+	// value that is not a UUID answers 422 "Key format is not valid!". Folding
+	// the two together would have made one of those two sentences unreachable.
+	Misshapen
 	// Unentitled: a credential this Recipe holds, for something it may not
 	// have. Authentication succeeded and authorisation did not.
 	//
@@ -398,6 +443,16 @@ func (a Auth) ErrorFor(v Verdict) string {
 	case Unentitled:
 		if a.UnentitledError != "" {
 			return a.UnentitledError
+		}
+	case Misshapen:
+		if a.ShapeError != "" {
+			return a.ShapeError
+		}
+
+		// A Recipe declaring a shape and no sentence for failing it falls back
+		// to the malformed one, which is the nearest thing it has said.
+		if a.MalformedError != "" {
+			return a.MalformedError
 		}
 	case Accepted:
 	}

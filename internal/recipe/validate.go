@@ -233,6 +233,25 @@ func (r *Recipe) Validate() error {
 
 	r.validateResources(add)
 	r.validateRoutes(add)
+
+	// A case's name is how the verify report refers to it and how a reader
+	// finds it, so two cases cannot share one. Three Recipes shipped a case
+	// twice -- Airtable, Chargebee and CircleCI all carried "the paging fields
+	// are named ..." verbatim in two places, differing in one by a trailing
+	// blank line -- and nothing said so: the counts read one higher, the
+	// report printed the same sentence twice, and a reader chasing a failure
+	// had two candidates for it.
+	named := make(map[string]int, len(r.Conformance))
+	for i, c := range r.Conformance {
+		if first, seen := named[c.Name]; seen {
+			add("conformance[%d] %q repeats the name of conformance[%d], so nothing can tell the two apart", i, c.Name, first)
+
+			continue
+		}
+
+		named[c.Name] = i
+	}
+
 	for i, c := range r.Conformance {
 		if c.Arm != "" {
 			if _, ok := r.Errors[c.Arm]; !ok {
@@ -710,6 +729,35 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A shape describes what a credential looks like before its value is
+	// compared, so it has to be readable, it has to leave something to
+	// compare against, and the Recipe's own keys have to satisfy it. A fake
+	// that calls the key it publishes malformed is describing a provider
+	// nobody has.
+	if r.Auth.Shape != "" {
+		if _, err := regexp.Compile(r.Auth.Shape); err != nil {
+			add("auth.shape is not a valid regular expression: %v", err)
+		}
+
+		if r.Auth.Pattern != "" {
+			add("auth declares both a shape and a pattern; a pattern is itself the acceptance test, so the shape would never decide anything")
+		}
+
+		if len(r.Auth.Keys) == 0 {
+			add("auth.shape says what a credential must look like before its value is compared, and auth.keys holds nothing to compare it against")
+		}
+
+		if r.Auth.Scheme == "" || r.Auth.Scheme == "none" {
+			add("auth.shape only applies to a Recipe that checks a credential")
+		}
+
+		for _, key := range append(append([]string{}, r.Auth.Keys...), r.Auth.Unentitled...) {
+			if matched, err := regexp.MatchString(r.Auth.Shape, key); err == nil && !matched {
+				add("auth.shape does not match %q, so this Recipe would call its own key malformed", key)
+			}
+		}
+	}
+
 	// A scheme with nothing behind it checks nothing.
 	//
 	// The runtime reads an auth block holding no keys and no pattern as
@@ -736,6 +784,16 @@ func (r *Recipe) Validate() error {
 	for _, key := range r.Auth.Unentitled {
 		if contains(r.Auth.Keys, key) {
 			add("auth lists %q in both keys and unentitled, so nothing can say whether it works", key)
+		}
+	}
+
+	if r.Auth.ShapeError != "" {
+		if _, ok := r.Errors[r.Auth.ShapeError]; !ok {
+			add("auth.shape_error names %q, which is not in errors", r.Auth.ShapeError)
+		}
+
+		if r.Auth.Shape == "" {
+			add("auth.shape_error names the refusal for a credential auth.shape rules out, and no shape is declared, so nothing can reach it")
 		}
 	}
 

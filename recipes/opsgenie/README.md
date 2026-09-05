@@ -2,9 +2,9 @@
 
 Emulates the opsgenie API (v2), for local development and tests.
 
-**14 conformance cases, 2 checked against the live API.**
+**15 conformance cases, 3 checked against the live API.**
 
-Struck live 2026-09-05 against api.opsgenie.com, no account and no key. This file's declared "Could not authenticate" matched exactly, word for word, on no credential, the wrong scheme word, and a UUID-shaped key nobody issued. A fourth shape -- a key that is not even UUID-shaped -- gets a different answer, "Key format is not valid!", which this format's own malformed-credential mechanism cannot express and is stated in the header rather than forced into a case.
+Struck live 2026-09-05 against api.opsgenie.com, no account and no key. This file's declared "Could not authenticate" matched exactly, word for word, on no credential, the wrong scheme word, and a UUID-shaped key nobody issued. A key that is not UUID-shaped is a different answer entirely -- 422, "Key format is not valid!" -- because Opsgenie reads a credential's shape before its value. That one is now served too, and it caught a real fault: this Recipe's own fixture key was not a UUID, so the fake accepted a key the provider refuses outright. The key is a UUID now.
 
 ## What this Recipe found
 

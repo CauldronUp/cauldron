@@ -2,9 +2,9 @@
 
 Emulates the Modern Treasury API (v1), for local development and tests.
 
-**16 conformance cases, 2 checked against the live API.**
+**17 conformance cases, 3 checked against the live API.**
 
-Struck live 2026-09-05 against app.moderntreasury.com, no account and no key -- and found three distinct real failures where this file declared one, "Invalid credentials", never exercised by any case. A missing credential gets a JSON sentence naming the auth scheme; a correctly-shaped key nobody issued gets no body at all, zero bytes; and a key in the wrong shape gets a third, invalid_key, that this format's own auth.pattern mechanism cannot express without also accepting any correctly-shaped string outright -- stated rather than forced into a verdict this runtime cannot actually produce.
+Struck live 2026-09-05 against app.moderntreasury.com, no account and no key -- and found three distinct real failures where this file declared one, "Invalid credentials", never exercised by any case. A missing credential gets a JSON sentence naming the auth scheme; a secret carrying neither the `live-` nor the `test-` prefix is refused before its value is read at all, quoting that rule back; and a correctly-prefixed key nobody issued gets no body at all, zero bytes. All three are served. The middle one is why `auth.shape` exists: this Recipe was one of four that could describe a shape check and not model it, because the only mechanism available accepted every correctly-shaped string outright.
 
 ## What this Recipe found
 

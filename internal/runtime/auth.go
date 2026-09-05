@@ -153,6 +153,14 @@ func inherit(base, override recipe.Auth) recipe.Auth {
 		merged.Pattern = override.Pattern
 	}
 
+	if override.Shape != "" {
+		merged.Shape = override.Shape
+	}
+
+	if override.ShapeError != "" {
+		merged.ShapeError = override.ShapeError
+	}
+
 	if len(override.Unentitled) > 0 {
 		merged.Unentitled = override.Unentitled
 	}
@@ -191,8 +199,11 @@ func inherit(base, override recipe.Auth) recipe.Auth {
 func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, string) {
 
 	// A Recipe that declares no keys accepts anything, so an author can model
-	// routes first and tighten auth later.
-	if auth.Scheme == "" || auth.Scheme == "none" || (len(auth.Keys) == 0 && auth.Pattern == "") {
+	// routes first and tighten auth later. Validation refuses that arrangement
+	// for a Recipe that also names a scheme -- naming one reads as a claim the
+	// credential is checked, and four Recipes made that claim while enforcing
+	// nothing -- so what reaches here is a Recipe still being written.
+	if auth.Scheme == "" || auth.Scheme == "none" || (len(auth.Keys) == 0 && auth.Pattern == "" && auth.Shape == "") {
 		return recipe.Accepted, ""
 	}
 
@@ -294,6 +305,23 @@ func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, stri
 		return recipe.Malformed, presented
 	}
 
+	// A shape, for the providers that read what a credential looks like before
+	// they read what it says. Airtable, Modern Treasury, Opsgenie and Paddle
+	// all answer one sentence to a credential of the wrong shape and another
+	// to a well-formed one nobody issued, and this is the gate that lets a
+	// Recipe say both: failing it is malformed, passing it goes on to the
+	// comparison below rather than authenticating on the spot.
+	//
+	// An unparseable expression is a validation error, so it cannot arrive
+	// here. If one somehow did, refusing is the safe direction: a shape that
+	// cannot be evaluated has not been satisfied.
+	if auth.Shape != "" {
+		matched, err := regexp.MatchString(auth.Shape, presented)
+		if err != nil || !matched {
+			return recipe.Misshapen, presented
+		}
+	}
+
 	// A pattern, for a credential computed per request. AWS signs every call,
 	// so there is no fixed value to compare and the shape is what can be
 	// checked. That catches the failure that actually happens — credentials
@@ -341,19 +369,23 @@ func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, stri
 // request, for choosing between the answers several carriers give.
 //
 // Absent says only that this carrier was not the one used. Malformed says
-// something arrived that this carrier could not read. Rejected and unentitled
-// say it was read and refused, which is the most any of them knows.
+// something arrived that this carrier could not read. Misshapen says it was
+// read and its shape ruled it out. Rejected and unentitled say it was read,
+// its shape allowed it, and it was refused on its value -- which is the most
+// any of them knows.
 func informativeness(v recipe.Verdict) int {
 	switch v {
 	case recipe.Absent:
 		return 0
 	case recipe.Malformed:
 		return 1
-	case recipe.Rejected, recipe.Unentitled:
+	case recipe.Misshapen:
 		return 2
+	case recipe.Rejected, recipe.Unentitled:
+		return 3
 	case recipe.Accepted:
 		// Never compared -- an accepted credential returns before this.
-		return 3
+		return 4
 	}
 
 	return 0
