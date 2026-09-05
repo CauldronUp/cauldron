@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**57 routes across 29 Recipes** still page by a parameter nobody named.
+**56 routes across 28 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,15 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+A pattern worth naming, since it accounts for several of these: a Recipe that
+has read its provider's document, found no parameter, and written that in prose
+beside a declaration that still leaves the field blank. VTEX's order-group
+route, Pub/Sub's pull, DynamoDB's Query and Scan, SQS's ReceiveMessage and
+Daily's presence listing were all in that state -- the comment said "there is no
+cursor here" and the runtime went on reading `cursor` from a query string the
+request does not have. `"-"` is how that gets said once rather than twice, and
+the counter only sees the declaration.
 
 Calendly calls its page size `count` -- "the number of rows to return", twenty
 by default and a hundred at most -- and its position `page_token`. Neither is a
