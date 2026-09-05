@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**245 more listings across 161 Recipes declare no paging at all**, and the
+**238 more listings across 154 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,19 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Deck of Cards is the one that changed a case. It draws **one** card when
+nothing asks for more -- struck live, `remaining` 51 -- and its Recipe was
+relying on the emulator's own default of ten, a number that API has never used.
+Two of its cases asserted a third card they had not asked for and passed because
+the fake was handing out ten. They send `count` now. Its size is `count` and
+there is no position: a second page of a draw is another draw, and what is drawn
+leaves the deck.
+
+Six more do not page at all, each struck live: Advice Slip's search answers
+everything that matched and ignores a `limit`, Dog CEO's sub-breed list comes
+back whole, Kraken's ticker and Open Library's books answer exactly the keys the
+caller named, PDBe answers one entry, Open Meteo answers a forecast.
 
 iTunes cannot be paged past its first two hundred results, and nothing said so.
 `?limit=200` answers two hundred, `?limit=201` answers two hundred as well, and
