@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**114 more listings across 72 Recipes declare no paging at all**, and the
+**105 more listings across 68 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,25 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Unleash is the one where paging would itself be the bug. Its client and frontend
+endpoints take filters and no size or position at all, and that is the only thing
+a feature-flag API can do: an SDK holding half the flags evaluates the other half
+*wrong*. It would not error on a short page -- it would quietly report the missing
+thirty flags as off. The fake was serving ten of them.
+
+Recharge is the opposite lesson. Both its parameter names are exactly the ones
+the runtime guesses, `limit` and `cursor`, so nothing about the request shape
+changes -- and the default is **50**, rising to 250, against the ten being served.
+A guess that happens to use the right name is still a guess until it is written
+down, and the number behind it was wrong the whole time.
+
+Persona spells its paging `page[size]` and `page[after]`, and documents the cursor
+as an "object ID" -- not opaque, the last record's own identifier, which is
+Stripe's `starting_after` under a different name. Airbrake's `page` and `limit`
+default to 1 and 20; the size was right by luck and the position was not, so a
+client following the emulator's next page sent a cursor Airbrake ignores and read
+page one again.
 
 Google Books is `maxResults` and `startIndex` -- "the default is 10, and the
 maximum allowable value is 40", "the index of the first item is 0" -- so the size
