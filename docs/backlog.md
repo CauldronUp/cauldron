@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**235 more listings across 151 Recipes declare no paging at all**, and the
+**220 more listings across 145 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,20 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+**Open Trivia DB's answer was in this file.** The row for it above says "the
+API has no pagination to declare -- `amount` caps at fifty and there is no
+offset or cursor, which is why its five listings sit in the count above". The
+count it refers to is this one, and the Recipe went on being paged at ten
+reading `limit` while the backlog explained why it should not be. Struck live
+again to confirm the size, and declared.
+
+Five more do not page, all struck live: PoetryDB answers an author's 362 poems
+whole and ignores a `limit`, TheSportsDB the same for its leagues, Nager.Date
+returns a country's year of public holidays entire, TheMealDB answers the one
+meal asked for, and Open Notify answers everyone currently in space -- twelve
+people, with the count beside them, on an endpoint that takes no parameters and
+a collection kept small by physics.
 
 The Bank of Canada's Valet API names its size `recent`, and the name is the
 point: a bare request answers the whole 2,415-observation series and `?recent=2`
