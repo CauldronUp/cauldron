@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**259 more listings across 166 Recipes declare no paging at all**, and the
+**252 more listings across 164 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,15 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Deezer and Gutendex went the same way. Deezer's own next link carries both
+names -- a bare search answers twenty-five with `?q=eminem&index=25`, and
+`?limit=2` answers two with `&limit=2&index=2`, so `index` is an offset in
+records rather than a page number. Gutendex has a page and no size: thirty-two
+books, `?page_size=2` answers the same thirty-two, and the position's name was
+already sitting in a string this Recipe asserts -- its own live finding is that
+an unparseable filter is "carried faithfully into the next link,
+`?ids=abc&page=2`".
 
 ### The Recipe often knew already
 
