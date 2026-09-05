@@ -16,8 +16,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"sort"
@@ -370,6 +372,57 @@ func buildRequest(r recipe.Request, prefix string) (*http.Request, error) {
 		req, err = http.NewRequest(r.Method, "http://sandbox"+target, strings.NewReader(values.Encode()))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+	case r.SendsMultipart():
+		var body bytes.Buffer
+
+		form := multipart.NewWriter(&body)
+
+		for _, part := range r.Multipart {
+			headers := textproto.MIMEHeader{}
+
+			disposition := fmt.Sprintf("form-data; name=%q", part.Name)
+			if part.Filename != "" {
+				disposition += fmt.Sprintf("; filename=%q", part.Filename)
+			}
+
+			headers.Set("Content-Disposition", disposition)
+
+			if part.ContentType != "" {
+				headers.Set("Content-Type", part.ContentType)
+			}
+
+			w, partErr := form.CreatePart(headers)
+			if partErr != nil {
+				return nil, partErr
+			}
+
+			content := part.Text
+
+			if part.JSON != nil {
+				encoded, marshalErr := json.Marshal(part.JSON)
+				if marshalErr != nil {
+					return nil, marshalErr
+				}
+
+				content = string(encoded)
+			}
+
+			if _, writeErr := w.Write([]byte(content)); writeErr != nil {
+				return nil, writeErr
+			}
+		}
+
+		if closeErr := form.Close(); closeErr != nil {
+			return nil, closeErr
+		}
+
+		req, err = http.NewRequest(r.Method, "http://sandbox"+target, bytes.NewReader(body.Bytes()))
+		if err == nil {
+			// The boundary is generated, so it goes on the request rather than
+			// being written into a Recipe -- a fixture naming one would be
+			// naming something no client ever sends twice.
+			req.Header.Set("Content-Type", form.FormDataContentType())
 		}
 	case r.SendsJSON():
 		encoded, marshalErr := json.Marshal(r.JSON)

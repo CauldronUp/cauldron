@@ -360,6 +360,41 @@ type Request struct {
 	// its own clients post is accepted.
 	Form map[string]string `yaml:"form"`
 	JSON any               `yaml:"json"`
+	// Multipart sends multipart/form-data, which is most of what several
+	// providers do and none of what this could describe.
+	//
+	// Onfido's document and photo uploads are the larger half of its API.
+	// Coveralls takes a coverage report that way and nothing else. Dropbox Sign
+	// takes the document being signed. Zenvia is the sharpest: one request
+	// carrying a JSON part and a CSV part together, which is why this is a list
+	// of named parts rather than a flag -- a boolean could say the body was
+	// multipart and nothing about what was in it.
+	//
+	// A case may set at most one of form, json and multipart.
+	Multipart []Part `yaml:"multipart"`
+}
+
+// Part is one section of a multipart body.
+//
+// Text carries what a part holds. Bytes are not modelled: a fixture is a file
+// somebody reads, and a base64 blob in one is a value nobody can check against
+// the provider. What these Recipes need is the shape -- which parts, named
+// what, typed what -- and a short readable payload says that.
+type Part struct {
+	// Name is the part's form field name.
+	Name string `yaml:"name"`
+	// Filename marks the part as a file. A provider that distinguishes an
+	// uploaded file from an ordinary field does it by this being present, and
+	// several of them refuse one sent as the other.
+	Filename string `yaml:"filename"`
+	// ContentType is the part's own type, which is separate from the request's.
+	// Onfido's document part is image/jpeg inside a multipart/form-data body.
+	ContentType string `yaml:"content_type"`
+	// Text is the part's content.
+	Text string `yaml:"text"`
+	// JSON is the part's content as a document, for a provider sending metadata
+	// beside a file. Zenvia does exactly this.
+	JSON any `yaml:"json"`
 }
 
 // SendsJSON reports whether this request carries a JSON body.
@@ -367,6 +402,11 @@ type Request struct {
 // A nil interface is no body. An empty object or an empty array is a body, and
 // a deliberate one: a provider that answers differently to {} than to nothing
 // is describable only if the difference survives to here.
+// SendsMultipart reports whether this request carries a multipart body.
+func (r Request) SendsMultipart() bool {
+	return len(r.Multipart) > 0
+}
+
 func (r Request) SendsJSON() bool {
 	switch body := r.JSON.(type) {
 	case nil:

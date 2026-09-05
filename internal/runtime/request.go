@@ -3,7 +3,11 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -99,6 +103,8 @@ func decodeBody(r *http.Request) (store.Record, error) {
 		return decodeJSON(body)
 	case strings.Contains(contentType, "application/x-www-form-urlencoded"):
 		return decodeForm(body)
+	case strings.Contains(contentType, "multipart/form-data"):
+		return decodeMultipart(body, contentType)
 	default:
 		// No usable content type. Try JSON, then form — a client that sends a
 		// body without a type is still trying to say something.
@@ -346,4 +352,75 @@ func jsonBody(r *http.Request) map[string]any {
 	}
 
 	return out
+}
+
+// decodeMultipart reads a multipart body into the same flat record every other
+// body shape produces.
+//
+// A file part becomes its filename rather than its bytes. What a Recipe can
+// check about an upload is that it arrived, under the right field name, with
+// the name and type the provider cares about -- and several of them refuse a
+// file sent as an ordinary field or an ordinary field sent as a file, which is
+// the distinction worth keeping. The content is not a claim anybody can verify
+// against a provider, and putting megabytes of it through the store to compare
+// nothing would be worse than not having it.
+//
+// A part carrying JSON is decoded, so a provider sending metadata beside a file
+// -- which is Zenvia's shape -- reads the same way a JSON body would.
+func decodeMultipart(body []byte, contentType string) (store.Record, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, err
+	}
+
+	boundary, ok := params["boundary"]
+	if !ok {
+		return nil, fmt.Errorf("multipart body with no boundary")
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	record := store.Record{}
+
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		name := part.FormName()
+		if name == "" {
+			continue
+		}
+
+		if filename := part.FileName(); filename != "" {
+			record[name] = filename
+
+			if partType := part.Header.Get("Content-Type"); partType != "" {
+				record[name+"_content_type"] = partType
+			}
+
+			continue
+		}
+
+		content, err := io.ReadAll(io.LimitReader(part, maxBody))
+		if err != nil {
+			return nil, err
+		}
+
+		if nested, err := decodeJSON(content); err == nil && len(nested) > 0 {
+			for key, value := range nested {
+				record[name+"."+key] = value
+			}
+
+			continue
+		}
+
+		record[name] = string(content)
+	}
+
+	return record, nil
 }

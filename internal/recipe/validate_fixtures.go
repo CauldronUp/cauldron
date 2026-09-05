@@ -152,8 +152,33 @@ func (r *Recipe) validateCases(add func(string, ...any)) {
 			add("%s: request.path must start with /", where)
 		}
 
-		if len(c.Request.Form) > 0 && c.Request.SendsJSON() {
-			add("%s: a request sends form or json, not both", where)
+		shapes := 0
+		for _, sends := range []bool{len(c.Request.Form) > 0, c.Request.SendsJSON(), c.Request.SendsMultipart()} {
+			if sends {
+				shapes++
+			}
+		}
+
+		if shapes > 1 {
+			add("%s: a request sends one of form, json or multipart, not several", where)
+		}
+
+		for j, part := range c.Request.Multipart {
+			if part.Name == "" {
+				add("%s: multipart part %d has no name, so nothing on the far side can find it", where, j)
+			}
+
+			if part.Text != "" && part.JSON != nil {
+				add("%s: multipart part %q carries both text and json, and only one can be its content", where, part.Name)
+			}
+
+			// A part that is a file and carries nothing is describing an empty
+			// upload, which no provider in this collection distinguishes from
+			// a missing one -- and a Recipe saying it would be claiming a
+			// difference nobody observed.
+			if part.Filename != "" && part.Text == "" && part.JSON == nil {
+				add("%s: multipart part %q names a file and carries no content", where, part.Name)
+			}
 		}
 
 		if c.Fixture != "" {
