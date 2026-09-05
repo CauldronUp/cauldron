@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**105 more listings across 68 Recipes declare no paging at all**, and the
+**101 more listings across 66 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,20 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Better Stack retires a reason rather than a claim. Its header said route-level
+paging was left undeclared because "what query parameter actually requests a
+given page was never confirmed against a real response ... because no credential
+exists to call one with". Still true -- but its own pagination page names them
+plainly: `per_page` ("the default value is 50 and maximum value is 250") and
+`page` ("the page number you want to return. Starts with 1"). A documented name
+read from the provider beats the engine reading `limit` and `cursor`, neither of
+which Better Stack takes, and the provenance is stated where the declaration is.
+
+balldontlie is `per_page` (25, capped at 100) and `cursor` -- with the response
+field named `next_cursor` and the request parameter named `cursor`, which is the
+ordinary shape and worth saying because that Recipe already declared the response
+half and had never declared the request half.
 
 Unleash is the one where paging would itself be the bug. Its client and frontend
 endpoints take filters and no size or position at all, and that is the only thing
