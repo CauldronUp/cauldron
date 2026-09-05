@@ -15,7 +15,8 @@ Timestamps are floating-point Unix seconds, not integers and not strings -- pars
 ## Sources
 
 - Documentation: https://dev.frontapp.com/reference
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://raw.githubusercontent.com/frontapp/front-api-specs/main/core-api/core-api.json, last checked 2026-09-05
+  `cauldron drift front` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

@@ -1045,7 +1045,27 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**11 routes across 5 Recipes** still page by a parameter nobody named.
+**115 routes across 54 Recipes** still page by a parameter nobody named.
+
+That number went up by a hundred and seven when the counter learned to see. It
+had treated a declared style as though it named the parameters, on the reasoning
+that neither is a word anybody writes down by accident -- and a style says how a
+provider pages, not what it calls things. Front is the counterexample: three of
+its listings declare cursor paging and name neither parameter, Front's own
+description says they take `limit` and `page_token`, so the runtime read
+`cursor`, Front ignored it, and every request came back on page one. Ninety-four
+routes across forty Recipes were in exactly that state and neither counter could
+see one of them -- this one required an empty style, the one below required an
+empty everything. Naming one of the two is not naming them either, which is
+thirteen more.
+
+Front's own three are settled by the description that found them, and its
+`_pagination.next` turns out to be a whole URL as well -- the field's own
+example in that document is
+`https://yourCompany.api.frontapp.com/message_templates?page_token=...`. Its
+case had pinned that field as `^cnv_[0-9]+$`, the bare cursor id this Recipe was
+serving, so the case described the fake rather than the provider and passed.
+
 Twenty-five providers have been settled. Eight were read from that provider's
 own description or reference, none of them guessable:
 

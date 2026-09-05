@@ -611,17 +611,31 @@ func (p Pagination) FirstPageNumber() int {
 // Recipe in that state is making a claim nobody checked, and the point of
 // counting them is that the number should be visible rather than buried.
 //
-// Naming either the style or the parameter is what marks a route as checked,
-// because neither is a name anybody writes down by accident.
+// Naming the style is not naming the parameters, and this counted it as though
+// it were for months. Front declares cursor paging on three listings and names neither
+// parameter, and Front's own description says it takes "limit" and
+// "page_token" -- so the runtime read "cursor", Front ignored it, and every
+// request came back on page one. Ninety-four routes across forty Recipes were
+// in that state and neither this counter nor UnstatedPagination could see any
+// of them: one required an empty style and the other required an empty
+// everything.
 func (r Recipe) GuessedPagination() int {
 	guessed := 0
 
 	for _, route := range r.Routes {
-		if route.Pagination.Limit == 0 {
+		p := route.Pagination
+
+		// A listing that says it does not page has nothing to guess at, and
+		// one that says nothing at all is counted by UnstatedPagination.
+		if p.Style == "none" || (p.Limit == 0 && p.Style == "") {
 			continue
 		}
 
-		if route.Pagination.Style == "" && route.Pagination.LimitParam == "" {
+		// Either name left blank is a name the runtime supplies: "limit" for
+		// the page size, and the style's own word for the position. "-" is not
+		// blank -- it is a Recipe saying the provider accepts no name, which is
+		// a decision rather than a gap.
+		if p.LimitParam == "" || p.CursorParam == "" {
 			guessed++
 		}
 	}
