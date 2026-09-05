@@ -43,6 +43,9 @@ func TestNoRecipeAssertsARetiredLimitation(t *testing.T) {
 		{"sends no Link header", "responses.list.link_header"},
 		{"Cauldron does not send one", "responses.list.link_header"},
 		{"has no way to describe an endpoint that answers with one object", "collapse_single, or id_from: auth"},
+		{"pages it at ten", "pagination.style: none"},
+		{"page at ten, reading", "pagination.style: none"},
+		{"no way to declare an absence", "pagination.style: none"},
 	}
 
 	// Words a Recipe uses when it is recording that a claim has been overtaken

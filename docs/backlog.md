@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**176 more listings across 113 Recipes declare no paging at all**, and the
+**163 more listings across 104 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,36 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Thirteen listings settled without reading a single new document, because their
+Recipes had already done the reading and had nowhere to put the answer. Shortcut:
+"this endpoint takes no page size, no offset and no cursor, and answers with a
+bare array of everything". Trello: "neither the board's lists nor its cards takes
+a limit, an offset or a cursor". Xero: "the Accounts endpoint takes neither page
+nor pageSize -- unlike Invoices and Contacts beside it". DocuSign: "the
+recipients endpoint takes neither count nor start_position". Stytch: "this
+endpoint takes user_id and nothing else". LiveKit: "ListRoomsRequest has no
+limit, page size or cursor of any kind in the .proto -- names is its only field".
+Google Maps: "the Geocoding API is not documented as paging at all -- it answers
+whatever matched, once". Seven providers, thirteen routes, every one of them
+checked against the provider's own description by somebody who then had to write
+the finding in a comment and watch the engine page it at ten anyway.
+
+Two of those comments said so out loud -- LiveKit's "Cauldron's own runtime pages
+it at ten anyway, reading a `limit` parameter that does not exist on the real
+request message", Google Maps' "Cauldron's own default (page at ten, reading a
+`limit` parameter Google does not accept)". Those sentences are now false, which
+makes them exactly the failure mode `TestNoRecipeAssertsARetiredLimitation`
+exists to catch, so it grew three more phrases and was red-greened against a
+restored copy of Mapbox's old wording.
+
+Mapbox itself is the most uncomfortable of the batch. Its header recorded that
+"Mapbox's own `limit` parameter ... is documented but not modelled", and because
+the runtime's fallback name is `limit`, the route had been honouring the caller's
+page size all along -- right name, no declaration, wrong numbers. Mapbox's real
+default is **5** and its ceiling is **10**; the fake served ten and would have
+served fifty to anyone who asked. A guess that uses the right name is the hardest
+kind to notice, because everything works until the numbers matter.
 
 SavvyCal is the clearest case yet of a Recipe holding its own answer. Its header
 already recorded, from reading three of SavvyCal's schema pages side by side,
