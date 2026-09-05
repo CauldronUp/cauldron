@@ -18,6 +18,25 @@
 #      languages, which is exactly the sort of thing a hand-written fake
 #      silently renames.
 #
+# The credential shape needed no account, and struck live against
+# rest.nexmo.com on 2026-09-05 it found two different provider APIs living
+# in one Recipe, each with its own failure shape this file had never run.
+# The SMS API (/sms/json) answers a credential failure as this file's own
+# 200-status message-count envelope, with codes 2 (missing) and 4 (wrong)
+# -- not the 401 and single sentence this file had claimed. The Account API
+# (/account/numbers) answers something else again: RFC 7807 problem
+# details, {type, title, detail}, on a 422 for an absent credential and a
+# 401 for a present, wrong one -- the shape this file's authentication_error
+# had actually been modelling, just at the wrong status with the wrong
+# sentence. The two are now told apart with a per-route auth block on
+# /account/numbers.
+#
+# /search/message could not be checked at all: every request to it,
+# credentialed or not, answered a bare 404 from the same envoy gateway the
+# other two hosts answer through, which reads as an endpoint this account's
+# edge no longer routes rather than a credential question. Left as
+# documentation, since nothing distinguishing could be observed.
+#
 # Keys below are fixtures, not secrets.
 
 recipe: vonage
@@ -33,6 +52,12 @@ auth:
   param: api_key
   keys:
     - cauldron-api-key
+  # Verified live against rest.nexmo.com 2026-09-05, on the SMS API
+  # (/sms/json): a credential failure there is HTTP 200, not 401 -- the
+  # legacy shape this Recipe's envelope already matches in field names, but
+  # not in status, code or sentence. Neither verdict had ever been checked.
+  absent_error: sms_missing_api_key
+  rejected_error: sms_bad_credentials
 
 responses:
   list:
@@ -42,6 +67,11 @@ responses:
     style: flat
     code_field: status
     message_field: error-text
+    # Verified live 2026-09-05: status inside a message is a JSON string
+    # ("2", "4"), matching the resource's own status field a row up --
+    # without this, the codes here that happen to be all digits render as
+    # bare numbers instead.
+    code_type: string
 
 resources:
   message:
@@ -102,10 +132,21 @@ routes:
     resource: message
     operation: create
 
+  # Verified live 2026-09-05: this route's own credential failures are RFC
+  # 7807 problem details on a real HTTP status, not the SMS API's 200 with
+  # an embedded code -- a different API under the same account, so it
+  # names its own auth block rather than inheriting the Recipe-wide one.
   - method: GET
     path: /account/numbers
     resource: number
     operation: list
+    auth:
+      scheme: query
+      param: api_key
+      keys:
+        - cauldron-api-key
+      absent_error: numbers_missing_auth
+      rejected_error: authentication_error
     pagination:
       # No style is declared: this route paged by neither offset nor page
       # number until somebody checks what this provider actually calls its
@@ -146,10 +187,55 @@ errors:
     headers:
       Retry-After: "1"
 
+  # Verified live 2026-09-05, on the SMS API: a present, wrong api_key/
+  # api_secret pair. Not 401 -- Vonage's own message-count envelope, at 200,
+  # the shape every SMS send answers success or failure in.
+  # message-count is not reproduced: a per-error style override reads the
+  # envelope-level Fields from the Recipe-wide default rather than from
+  # this entry, so a value declared here would land inside messages[0]
+  # instead of beside it. Stated rather than served wrong.
+  sms_bad_credentials:
+    status: 200
+    style: list
+    key: messages
+    code: "4"
+    message: Bad Credentials
+
+  # Verified the same day: no api_key at all. Same envelope, a different
+  # code and sentence.
+  sms_missing_api_key:
+    status: 200
+    style: list
+    key: messages
+    code: "2"
+    message: Missing api_key
+
+  # Verified live 2026-09-05, on the Account API (/account/numbers): a
+  # completely different failure family from the SMS API above -- RFC 7807
+  # problem details, on a real HTTP status. This is the one this Recipe's
+  # single authentication_error had actually modelled, at the wrong status
+  # and with the wrong sentence.
   authentication_error:
     status: 401
-    code: "4"
-    message: Invalid credentials
+    style: flat
+    message_field: detail
+    code_field: title
+    code: Unauthorized
+    message: "You did not provide correct credentials."
+    fields:
+      type: "https://developer.nexmo.com/api-errors#unauthorized"
+
+  # Verified the same day: no credential at all, on the Account API. A 422,
+  # not a 401 -- and a third shape again from the two above.
+  numbers_missing_auth:
+    status: 422
+    style: flat
+    message_field: detail
+    code_field: title
+    code: Missing Auth
+    message: "Auth header is required"
+    fields:
+      type: "https://developer.nexmo.com/api-errors#missing-auth"
 
   resource_missing:
     status: 404
@@ -310,19 +396,77 @@ conformance:
         - numbers[1].id
 
   - name: the credential travels in the query string
-    source: https://developer.vonage.com/en/getting-started/concepts/authentication
+    # Used to assert the SMS API's {status, error-text} shape for a request
+    # against the Account API. Struck live against rest.nexmo.com
+    # 2026-09-05: /account/numbers answers RFC 7807 problem details, on a
+    # 422 for no credential at all, not the shape or status this case had
+    # claimed and never run.
+    source: https://rest.nexmo.com/account/numbers
+    verified: "2026-09-05"
+    fixture: small-account
+    request:
+      method: GET
+      # Vonage puts the key in the URL, so it ends up in access logs. A
+      # header-based fake would hide that.
+      path: /account/numbers
+    expect:
+      status: 422
+      body:
+        title: Missing Auth
+        detail: "Auth header is required"
+        type: "https://developer.nexmo.com/api-errors#missing-auth"
+
+  - name: a present, wrong credential on the Account API is a 401 with a different sentence
+    source: https://rest.nexmo.com/account/numbers
+    verified: "2026-09-05"
     fixture: small-account
     request:
       method: GET
       path: /account/numbers
+      query:
+        api_key: garbage
+        api_secret: garbage
     expect:
-      # Vonage puts the key in the URL, so it ends up in access logs. A
-      # header-based fake would hide that.
       status: 401
       body:
-        status: 4
-      matches:
-        error-text: 'Invalid credentials'
+        title: Unauthorized
+        detail: "You did not provide correct credentials."
+        type: "https://developer.nexmo.com/api-errors#unauthorized"
+
+  - name: the SMS API answers a credential failure as a 200, not the Account API's shape
+    source: https://rest.nexmo.com/sms/json
+    verified: "2026-09-05"
+    request:
+      method: POST
+      path: /sms/json
+      form:
+        to: "15551234567"
+        from: Test
+        text: hi
+    expect:
+      status: 200
+      body:
+        messages[0].status: "2"
+        messages[0].error-text: "Missing api_key"
+
+  - name: and a present, wrong credential on the SMS API is a different code, still 200
+    source: https://rest.nexmo.com/sms/json
+    verified: "2026-09-05"
+    request:
+      method: POST
+      path: /sms/json
+      query:
+        api_key: garbage
+        api_secret: garbage
+      form:
+        to: "15551234567"
+        from: Test
+        text: hi
+    expect:
+      status: 200
+      body:
+        messages[0].status: "4"
+        messages[0].error-text: "Bad Credentials"
 
   - name: a send answers with the same message shape
     source: https://developer.vonage.com/en/api/sms

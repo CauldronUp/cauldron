@@ -9,12 +9,26 @@
 #
 # Two things worth getting exactly right:
 #
-#   1. The error is nested under "error" with only a code and a message. No
-#      type, no status inside the body. Code written for Stripe's shape reads
-#      error.type and finds nothing.
+#   1. The error is nested under "error" with a code and a message, and
+#      most failures carry nothing else -- no type, no status inside the
+#      body, so code written for Stripe's shape reads error.type and finds
+#      nothing. The credential failures are the exception: each carries its
+#      own extra boolean (missingToken, invalidToken), which is where the
+#      "nothing else" part of this claim turned out to need a footnote --
+#      see below.
 #   2. Deployment state is a string enum, and READY is not the only terminal
 #      value. Code that polls until state is not BUILDING and then assumes
 #      success ships a broken build.
+#
+# The credential shape needed no account, and struck live against
+# api.vercel.com on 2026-09-05 it found this file's claim wrong on the
+# sentence and incomplete on the shape: no token at all answers "The
+# request is missing an authentication token" with missingToken: true, and
+# a present, wrong token answers "Not authorized" with invalidToken: true
+# instead -- two different sentences and two different flags, not the one
+# sentence this file had for both. An existing case had sent no token at
+# all while calling it "a bad token"; fixed below. A path nothing declares
+# is a 404, resolved before either credential question is asked.
 #
 # Tokens below are fixtures, not secrets.
 
@@ -35,6 +49,12 @@ auth:
   prefix: "Bearer "
   keys:
     - cauldron_vercel_token
+  # Verified live against api.vercel.com 2026-09-05: no token at all and a
+  # present, wrong one are different sentences with different extra
+  # boolean flags, not the same failure. Checked before routing too: a
+  # path nothing declares is a 404 with no token sent.
+  absent_error: missing_token
+  after_routing: true
 
 # Vercel wraps a single domain under "domain" and wraps neither a project nor
 # a deployment, so the domain fetch below carries its own envelope. Code
@@ -274,15 +294,33 @@ errors:
       Retry-After: "1"
       X-RateLimit-Remaining: "0"
 
+  # Verified live 2026-09-05: a present, wrong bearer token.
   authentication_error:
     status: 403
     code: forbidden
     message: Not authorized
+    fields:
+      error.invalidToken: true
+
+  # Verified the same day: no Authorization header sent at all. Same
+  # status and code, a different sentence and a different boolean flag.
+  missing_token:
+    status: 403
+    code: forbidden
+    message: The request is missing an authentication token
+    fields:
+      error.missingToken: true
 
   resource_missing:
     status: 404
     code: not_found
     message: "The resource could not be found: {detail}"
+
+  # Verified live 2026-09-05: a path nothing declares.
+  unknown_route:
+    status: 404
+    code: not_found
+    message: "The requested API endpoint was not found."
 
   parameter_missing:
     status: 400
@@ -526,8 +564,13 @@ conformance:
       absent:
         - username
 
-  - name: a bad token is a 403, not a 401
-    source: https://vercel.com/docs/rest-api/errors
+  - name: no token at all is a 403, not a 401 -- and a different sentence than a wrong one
+    # Named "a bad token" and sent none at all. Struck live against
+    # api.vercel.com 2026-09-05: an absent token answers "The request is
+    # missing an authentication token" with missingToken: true, not the
+    # "Not authorized" sentence a present, wrong token gets. Fixed here.
+    source: https://api.vercel.com/v7/deployments
+    verified: "2026-09-05"
     request:
       method: GET
       path: /v7/deployments
@@ -538,7 +581,38 @@ conformance:
       body:
         error:
           code: forbidden
+          message: The request is missing an authentication token
+          missingToken: true
+
+  - name: a present, wrong token gets a different sentence and flag
+    source: https://api.vercel.com/v7/deployments
+    verified: "2026-09-05"
+    request:
+      method: GET
+      path: /v7/deployments
+      headers:
+        Authorization: Bearer garbage_invalid_000
+    expect:
+      status: 403
+      body:
+        error:
+          code: forbidden
           message: Not authorized
+          invalidToken: true
+
+  - name: a path nothing declares is a 404, checked before any credential
+    source: https://api.vercel.com/v7/not-a-real-endpoint
+    verified: "2026-09-05"
+    request:
+      method: GET
+      # No token sent. Routing answers first regardless.
+      path: /v7/not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        error:
+          code: not_found
+          message: "The requested API endpoint was not found."
 
   - name: an unverified domain is listed, flagged rather than hidden
     source: https://vercel.com/docs/rest-api/endpoints/domains

@@ -2,13 +2,17 @@
 
 Emulates the Statuspage API (v1), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Statuspage has no sandbox, so the incident and component cases still cite documentation. The credential shape needed no page of its own, and checking it live found this Recipe's own error model wrong.
 
 ## What this Recipe found
 
 Incident status and impact are independent fields: an incident can be resolved and have had critical impact, so deriving a page's health from status alone gets it wrong in both directions. Component status isn't a boolean either -- `degraded_performance` and `partial_outage` sit between operational and major outage, and a banner that treats anything other than fully operational as "down" overstates every partial problem.
+
+## What checking it live found
+
+The pairing reads backwards from the usual one: no `Authorization` header at all answers `"Invalid authentication token."` -- the more specific-sounding sentence -- and a present, wrong OAuth token answers the vaguer `"Could not authenticate"`. This Recipe had one message for both; `auth.absent_error` keeps them apart now. A path nothing declares and a wrong method both get the absent-credential sentence too, so the default check-before-routing order already matched and needed no change.
 
 ## Sources
 

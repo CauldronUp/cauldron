@@ -17,6 +17,19 @@
 #      decision rather than removing the finding, so code that counts rows
 #      re-reports something a human already assessed.
 #
+# No account needed to check what api.snyk.io does with no credential at all,
+# and struck live on 2026-09-05 that turned out to be worth checking: every
+# v1 path answers an unauthenticated request the same way, and it is not the
+# flat {code, message, userMessage} shape the rest of this file uses. It is
+# JSON:API -- {"jsonapi":{"version":"1.0"},"errors":[{"status":"401",
+# "details":"Unauthorized"}]}, application/vnd.api+json -- byte-identical
+# whether nothing was sent, a garbage token was sent, or a Bearer-prefixed one
+# was, on three different paths. A case in this file had asserted the flat
+# shape for a Bearer-prefixed credential and had never been run; it was
+# wrong, and is fixed below. A path nothing declares is a different failure
+# again: 404, zero bytes, no Content-Type -- so routing is resolved before
+# the credential is judged at all, which after_routing: true now says.
+#
 # Tokens below are fixtures, not secrets.
 
 recipe: snyk
@@ -34,6 +47,10 @@ auth:
   prefix: "token "
   keys:
     - cauldron-snyk-token
+  # Verified live 2026-09-05: a path nothing declares is a 404 with no
+  # credential sent, not the 401 an unauthenticated request to a real path
+  # gets. Routing is resolved before the credential is judged.
+  after_routing: true
 
 responses:
   list:
@@ -43,10 +60,12 @@ responses:
     style: flat
     code_field: code
     message_field: message
-    fields:
-      # Snyk sends two messages: one for logs and one safe to show a person.
-      # An integration that surfaces the wrong one leaks internal detail.
-      userMessage: An error occurred. Please contact support if it persists.
+    # userMessage used to live here, as a field every error carries. Verified
+    # live 2026-09-05: the one failure this Recipe could check without an
+    # account -- an unauthenticated request -- carries no userMessage at all,
+    # so a field declared here would have been served on a failure that does
+    # not send it. It is declared per-error below instead, on the ones this
+    # Recipe has not been able to check.
 
 resources:
   issue:
@@ -214,21 +233,57 @@ errors:
     message: Rate limit exceeded
     headers:
       Retry-After: "1"
+    fields:
+      userMessage: An error occurred. Please contact support if it persists.
 
+  # Verified live against api.snyk.io 2026-09-05, and not the flat {code,
+  # message} shape below: an unauthenticated request to a v1 path -- with no
+  # token, or with a garbage one, byte-identical either way -- is intercepted
+  # before it reaches whatever answers the rest of this file and comes back
+  # JSON:API shaped, application/vnd.api+json, {"jsonapi":{"version":"1.0"},
+  # "errors":[{"status":"401","details":"Unauthorized"}]}. "details", not
+  # "detail". Checked on three different v1 paths (GET and POST) to make sure
+  # it was the gateway and not one route.
+  #
+  # The top-level "jsonapi" object is not reproduced: a named error's fields
+  # nest inside its entry, not beside the envelope, and the envelope-level
+  # fields belong to responses.error and would leak onto every other error in
+  # this file, none of which could be checked without an account. Modelling
+  # the part that could be checked rather than guessing the rest true.
   authentication_error:
     status: 401
-    code: "401"
-    message: Invalid auth token provided
+    message: Unauthorized
+    style: list
+    key: errors
+    message_field: details
+    code_field: "-"
+    headers:
+      Content-Type: application/vnd.api+json
+    fields:
+      status: "401"
+
+  # Verified live 2026-09-05: a path nothing declares answers 404 with zero
+  # bytes and no Content-Type at all, unauthenticated. Not the JSON-API shape
+  # above and not the flat one below -- silence, the same as api.snyk.io's
+  # own credential-shaped answer is not once you are past its gateway to a
+  # path that resolves to nothing.
+  unknown_route:
+    status: 404
+    empty: true
 
   resource_missing:
     status: 404
     code: "404"
     message: "Not found: {detail}"
+    fields:
+      userMessage: An error occurred. Please contact support if it persists.
 
   parameter_missing:
     status: 400
     code: "400"
     message: "{detail} is required"
+    fields:
+      userMessage: An error occurred. Please contact support if it persists.
 
   # A token scoped to one organisation cannot read another's projects, and
   # the failure names neither the organisation nor the scope.
@@ -236,6 +291,8 @@ errors:
     status: 403
     code: "403"
     message: Access to this resource is forbidden
+    fields:
+      userMessage: An error occurred. Please contact support if it persists.
 
   # Snyk refuses to test a project whose manifest it cannot parse, which is
   # the failure a monorepo with an unusual layout produces.
@@ -243,6 +300,8 @@ errors:
     status: 422
     code: "422"
     message: Could not parse the manifest file for this project
+    fields:
+      userMessage: An error occurred. Please contact support if it persists.
 
 fixtures:
   empty: {}
@@ -303,6 +362,54 @@ fixtures:
 # Conformance cases, read from Snyk's API documentation rather than observed
 # against a live organisation. The verify report says so.
 conformance:
+  - name: an unauthenticated v1 request answers JSON:API shaped, not the flat shape this file otherwise models
+    # Struck on /v1/user/me, a path this Recipe does not model, to be sure the
+    # shape belonged to the gateway rather than one route -- and confirmed
+    # again on /v1/org/{id}/project/{id}, which this Recipe does. The request
+    # below uses the one it declares, so the case can run.
+    source: https://api.snyk.io/v1/user/me
+    verified: "2026-09-05"
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/vnd.api+json
+      body:
+        errors[0].status: "401"
+        errors[0].details: Unauthorized
+      absent:
+        # The flat shape's fields. Neither is sent by the gateway that
+        # answers an unauthenticated request.
+        - code
+        - message
+        - userMessage
+
+  - name: a garbage token answers byte-identical to no token at all
+    source: https://api.snyk.io/v1/user/me
+    verified: "2026-09-05"
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: token garbage-invalid-token-000
+    expect:
+      status: 401
+      body:
+        errors[0].status: "401"
+        errors[0].details: Unauthorized
+
+  - name: a path nothing declares is a 404 with nothing in it
+    source: https://api.snyk.io/v1/not-a-real-endpoint
+    verified: "2026-09-05"
+    request:
+      method: GET
+      path: /v1/not-a-real-endpoint
+    expect:
+      status: 404
+      no_body: true
+
   - name: listing projects is a POST, and a GET is not a smaller version of it
     # Snyk's v1 project listing takes its filters in a body, so the endpoint
     # that reads like a GET is a POST. A client that calls GET does not get
@@ -380,20 +487,26 @@ conformance:
       absent:
         - lastTestedDate
 
-  - name: the credential scheme is token, not Bearer
-    source: https://docs.snyk.io/snyk-api/authentication-for-api
+  - name: the credential scheme is token, not Bearer -- and a Bearer prefix answers exactly like no credential at all
+    source: https://api.snyk.io/v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222
+    verified: "2026-09-05"
     fixture: small-org
+    # This case used to send the request against /v1/orgs, a path this
+    # Recipe never declared as a route, and assert a flat {code, message}
+    # body that was never checked against the live API. Struck live, a
+    # Bearer prefix answers byte-identical to the absent and garbage-token
+    # cases above -- the gateway does not distinguish a malformed scheme
+    # from a missing or a wrong credential.
     request:
       method: GET
-      path: /v1/orgs
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222
       headers:
         Authorization: Bearer cauldron-snyk-token
     expect:
       status: 401
       body:
-        code: 401
-      matches:
-        message: 'Invalid auth token'
+        errors[0].status: "401"
+        errors[0].details: Unauthorized
 
   - name: the error carries a separate message for a person
     source: https://docs.snyk.io/snyk-api

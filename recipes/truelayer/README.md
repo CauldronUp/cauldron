@@ -2,15 +2,19 @@
 
 Emulates the truelayer API (v1), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**16 conformance cases, 2 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+The consent and transaction cases still cite documentation, since a real connection needs a real bank. The credential shape needed no consent at all, and checking it live found this Recipe's own message wrong.
 
 ## What this Recipe found
 
 A consent lasts ninety days from when it was granted, not from last use, and on day ninety-one every call against that connection fails -- the only fix is the customer going back to their bank to re-authorise. The expiry date is stated exactly once, in the original token response; miss it and you find out by failing. A revoked consent and an expired one also both arrive as the same 403, distinguished only by an error code buried inside it, and only one of those two is something prompting the customer sooner would have prevented.
 
 Pending and settled transactions are two different lists for the same money, and a pending transaction's `transaction_id` changes once it settles -- matching the two lists on id loses every transaction exactly once.
+
+## What checking it live found
+
+An absent credential and a garbage bearer value carry the same code, `invalid_token`, and disagree only on `error_description` -- empty for nothing sent, `"The signature is invalid"` for something sent that does not verify. Neither was the generic sentence this Recipe had claimed for both. A path nothing declares gets the absent-shaped answer too, checked before routing.
 
 ## Sources
 

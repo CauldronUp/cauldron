@@ -2,14 +2,18 @@
 
 Emulates the Square API (2026-01-22), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**13 conformance cases, 4 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Most of this Recipe still cites documentation, since Square's own record-level behaviour needs a real account. What an unauthenticated request gets back does not, and checking it live confirmed the credential shape and found a routing claim this Recipe had never made.
 
 ## What writing this Recipe changed
 
 Its money is an object in minor units rather than a number, so a client that
 treats an amount as a scalar is wrong twice over.
+
+## What checking it live found
+
+The credential shape held up: an absent bearer and a garbage one answer byte-identical 401 `AUTHENTICATION_ERROR`/`UNAUTHORIZED`, checked before `Square-Version` is ever asked for. What was missing: a path nothing declares and a method a real path does not support both answer the same 404 `INVALID_REQUEST_ERROR`/`NOT_FOUND`, `"Resource not found."` -- there is no 405 anywhere in this API -- with no credential sent on either request, so routing is resolved before the credential is judged. `after_routing: true` says so now. A pre-existing case named "a bad token is refused" had also sent no token at all; the name is fixed and a case with an actual garbage token sits beside it.
 
 ## Sources
 

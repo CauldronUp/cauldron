@@ -2,9 +2,9 @@
 
 Emulates the Webflow API (2.0.0), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Webflow has no sandbox, so the CMS and collection cases still cite documentation. The credential shape needed no site at all, and checking it live found this Recipe's own sentence and code wrong.
 
 ## What writing this Recipe changed
 
@@ -13,6 +13,10 @@ being filled in automatically, so a site that had never been published still
 carried a `lastPublished`. The emulator was claiming events that never happened,
 and no test written against it could have caught that -- the value was always
 there, so nothing ever looked wrong.
+
+## What checking it live found
+
+No token at all and a present, wrong one are byte-identical: `{"message":"Request not authorized","code":"not_authorized",...}`, not `"unauthorized"`/`"The access token is invalid or has been revoked"` this Recipe had claimed. A path nothing declares answers a completely different, unrelated shape -- a raw framework 404 with `"code"` as a bare number -- recorded in the header rather than modelled, since this Recipe's error envelope carries a constant pair of fields on every failure that the route-not-found response does not send.
 
 ## Sources
 

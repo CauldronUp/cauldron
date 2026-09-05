@@ -2,9 +2,9 @@
 
 Emulates the Twilio API (2010-04-01), for local development and tests.
 
-**6 conformance cases, none checked against a live API.**
+**9 conformance cases, 3 checked against the live API on 2026-09-05.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Twilio's sandbox sends real messages to real phones, so the message-sending cases still cite documentation. The credential and routing shapes needed no account at all, and checking them live found this Recipe's own message incomplete.
 
 ## What writing this Recipe changed
 
@@ -15,6 +15,10 @@ key in the password.
 
 An early round also found that single-object routes matched nothing at all here,
 so every fetch of one record answered 404.
+
+## What checking it live found
+
+No credential at all and a present, wrong Basic one share code `20003` and disagree on the sentence -- `"No credentials provided"` against `"invalid username"` -- and this Recipe had only ever claimed the second for both. A path nothing declares answers XML, not the JSON every declared route sends: Twilio negotiates format by the `.json` suffix on a real route, and there is no suffix to read on a path that was never a route at all -- checked before the credential is judged, not after.
 
 ## Sources
 
