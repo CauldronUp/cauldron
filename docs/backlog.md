@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**220 more listings across 145 Recipes declare no paging at all**, and the
+**216 more listings across 142 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,16 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+**openFDA's default page size is one.** A bare request answers a single drug
+label with `meta.results {"skip": 0, "limit": 1, "total": 262663}` -- the API
+echoing both parameter names back at the caller -- and this Recipe was serving
+ten. A client that never sets a limit saw ten here and one from openFDA, which
+is the difference between a loop that runs and a loop that thinks it has
+finished. Zenodo takes `size` and `page`, both visible in its own next link,
+against a collection of 7,266,591 records. UK Police's two listings are
+reference lists -- fifteen crime categories, thirty-six months of dates -- and
+come back whole.
 
 **Open Trivia DB's answer was in this file.** The row for it above says "the
 API has no pagination to declare -- `amount` caps at fifty and there is no
