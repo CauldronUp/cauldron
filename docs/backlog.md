@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**141 more listings across 90 Recipes declare no paging at all**, and the
+**132 more listings across 83 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,31 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Ory Kratos carries **four** paging parameters on one endpoint, and they disagree
+with each other. The modern pair is `page_size` (default 250, maximum 500) and
+`page_token`. Beside them sit `per_page` (default 250, maximum **1000**) and
+`page`, both marked "DEPRECATED: Please use `page_token` instead" -- two page
+sizes on the same route that do not agree on their own ceiling.
+
+And the deprecated `page` is not a page number. Ory says so outright: "This value
+is currently an integer, but it is not sequential. The value is not the page
+number, but a reference. The next page can be any number and some numbers might
+return an empty list. For example, page 2 might not follow after page 1. And even
+if page 3 and 5 exist, but page 4 might not exist." A client that read the name,
+saw an integer, and incremented it walks the collection in an order nobody
+defined and lands on empty pages that mean nothing. This is the sharpest example
+yet of why a parameter's *name* is not its *semantics*, and why guessing from the
+shape of a query string is not a substitute for reading.
+
+The page sizes keep being nothing like ten: Kratos serves **250**, InfluxDB 20
+with a ceiling of 100, Qdrant's points query 10 (right by luck, in the body of a
+POST, with `offset` being read as a cursor). Grafana's `/search` documents the
+part that usually has to be inferred -- "Numbering starts at 1. limit param acts
+as page size" -- and caps at 5000. Four more settle as `none` because the request
+is the collection: Qdrant's collection list, Cohere's embed, Weaviate's batch
+create, FusionAuth's user lookup. Cohere's rerank is a page size called `top_n`
+in a body, with nothing to resume from.
 
 Braze is the first route in this collection to need `first_page: 0`. Its own
 description: "The page of campaigns to return, defaults to 0 (returns the first
