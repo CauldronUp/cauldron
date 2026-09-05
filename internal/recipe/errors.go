@@ -66,7 +66,7 @@ type Error struct {
 	// detail -- {"type", "title", "status", "traceId"} -- which has no code
 	// anywhere in it. A client switching on a code has nothing to switch on,
 	// and that is the thing worth serving.
-	CodeField string            `yaml:"code_field"`
+	CodeField string `yaml:"code_field"`
 	// TypeField overrides the Recipe-wide field carrying the category, for
 	// this failure alone, and "-" removes it.
 	//
