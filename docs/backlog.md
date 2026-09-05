@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**76 routes across 38 Recipes** still page by a parameter nobody named.
+**72 routes across 36 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,18 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Sentry names its page size two ways on one API: `limit` on the issues listing
+and `per_page` on the organisation's projects and releases, with the same
+`cursor` on all three. The runtime read `limit` everywhere, which was right once
+and wrong twice. Its description is recorded and fingerprinted.
+
+Google Pub/Sub takes `pageSize` and `pageToken`, from the discovery document
+Google publishes -- cited in the Recipe rather than recorded, because that
+document is not OpenAPI and `cauldron drift` could not read it. Its pull route
+was already carrying a careful note saying there is no cursor there at all, and
+now says so in the declaration too: `cursor_param: "-"`, rather than leaving the
+runtime to read a query parameter on a request that carries no query string.
 
 Klaviyo, CircleCI and Miro were the same hunt and the sharpest three. Klaviyo
 takes `page[size]` and `page[cursor]`, square brackets included -- JSON:API's
