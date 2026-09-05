@@ -2,11 +2,13 @@
 
 Emulates the alpaca API (v2), for local development and tests.
 
-**19 conformance cases, 2 checked against the live API.**
+**20 conformance cases, 2 checked against the live API.**
 
 Two were struck live against paper-api.alpaca.markets on 2026-09-05, with no headers at all and with a made-up key id and secret -- byte-identical 401 either way. The message had been "request is not authorized"; the live host sends "unauthorized.", lowercase, with the period.
 
 ## What this Recipe found
+
+`GET /v2/account` was left unmodelled with a note saying the format had no way to describe "an endpoint that answers with one object and takes no identifier". The format had two ways, and the note outlived both. It is modelled now, and it carries the trap the note was written to flag: **`buying_power` is not cash.** On a margin account it is a multiple of what the account holds -- four times it for a pattern day trader, which is what Alpaca's paper accounts are by default -- so code that sizes a position from `buying_power` buys four times what the operator has. Both are strings, like every quantity on an order.
 
 An Alpaca order is not a fill. An order for ten shares can sit at partially_filled indefinitely -- three filled at one price, four at another, three never -- and that's a real position with real money spent, so code that waits for status == "filled" waits forever while holding shares it never accounted for. Worse, the order listing shows only open orders by default, so the common sequence is: submit an order, it fills, list your orders, see nothing, and conclude the order never existed -- nothing errored, the list was just answering a different question.
 
