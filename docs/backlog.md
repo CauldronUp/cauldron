@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**153 more listings across 96 Recipes declare no paging at all**, and the
+**141 more listings across 90 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,33 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Braze is the first route in this collection to need `first_page: 0`. Its own
+description: "The page of campaigns to return, defaults to 0 (returns the first
+set of up to 100)" -- and there is no per-page parameter at all, so a hundred is
+what Braze serves and the caller cannot ask for fewer. A client that starts at
+page 1, which is what every other paged provider here would want, silently skips
+the first hundred records and is never told. That key existed for exactly this
+and had never been used.
+
+Hetzner repeats Aha!'s lesson. Its `/servers` operation enumerates `name`,
+`label_selector`, `sort` and `status` in its own parameter list, and `page` and
+`per_page` appear nowhere on it -- they are in the API-wide section, along with
+the `meta.pagination` object every listing returns. Twice now, a generator that
+reads only per-operation parameters would produce a client that cannot page at
+all.
+
+Eight GraphQL listings move too, and the honest framing matters. These Recipes
+each say "nothing is filtered, ordered or paginated -- `first`, `after` ...
+accepted and honoured by nothing", because no GraphQL is parsed here. That is
+still true of a query that inlines its arguments in the document. It is no longer
+true of the other spelling: `in: body` with `variables.first` and
+`variables.after` reads the variables a Relay-style client actually sends, so
+`{"query": "...", "variables": {"first": 2}}` gets two records. The alternative
+being replaced is the engine reading `limit` out of the query string of a POST --
+a name no GraphQL client has ever sent. Linear's own header supplies the one real
+default among them: "first defaults to 50, which is enough that a small workspace
+never notices and a real one silently truncates."
 
 Ten more, and the defaults keep getting further from ten. Papertrail's log search
 serves **1000** by default and caps at 10,000 -- a hundred times what the fake was
