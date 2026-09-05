@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**34 routes across 17 Recipes** still page by a parameter nobody named.
+**31 routes across 16 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,14 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+QuickBooks is a different shape of unanswerable and worth naming separately.
+Its listing endpoint is `/query` and its only parameter is `query`, whose value
+is a statement rather than a filter -- so whatever paging it offers is written
+inside another parameter's value, which is not a place this format can address.
+Both names now say the provider accepts none, which is true of the query string
+and is the honest half of the picture; before, the runtime was reading `limit`
+and `cursor` off a request that carries neither.
 
 Snyk's three were already read -- its v1 API "answers these with everything it
 has", so the size is fixed and no name is accepted -- and only the position was
