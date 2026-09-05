@@ -17,7 +17,8 @@ Nothing here is actually spent; which state a transaction holds, and whether it 
 ## Sources
 
 - Documentation: https://docs.ramp.com/developer-api/v1/reference
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://docs.ramp.com/openapi/developer-api.json, last checked 2026-09-05
+  `cauldron drift ramp` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

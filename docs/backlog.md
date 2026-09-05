@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**49 routes across 24 Recipes** still page by a parameter nobody named.
+**42 routes across 21 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,20 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+Webflow, Lob and Ramp finish the ones whose references could be read. Webflow's
+two site-level listings declare no query parameters at all, so both names are
+`"-"`; its items listing takes `limit` and `offset`, "default 100, maximum 100".
+Lob takes `limit`, "1-100, default 10", and `after`, with `before` for the other
+direction and only one allowed in a query at a time. Ramp takes `page_size`,
+"between 2 and 100 ... the default value 20", and `start`, "the ID of the last
+entity of the previous page" -- its description is published behind its
+documentation site and is recorded and fingerprinted now.
+
+Lob's next page is a URL too, under `next_url` with `previous_url` beside it,
+and this Recipe serves neither. That one is stated rather than fixed: the field
+would take the URL, and what it would not take is the pair, which is how a
+client knows which direction it is going.
 
 Shopify and Zendesk both advertise their next page somewhere this Recipe was
 not looking, and both take a page size called something else. Shopify takes
