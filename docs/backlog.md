@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**42 routes across 21 Recipes** still page by a parameter nobody named.
+**38 routes across 19 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,14 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+Paddle and Cloudinary are the same again, and Paddle is the sharper of the two.
+Its page size is `per_page` and its position is `after`, and its own reference
+says to "use the `next` URL directly" because that URL already carries the
+filters and sort the request was made with -- so `meta.pagination.next` is a
+whole URL, and this Recipe served the bare cursor there. Two of its cases sent
+`?limit=`, which Paddle does not have. Cloudinary takes `max_results`, ten by
+default, and `next_cursor`, the same word the response carries it back under.
 
 Webflow, Lob and Ramp finish the ones whose references could be read. Webflow's
 two site-level listings declare no query parameters at all, so both names are
