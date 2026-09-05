@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**126 more listings across 80 Recipes declare no paging at all**, and the
+**119 more listings across 75 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,25 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Twilio Verify takes three paging parameters and one of them does nothing. Beside
+`PageSize` ("The default is 50, and the maximum is 1000") and `PageToken` sits
+`Page`, documented in full as: "The page index. **This value is simply for client
+state.**" The server does not read it. A client that pages by incrementing `Page`
+-- the obvious thing to do with a parameter called `Page`, on an API whose
+response also carries a page index -- sends a number nobody looks at and receives
+the first page forever. That is now the third distinct way a parameter's name has
+lied about its job in this sweep, after Ory's non-sequential `page` and Polygon's
+`limit` that is not a page size.
+
+Bandwidth adds a constraint no key here can hold, so it is written down: "The sum
+of limit and after cannot be more than 10000" -- a ceiling on the *walk* rather
+than on the page. It also has `limitTotalCount`, which caps the reported
+`totalCount` at 10,000 when true and gives "an accurate totalCount" when false.
+The total is either true or fast and the caller picks; MongoDB Atlas's
+`includeCount` is the same idea spelled differently. Amazon's Selling Partner API
+just spells everything out -- `MaxResultsPerPage` ("Value must be 1 - 100.
+Default 100") and `NextToken` -- which is a hundred where the fake served ten.
 
 Polygon's aggregates endpoint takes a parameter called `limit` that is **not a
 page size**, and it is the worst thing this survey has found. Polygon's own
