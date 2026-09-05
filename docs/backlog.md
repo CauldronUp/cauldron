@@ -1079,7 +1079,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**288 more listings across 184 Recipes declare no paging at all**, and the
+**280 more listings across 180 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1151,6 +1151,19 @@ one half of. CometChat's groups listing takes `page` and `perPage`, a hundred by
 default and a thousand at most, out of the `chat-apis.json` this Recipe already
 recorded -- `cauldron check` cannot match it automatically there, because the
 description's server carries a `/v3` prefix the Recipe's routes do not.
+
+Eight more were settled straight out of the twenty-nine descriptions
+`cauldron discover` found. Netlify's sites and deploys take `page` and
+`per_page`; Finch's employer directory takes `limit` and `offset`, with both
+numbers in the parameter's own words -- "defaults to 100, maximum 10000";
+OpenAlex takes `per_page` and `page`, and names its own ceiling in `page`'s
+description -- "Use cursor for deep pagination beyond 10,000 results" -- so the
+cursor half is recorded rather than modelled. Four do not page at all: Pinecone's
+indexes and Finch's providers declare no query parameters and answer the whole
+list; monday.com's single GraphQL endpoint carries paging inside the query
+rather than beside it; and iNaturalist's single-taxon fetch answers inside a
+paging envelope with nothing to page, which is the finding that Recipe's header
+opens with.
 
 Docker Hub's repositories listing had no paging block while the tags listing
 beside it had a careful one, and both take the same `page` and `page_size` --
