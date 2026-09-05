@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**132 more listings across 83 Recipes declare no paging at all**, and the
+**126 more listings across 80 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,31 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Polygon's aggregates endpoint takes a parameter called `limit` that is **not a
+page size**, and it is the worst thing this survey has found. Polygon's own
+words: "Limits the number of base aggregates queried to create the aggregate
+results. Max 50000 and Default 5000." It bounds the underlying bars Polygon reads
+in order to *compute* the answer. Asking for `limit=2` on a monthly aggregation
+does not return two months -- it computes months out of two base aggregates and
+returns whatever that produces.
+
+Every other mistake in this document makes a client see too few records. This one
+makes it see **wrong numbers**, in a response that looks complete, with no short
+page and no error to notice. A client that read the name and paged on it would
+have been quietly recomputing its own data. The route declares `style: none` --
+there is no position parameter at all, the window is the `from` and `to` in the
+path -- and the validator's refusal to let `limit_param` sit beside `none` is
+exactly the right outcome here.
+
+MongoDB Atlas pages by `itemsPerPage` (default 100, maximum 500) and `pageNum`,
+so both halves were wrong and the page was a tenth of what Atlas serves; it also
+takes `includeCount`, defaulting to true, which means the total a client loops on
+is something a caller can switch off. GoCardless's bank-account-data API is
+another one-provider-two-listings case: requisitions take `limit` and `offset`
+(defaults 100 and 0), and the transaction listing takes `date_from` and `date_to`
+and nothing else -- narrowing a date range is not paging, and a client swamped by
+transactions has no parameter to ask for fewer.
 
 Ory Kratos carries **four** paging parameters on one endpoint, and they disagree
 with each other. The modern pair is `page_size` (default 250, maximum 500) and
