@@ -537,6 +537,43 @@ type Pagination struct {
 	// Empty keeps the trimming behaviour, which is what every Recipe written
 	// before this assumed.
 	OverLimit string `yaml:"over_limit"`
+	// MayOvershoot says a page can carry more records than the size asked
+	// for, for the providers whose page size is advice rather than a
+	// contract.
+	//
+	// Missive documents it in one sentence -- "A page may return more
+	// [items] than limit" -- on both of its listings. MaxLimit and OverLimit
+	// describe the two ways a provider can serve *less* than was asked for,
+	// and there was no way at all to say it serves more.
+	//
+	// It matters because of the loop everybody writes. `while len(page) ==
+	// limit: fetch(next)` terminates on a page of 26 when the caller asked
+	// for 25, which is the first page, so the walk stops after one page and
+	// reports whatever it found as the whole collection. Nothing errors and
+	// nothing is short -- the client received *more* data than it asked for
+	// and concluded there was no more.
+	//
+	// Declared, this emulator serves one extra record on every page that is
+	// not the last, so that loop breaks here rather than in production.
+	MayOvershoot bool `yaml:"may_overshoot"`
+	// MayUndershoot says a page can carry fewer records than the size asked
+	// for without being the last page, for the providers that fill a page
+	// from a source that may not have enough ready.
+	//
+	// Onfleet is the reason. Its task listing "will return up to 64 tasks but
+	// may return fewer", and it takes no size parameter at all, so a caller
+	// cannot even ask for a number it could compare against.
+	//
+	// This is the same bug as MayOvershoot from the other side, and it is the
+	// commoner spelling: `while len(page) == limit` and `if len(page) <
+	// limit: break` both stop early, mid-collection, on a page that was
+	// merely thin. What ends a walk at these providers is the cursor going
+	// absent, and nothing else.
+	//
+	// Declared, this emulator serves one fewer record on every page that is
+	// not the last, and never fewer than one -- a page of zero would end the
+	// walk for a different and untrue reason.
+	MayUndershoot bool `yaml:"may_undershoot"`
 	// LimitParam names the query parameter carrying the page size, for the
 	// providers that do not call it "limit". Google Calendar calls it
 	// maxResults, GitHub calls it per_page, Salesforce does not accept one at

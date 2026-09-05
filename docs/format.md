@@ -233,6 +233,8 @@ no route to take an ordering from — the Recipe's own decides there.
 | `limit` | int | The default page size. |
 | `max_limit` | int | The largest page the provider will serve, for the ones that cap and trim. |
 | `over_limit` | string | The failure for asking for a bigger page, for the ones that refuse instead. |
+| `may_overshoot` | bool | The page size is advice and a page may carry **more** records than were asked for -- Missive: "A page may return more [items] than limit". Declared, a page that is not the last serves one extra, because `while len(page) == limit` terminates on the first page otherwise. |
+| `may_undershoot` | bool | A page may carry **fewer** records than were asked for without being the last -- Onfleet "will return up to 64 tasks but may return fewer". Declared, a page that is not the last serves one fewer, never zero. The end is the cursor going absent, not a thin page. |
 | `limit_param` | string | The parameter carrying the page size, for providers not calling it `limit`. |
 | `cursor_param` | string | The parameter carrying the position to resume from. |
 | `first_page` | int | The number the provider gives its first page, for the `page` style. |

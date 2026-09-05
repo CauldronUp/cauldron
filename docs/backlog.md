@@ -1361,10 +1361,30 @@ page size parameter at all, and its own reference says the endpoint "will return
 up to 64 tasks but may return fewer". A short page is therefore *not* evidence of
 the end -- the end is `lastId` going absent -- so the loop-termination heuristic
 that breaks against a provider which trims also breaks against one that simply
-undershoots, in the same direction, for the opposite reason. This format can say
-a provider trims (`max_limit`) and can say it refuses (`over_limit`), and has no
-way at all to say it overshoots, which Missive documents too: "A page may return
-more [items] than limit."
+undershoots, in the same direction, for the opposite reason. This format could say
+a provider trims (`max_limit`) and could say it refuses
+(`over_limit`), and had no way at all to say either of these. It has one now.
+`may_overshoot` and `may_undershoot` are declared on the two routes that needed
+them, and the emulator acts on both: a page that is not the last serves one extra
+record where the provider overshoots, and one fewer where it undershoots -- never
+zero, because an empty page ends a walk for a reason that is not true.
+
+Both are deliberate and deterministic rather than random. A fake that misbehaves
+only sometimes is a fake nobody can write a test against, and the entire point is
+to break the caller's loop *here*:
+
+```
+while len(page) == limit:
+    page = fetch(next)
+```
+
+Overshooting breaks it on the very first page, because 26 != 25. Undershooting
+breaks it in the middle, because 24 != 25. Neither errors, neither looks short --
+the overshooting one hands back *more* data than was asked for -- and both report
+a partial collection as the whole thing. The adjusted number is also the one the
+offset arithmetic uses, so a page that served 24 advances the position by 24; that
+is checked by a test that walks two pages and asserts the second does not begin
+on the record the first ended with.
 
 Two more positions are not really cursors and are declared as cursors anyway,
 with the mismatch written down rather than hidden. Papertrail's `max_id` is a

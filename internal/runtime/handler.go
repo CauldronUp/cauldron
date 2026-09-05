@@ -621,6 +621,24 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		limit = max
 	}
 
+	// And the providers for whom the page size is advice. Both of these are
+	// deliberate and deterministic: a fake that overshoots or undershoots only
+	// sometimes would be a fake nobody could write a test against, and the
+	// point is to break the caller's loop here rather than in production.
+	//
+	// The adjusted number is the one the rest of this function uses, which
+	// keeps the offset arithmetic honest: a page that served 24 records
+	// advances the position by 24 rather than by the 25 that were asked for.
+	if !unpaged {
+		if matched.spec.Pagination.MayOvershoot {
+			limit++
+		}
+
+		if matched.spec.Pagination.MayUndershoot && limit > 1 {
+			limit--
+		}
+	}
+
 	// The declared style decides what the position parameter means. It was
 	// never read, so 149 shipped routes declaring offset or page numbering were
 	// paged as though they were cursor based, which meant not paged at all: the
