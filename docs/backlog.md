@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**30 routes across 15 Recipes** still page by a parameter nobody named.
+**31 routes across 16 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**273 more listings across 174 Recipes declare no paging at all**, and the
+**269 more listings across 171 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1328,6 +1328,28 @@ omission: one Recipe looked at paging and did not finish, the other has not
 looked.
 
 ### The Recipe often knew already
+
+Paystack is the clearest of them and was live-verified when it was written: /bank
+"does when asked for with no parameters at all: the whole collection, unpaged --
+which is also genuinely what the live endpoint does until use_cursor is named",
+and ?perPage=abc "returns the entire list exactly as no perPage does". The
+runtime was paging it at ten reading `limit`, a parameter Paystack has never had
+on that route under any flag.
+
+Europe PMC needs no reference at all: it echoes the request back inside the
+response this Recipe already pins, as `{"cursorMark": "*", "pageSize": 25,
+"synonym": false}` -- both names and the default, in a field the file was already
+asserting. ClinicalTrials.gov names its own in a refusal: `?pageSize=notanumber`
+answers "Value provided in parameter `pageSize` cannot be converted to 32-bit
+integer", struck live and pinned in a case. A provider that names a parameter
+while refusing it has named it.
+
+ClinicalTrials.gov is also why the unnamed count went **up** by one while the
+unstated count fell by four. Its size is established and its position is not --
+nothing here ever reached a second page -- so the route names one and leaves the
+other, and the counter is right to say so. A half-answer that says which half is
+better than silence and better than a guess.
+
 
 Six of these were settled without reading anything new, because the Recipe had
 already read it and could only write it down. Toggl's header says "since,
