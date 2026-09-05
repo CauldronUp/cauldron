@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**50 routes across 25 Recipes** still page by a parameter nobody named.
+**49 routes across 24 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,17 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+**A gap recorded in prose does not notice when it is closed.** Three Recipes --
+Ably, Buildkite and GitHub -- carried a sentence saying "Cauldron does not send
+Link headers", and all three declare `link_header` in the very same file. That
+was true when each was written, Link was modelled afterwards, the envelopes were
+updated and the sentences were not. A reader was being told a limitation that
+had been fixed, in a file whose whole value is that its prose can be trusted.
+Five sentences across three Recipes, corrected. Ably also names the parameter
+inside its link now -- the word there is this fake's own, because a client
+follows a Link URL as given rather than building one, and saying so is what
+stops the runtime supplying the same word silently.
 
 Dropbox writes both names down now, and records the one thing this format
 cannot do about it: Dropbox does not take a cursor on `list_folder` at all. It
