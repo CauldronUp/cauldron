@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**72 routes across 36 Recipes** still page by a parameter nobody named.
+**70 routes across 34 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,17 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+DynamoDB was carrying Query's parameter name on ListTables. AWS's own service
+model gives ListTables exactly two inputs -- `ExclusiveStartTableName` and
+`Limit` -- while `ExclusiveStartKey` belongs to Query and Scan, which resume
+from a key map rather than a name. A caller resuming a table listing was sending
+a field ListTables does not read. Query and Scan themselves had a careful note
+saying no cursor can be declared for them, and now say it in the declaration:
+`cursor_param: "-"`, rather than leaving the runtime to read a query parameter
+off a request that carries no query string. SQS's ReceiveMessage is the same
+shape and got the same treatment -- AWS's model gives it no continuation input
+of any kind, unlike the ListQueues beside it.
 
 Sentry names its page size two ways on one API: `limit` on the issues listing
 and `per_page` on the organisation's projects and releases, with the same
