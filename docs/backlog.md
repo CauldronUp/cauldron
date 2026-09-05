@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**119 more listings across 75 Recipes declare no paging at all**, and the
+**114 more listings across 72 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,21 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Google Books is `maxResults` and `startIndex` -- "the default is 10, and the
+maximum allowable value is 40", "the index of the first item is 0" -- so the size
+was right by coincidence under a name Google does not accept, and the ceiling of
+forty is now enforced rather than described. That one was read from Google's own
+guide rather than struck live, because the API answered **429**, "Quota exceeded
+for quota metric", to an anonymous request. A rate limit is not something to
+retry past, and the guide was the better source anyway.
+
+Dwolla's `limit` (default 25, maximum 200) and `offset` are declared on all three
+of its listings, with the provenance stated: the customers reference is the one
+that states them, and the funding-source and micro-deposit listings take them as
+Dwolla's API-wide convention rather than as separately confirmed fact.
+MercadoLibre's country list answers all 46 in a bare array and ignores both
+`limit` and `offset`, struck live.
 
 Twilio Verify takes three paging parameters and one of them does nothing. Beside
 `PageSize` ("The default is 50, and the maximum is 1000") and `PageToken` sits
