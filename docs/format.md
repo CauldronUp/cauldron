@@ -229,7 +229,7 @@ no route to take an ordering from — the Recipe's own decides there.
 
 | key | type | meaning |
 |---|---|---|
-| `style` | string | `cursor`, `offset` or `page`. |
+| `style` | string | `cursor`, `offset`, `page`, or `none` -- the provider serves the whole collection, takes no page size and no position, and offers no next page. `none` is the whole declaration; naming any other key beside it is refused. |
 | `limit` | int | The default page size. |
 | `max_limit` | int | The largest page the provider will serve, for the ones that cap and trim. |
 | `over_limit` | string | The failure for asking for a bigger page, for the ones that refuse instead. |
@@ -480,6 +480,10 @@ that exist because a Recipe once got them wrong quietly.
 - **An override changing carrier without saying what happens to the prefix.** Empty means
   inherit, and inheriting `"Bearer "` into a Basic channel refuses credentials the provider
   accepts — a fake stricter than the thing it stands in for.
+- **A paging block that says `none` and then describes paging.** `none` means the
+  provider serves the whole collection; a page size or a parameter name beside it is
+  a second claim the runtime ignores, so the file would describe paging that never
+  happens.
 - **A route both `public` and credentialled.** The exemption wins, so the credential is dead
   weight a reader takes for a claim.
 - **A key in both `keys` and `unentitled`.** Nothing can say whether it works.

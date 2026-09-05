@@ -28,7 +28,7 @@ var (
 
 	validSchemes    = []string{"bearer", "basic", "header", "query", "none"}
 	validOperations = []string{"create", "get", "list", "update", "delete"}
-	validPagination = []string{"", "cursor", "offset", "page"}
+	validPagination = []string{"", "cursor", "offset", "page", "none"}
 	// The categories a Recipe may declare. Kept short on purpose: a taxonomy
 	// with sixty words in it is a taxonomy nobody can hold in their head, and
 	// the point of this field is that somebody looking for a payments

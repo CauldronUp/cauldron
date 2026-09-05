@@ -486,7 +486,20 @@ func (p *PublicMode) UnmarshalYAML(value *yaml.Node) error {
 
 // Pagination describes how a list endpoint pages.
 type Pagination struct {
-	// Style is one of: cursor, offset, page.
+	// Style is one of: cursor, offset, page, none.
+	//
+	// none says the provider serves the whole collection: no page size, no
+	// position, no pointer to a next page. It exists because silence could not
+	// say it. A listing declaring nothing is paged anyway -- ten records,
+	// reading "limit" -- which is a claim about the provider that 344 routes
+	// across 222 Recipes never made, and could not be told apart from nobody
+	// having looked yet.
+	//
+	// Several providers' own descriptions settle it outright, declaring no
+	// query parameters at all on a listing: OpenAI's /v1/models, xAI's,
+	// Perplexity's, Supabase's projects, Upstash's Redis databases, Turso's
+	// organizations, Redis Cloud's subscriptions. Reading that and writing
+	// nothing down keeps the guess.
 	Style string `yaml:"style"`
 	Limit int    `yaml:"limit"`
 	// MaxLimit is the largest page a provider will serve, for the ones that

@@ -231,6 +231,19 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 			add("%s: pagination.style %q is not supported", where, route.Pagination.Style)
 		}
 
+		// "none" is the whole declaration. A page size, a parameter name or a
+		// starting page beside it is a second claim contradicting the first,
+		// and the runtime resolves it by ignoring them -- so the file would
+		// describe paging that never happens.
+		if route.Pagination.Style == "none" {
+			p := route.Pagination
+
+			if p.Limit != 0 || p.MaxLimit != 0 || p.OverLimit != "" ||
+				p.LimitParam != "" || p.CursorParam != "" || p.FirstPage != nil || p.In != "" {
+				add("%s: pagination.style is none, which says the provider serves the whole collection, and the block names paging details beside it", where)
+			}
+		}
+
 		if route.IDFrom != "" {
 			source, name, ok := strings.Cut(route.IDFrom, ":")
 

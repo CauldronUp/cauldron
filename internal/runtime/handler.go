@@ -566,9 +566,22 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 }
 
 func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
+	// A listing the Recipe says does not page serves what it holds. No size
+	// parameter is read, because the provider has none to read; no position
+	// parameter either; and nothing is truncated, so no cursor is offered.
+	//
+	// The number is a ceiling on a fake's own fixtures rather than a page
+	// size, and it is here because the store takes one. A fixture large
+	// enough to reach it is a fixture nobody would write.
+	unpaged := matched.spec.Pagination.Style == "none"
+
 	limit := matched.spec.Pagination.Limit
 	if limit <= 0 {
 		limit = 10
+	}
+
+	if unpaged {
+		limit = 1_000_000
 	}
 
 	// A declared name replaces the defaults rather than joining them. Google
@@ -580,7 +593,9 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	switch name := matched.spec.Pagination.LimitParam; name {
 	case "":
-		limit = from.int("limit", limit)
+		if !unpaged {
+			limit = from.int("limit", limit)
+		}
 	case "-":
 		// The provider accepts no name for the page size, so the declared one
 		// is the only one there is.
@@ -665,6 +680,14 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		}
 	default:
 		cursor := cursorOf(from, matched.spec.Pagination)
+
+		// Not on a listing that does not page. A cursor sent to one is an
+		// ordinary ignored parameter at the provider, and reading it here
+		// would answer a short page or refuse the request outright for a
+		// value the real API never looked at.
+		if unpaged {
+			cursor = ""
+		}
 
 		page, err = s.store.ListWhere(matched.spec.Resource, where, cursor, limit)
 

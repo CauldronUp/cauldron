@@ -1079,7 +1079,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**344 more listings across 222 Recipes declare no paging at all**, and the
+**301 more listings across 191 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1094,6 +1094,47 @@ and the first collection large enough to notice will not be one of ours.
 They are counted apart rather than folded in, because they are not the same
 omission: one Recipe looked at paging and did not finish, the other has not
 looked.
+
+### Silence could not say "this one does not page"
+
+That was half the difficulty, and it was the format's rather than anybody's
+diligence. A listing with an empty paging block and a listing whose provider
+serves the whole collection looked identical in a Recipe, and both were served
+ten records with a cursor. `pagination.style: none` says the second one now: no
+page size, no position, no pointer to a next page, and none of the three read
+from the request. Declaring anything else beside it is refused, because `none`
+is the whole statement.
+
+**Forty-three routes across twenty-seven Recipes were settled with it, from the
+descriptions those Recipes already record.** Eighteen listings have a
+description declaring no query parameters at all: OpenAI's `/v1/models`, xAI's,
+Perplexity's, Supabase's projects and its secrets, Upstash's Redis databases,
+Turso's organizations, Redis Cloud's subscriptions, Stability's engines,
+Checkout.com's payment actions, Livepeer's assets, NocoDB's bases, Checkly's
+runtimes, ClickHouse's organizations, SurrealDB's instances, Inngest's event
+runs and two of Scout APM's. Fourteen more declare a query string with filters
+in it and no paging parameter of any kind, which says more than silence does:
+Fly's machines, GitBook's pages, Mistral's models, Together's, ElevenLabs'
+voices, Flagsmith's flags, Spotify's tracks, Tink's providers, Basiq's
+accounts, ClickHouse's services, Turso's databases, Watchmode's search, Podcast
+Index's dead feeds and Scout APM's error groups.
+
+Eleven more had paging parameters written down and unread, and are now
+declared: Apify's dataset items (`limit` and `offset`, with "By default there is
+no limit" stated outright), Belvo's links and accounts (`page` and `page_size`,
+a hundred by default and a thousand at most), Checkly's check results (`limit`
+and a `nextId` cursor, beside a checks listing on the same API that pages by
+number), Chroma's collections, OpenAQ's parameters and locations (`limit` and
+`page`), Scout APM's endpoints, and all three of Svix's listings (`limit` and
+`iterator`, the same way every time).
+
+Scout APM's endpoints listing is the one to remember. Its description says
+"Omit for the full listing (no default limit). Supplying this switches the
+response to the paginated shape" -- so `results` is an array until you send a
+`limit`, an `offset` or a `sort_by`, and then it is an object carrying
+`endpoints`, `count`, `total_count` and `has_more`. A client reading
+`results.length` works until somebody adds a sort. That switch is stated in the
+Recipe and not modelled.
 
 ## What a delete answers with, mostly closed
 
