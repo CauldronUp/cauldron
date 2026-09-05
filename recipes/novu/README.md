@@ -2,9 +2,9 @@
 
 Emulates the novu API (v1), for local development and tests.
 
-**11 conformance cases, none checked against a live API.**
+**13 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.novu.co, no account and no key. This file's declared "API Key not found" matched a well-formed wrong key exactly -- but no Authorization header at all gets a different sentence, "Missing authorization header", which this file had never distinguished. Split below.
 
 ## What this Recipe found
 

@@ -2,9 +2,9 @@
 
 Emulates the Onfido API (v3.6), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**15 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.onfido.com, no account and no key -- and this file's declared authentication failure matched exactly, word for word, whether no Authorization header was sent at all or the wrong scheme (Bearer) was.
 
 ## What this Recipe found
 

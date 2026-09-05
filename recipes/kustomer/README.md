@@ -2,9 +2,9 @@
 
 Emulates the kustomer API (v1), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**15 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.kustomerapp.com, no account and no key -- a missing credential and a wrong one both answer the identical body. This file's own existing case had the sentence travelling under `detail`; the real failure carries it under `title` and has no `detail` field at all, so the case was passing against a shape the API does not send. Fixed, and the fix is scoped to this one failure rather than moved to the shared envelope, since the other failures in this file carrying `detail` have not been checked live.
 
 ## What this Recipe found
 

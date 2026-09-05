@@ -2,9 +2,9 @@
 
 Emulates the Modern Treasury API (v1), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**16 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against app.moderntreasury.com, no account and no key -- and found three distinct real failures where this file declared one, "Invalid credentials", never exercised by any case. A missing credential gets a JSON sentence naming the auth scheme; a correctly-shaped key nobody issued gets no body at all, zero bytes; and a key in the wrong shape gets a third, invalid_key, that this format's own auth.pattern mechanism cannot express without also accepting any correctly-shaped string outright -- stated rather than forced into a verdict this runtime cannot actually produce.
 
 ## What this Recipe found
 

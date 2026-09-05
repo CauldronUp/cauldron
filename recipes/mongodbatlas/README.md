@@ -2,9 +2,9 @@
 
 Emulates the MongoDB Atlas API (v2), for local development and tests.
 
-**6 conformance cases, none checked against a live API.**
+**7 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against cloud.mongodb.com, no account and no key -- and found two different failures where this file's own case expected one shape for both. No Authorization header at all gets a real Digest challenge with a JSON body whose `detail` matched this file exactly (the `errorCode` did not: the real one is `UNEXPECTED_ERROR`, not `NOT_ORG_GROUP_CREATOR`); a Bearer-shaped credential nobody issued gets no body at all, empty. This file's existing case asserted the JSON shape against the second scenario and had never been checked.
 
 ## What this Recipe found
 

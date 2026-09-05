@@ -2,9 +2,9 @@
 
 Emulates the Lob API (2020-02-11), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.lob.com, no account and no key. This file declared one authentication_error, code `unauthorized`, for every failure; the real API sends two different ones -- `unauthorized` / "Missing authentication" for no credential at all, and `invalid_api_key` / "Your API key is not valid. Please sign up on lob.com to get a valid api key." for a well-formed one nobody issued. Split below, along with `status_code`, which really is nested inside the error object on both.
 
 ## What this Recipe found
 

@@ -2,9 +2,9 @@
 
 Emulates the Mux API (v1), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**12 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.mux.com, no account and no key. This file declared one authentication_error, "Invalid credentials", for every failure; the real API sends two different sentences, neither of which is that -- a missing credential gets "This action must be completed through the dashboard interface.", and a secret nobody issued gets the plainer "Unauthorized request". Split below.
 
 ## What this Recipe found
 

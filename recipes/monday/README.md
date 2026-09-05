@@ -2,9 +2,9 @@
 
 Emulates the Monday API (2026-01), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**9 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.monday.com, no account and no key -- and found this file had never declared an auth failure at all, so a real refusal fell back to the runtime's own generic placeholder. Added now: a missing credential and a wrong one both answer `{"errors":[{"message":"Not authenticated","extensions":{"code":"NOT_AUTHENTICATED"}}]}`.
 
 ## What writing this Recipe changed
 

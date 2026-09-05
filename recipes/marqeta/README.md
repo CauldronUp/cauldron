@@ -2,9 +2,9 @@
 
 Emulates the marqeta API (v3), for local development and tests.
 
-**19 conformance cases, none checked against a live API.**
+**20 conformance cases, 3 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against sandbox-api.marqeta.com, no account and no key. This file declared the 401 as code "401" / "Unauthorized"; the real one, identical whether no credential is sent, a wrong one, or the two halves swapped, is code "401001" / "Invalid credential has been detected". Fixed below.
 
 ## What this Recipe found
 

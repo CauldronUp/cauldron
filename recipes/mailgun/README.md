@@ -2,9 +2,9 @@
 
 Emulates the Mailgun API (v3), for local development and tests.
 
-**7 conformance cases, none checked against a live API.**
+**8 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.mailgun.net, no account and no key. A wrong key matches this file's declared `{"message":"Invalid private key"}` exactly -- but no credential at all answers a completely different envelope, `{"Error":"unauthorized"}`, capital E and no `message` field anywhere. Neither case was checkable before; both are now.
 
 ## What writing this Recipe changed
 

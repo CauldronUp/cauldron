@@ -2,9 +2,9 @@
 
 Emulates the Paddle API (v1), for local development and tests.
 
-**9 conformance cases, none checked against a live API.**
+**10 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.paddle.com, no account and no key. The status and code this file declared for a missing credential were already right, 403 / `forbidden`; the sentence was invented, and the `documentation_url` this file shares across every failure is really specific to each one. Fixed below. A third real shape, a credential in a form Paddle does not recognise at all (`authentication_malformed`), was also found and is stated rather than modelled, since no fixture key this Recipe could invent is verifiably Paddle-shaped.
 
 ## What writing this Recipe changed
 

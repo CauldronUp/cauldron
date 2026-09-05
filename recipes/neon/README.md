@@ -2,9 +2,9 @@
 
 Emulates the Neon API (v2), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**11 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against console.neon.tech, no account and no key -- and found that auth had never actually been enforced. This file declared `scheme: bearer` with no `keys` and no `prefix`, which this format treats as "route first, tighten auth later"; every one of its own cases sent a credential and every one would have been accepted regardless of what it sent. A real key and the "Bearer " prefix are declared now, along with the real refusal body -- a missing credential and a wrong one both answer `{"code":"","message":"supplied credentials do not pass authentication"}`, with `code` a literal empty string rather than this file's invented "unauthorized".
 
 ## What this Recipe found
 

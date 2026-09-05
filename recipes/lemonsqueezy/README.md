@@ -2,9 +2,9 @@
 
 Emulates the Lemon Squeezy API (v1), for local development and tests.
 
-**14 conformance cases, none checked against a live API.**
+**15 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.lemonsqueezy.com, no account and no key. `/v1/orders` specifically sits behind a Cloudflare bot challenge, reproduced three times; every other modelled path answered a real 401 on the first try. Checked against `/v1/subscriptions` instead: the failure's `detail` matched exactly, and `title` did not -- the real word is "Unauthorized", not a second spelling of "Unauthenticated". A `{"jsonapi":{"version":"1.0"}}` wrapper on every error was also unmodelled. Both fixed.
 
 ## What this Recipe found
 

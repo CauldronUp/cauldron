@@ -2,9 +2,9 @@
 
 Emulates the Linear API (graphql), for local development and tests.
 
-**8 conformance cases, none checked against a live API.**
+**9 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.linear.app, no account and no key -- and found a declared error that nothing could ever reach. This file's authentication failure was named "authentication" and declared status 400; the runtime's own credential check falls back to the name "authentication_error" on a real refusal, so every actual unauthenticated request was serving a generic placeholder instead of this entry. Renamed and fixed to the real status, 401 -- the sentence itself was already right.
 
 ## What writing this Recipe changed
 

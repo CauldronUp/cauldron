@@ -2,9 +2,9 @@
 
 Emulates the opsgenie API (v2), for local development and tests.
 
-**13 conformance cases, none checked against a live API.**
+**14 conformance cases, 2 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.opsgenie.com, no account and no key. This file's declared "Could not authenticate" matched exactly, word for word, on no credential, the wrong scheme word, and a UUID-shaped key nobody issued. A fourth shape -- a key that is not even UUID-shaped -- gets a different answer, "Key format is not valid!", which this format's own malformed-credential mechanism cannot express and is stated in the header rather than forced into a case.
 
 ## What this Recipe found
 

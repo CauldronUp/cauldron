@@ -2,9 +2,9 @@
 
 Emulates the Mollie API (v2), for local development and tests.
 
-**10 conformance cases, none checked against a live API.**
+**11 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.mollie.com, no account and no key -- a missing credential and a wrong one both answer the identical body. This file declared the auth failure as a 401 with an invented sentence; the real answer is a 400, "Invalid Authorization header". Fixed below.
 
 ## What this Recipe found
 

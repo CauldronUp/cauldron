@@ -2,9 +2,9 @@
 
 Emulates the Netlify API (v1), for local development and tests.
 
-**12 conformance cases, none checked against a live API.**
+**13 conformance cases, 1 checked against the live API.**
 
-Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
+Struck live 2026-09-05 against api.netlify.com, no account and no key -- a missing credential and a wrong one both answer the identical body. This file declared an invented sentence and no `code`; the real answer is `{"code":401,"message":"Access Denied"}`. Fixed below.
 
 ## What this Recipe found
 
