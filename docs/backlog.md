@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**115 routes across 54 Recipes** still page by a parameter nobody named.
+**112 routes across 53 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1058,6 +1058,14 @@ routes across forty Recipes were in exactly that state and neither counter could
 see one of them -- this one required an empty style, the one below required an
 empty everything. Naming one of the two is not naming them either, which is
 thirteen more.
+
+Vercel's three are settled the same way and are the sharper example: its
+deployments and domains listings take `until`, its projects listing takes
+`from`, and this Recipe was sending `cursor` to all three. Two names for the
+position on one API, neither of them the word the runtime supplies. Its
+`pagination.next` is a timestamp number as well, where the engine has only the
+last record's identifier to offer -- so that one is stated in the file rather
+than modelled, and the case that pins it now says whose value it is pinning.
 
 Front's own three are settled by the description that found them, and its
 `_pagination.next` turns out to be a whole URL as well -- the field's own
