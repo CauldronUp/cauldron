@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**212 more listings across 139 Recipes declare no paging at all**, and the
+**208 more listings across 135 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,16 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+The USGS earthquake catalogue is another whose answer was already in its own
+header: "ask with one and count is gone, replaced by limit and offset". Both
+names sat in a response the Recipe asserts while the declaration beside them
+said nothing. The header also records the part the names cannot carry -- that
+offset is **one-based**, so "a request that sent no offset at all comes back
+saying offset: 1" -- and the engine's offset positions count from zero, which is
+now stated at the declaration rather than only at the top of the file. The World
+Bank echoes `per_page` and `page` back in the metadata object it puts in front
+of its data, with `per_page` as the string "2" beside a `page` that is a number.
 
 Spaceflight News prints `limit` and `offset` in its own next link, and its
 default of ten happens to match the runtime's -- so the size was right by
