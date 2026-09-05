@@ -2,9 +2,11 @@
 
 Emulates the US Census API (2021/acs/acs1), for local development and tests.
 
-**13 conformance cases, all of them checked against the live API on 2026-08-31.**
+**14 conformance cases, all of them checked against the live API, most recently on 2026-09-05.**
 
 ## What this Recipe found
+
+**A page size here is not ignored, it is refused.** The variables catalogue answers thirteen and a half megabytes to a bare request -- all 36,428 entries -- and `?limit=2` is a **400**: "error: the 'get' argument must be a comma separated list of variable names", which is what any unrecognised parameter gets. Most providers quietly ignore a parameter they do not have, so a client that tries to page this one fails loudly rather than silently reading the same page forever. Struck live on 2026-09-05.
 
 Census's, where **the key gate fires before anything is
 validated.** Every request carrying a non-empty `get` answers `302` to

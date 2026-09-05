@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**31 routes across 16 Recipes** still page by a parameter nobody named.
+**30 routes across 15 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1092,6 +1092,16 @@ argument is the cursor, and sending one to `list_folder` is an error there. The
 Recipe accepts it on the listing because a listing is addressed by one route
 here, and a fake that cannot serve a second page would be the worse of the two
 inaccuracies -- but the file says so rather than leaving a reader to find out.
+
+The US Census catalogue is the sharpest of the settled ones, because it does not
+merely lack a page size -- it refuses one. Struck live on 2026-09-05: the
+variables listing answers thirteen and a half megabytes to a bare request, and
+`?limit=2` is a **400**, "error: the 'get' argument must be a comma separated
+list of variable names", which is what any unrecognised parameter gets. Most
+providers ignore a parameter they do not have; this one turns the request away,
+so a client trying to page the catalogue fails loudly rather than quietly. That
+listing is `style: none` now, which also removes the ceiling the Recipe had been
+carrying -- a number about this fake rather than about the Census.
 
 QuickBooks is a different shape of unanswerable and worth naming separately.
 Its listing endpoint is `/query` and its only parameter is `query`, whose value
