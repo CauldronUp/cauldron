@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**279 more listings across 179 Recipes declare no paging at all**, and the
+**273 more listings across 174 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1326,6 +1326,26 @@ and the first collection large enough to notice will not be one of ours.
 They are counted apart rather than folded in, because they are not the same
 omission: one Recipe looked at paging and did not finish, the other has not
 looked.
+
+### The Recipe often knew already
+
+Six of these were settled without reading anything new, because the Recipe had
+already read it and could only write it down. Toggl's header says "since,
+before, start_date, end_date, meta and include_sharing are the whole query
+parameter list" and then that "Cauldron's own runtime still applies its
+undeclared-route default (page at ten, reading `limit`)". Agora's says every
+project "comes back in one answer" and then the same thing. Amadeus's names the
+`max` cap the endpoint really takes and then notes the default applying instead.
+Hotelbeds' names `from`, `to` and `total` and then the default. OpenAIRE did not
+even need prose: its own live-verified failure says "Size and page arguments
+have exceeded the maximum number of returned results", and the response header
+it pins carries `size` and `page`.
+
+Every one of those was somebody doing the work and having nowhere to put the
+answer -- the engine's fallback showing through a Recipe that had established
+there was nothing to fall back to. That is what `style: none` and the parameter
+names are for, and it is worth checking the prose before going looking for a
+document.
 
 ### Silence could not say "this one does not page"
 
