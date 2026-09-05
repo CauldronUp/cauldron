@@ -687,7 +687,7 @@ behaviour worth reproducing, not whether adding it raises the count.
 
 ## Contributing
 
-The most valuable contribution is a Recipe for an API you actually use, especially one whose sandbox is painful to get. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The most valuable contribution is a Recipe for an API you actually use, especially one whose sandbox is painful to get. See [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/format.md](docs/format.md) for every key a Recipe may carry — a test fails if that reference drifts from the format in either direction.
 
 ## Licence
 

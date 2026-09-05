@@ -8,6 +8,8 @@ Cauldron is early. The architecture is still moving, so the most useful thing yo
 
 The person who owns the weird internal system is the only person who can model it faithfully. That's the whole reason this project is open source.
 
+[docs/format.md](docs/format.md) is the key-by-key reference for the Recipe file, including what validation refuses and why. Reading two or three existing Recipes alongside it is the fastest way in -- the header comment at the top of each one is the part worth copying, and it is prose rather than fields.
+
 ## Development
 
 Requires Go 1.26 or later. There is exactly one third-party dependency, `gopkg.in/yaml.v3`, because Go has no standard-library YAML and Recipes have to be readable by contributors who are not Go developers. Adding a second needs a similarly good reason.
