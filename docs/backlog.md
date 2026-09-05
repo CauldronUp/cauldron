@@ -1079,7 +1079,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**301 more listings across 191 Recipes declare no paging at all**, and the
+**292 more listings across 188 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1127,6 +1127,23 @@ and a `nextId` cursor, beside a checks listing on the same API that pages by
 number), Chroma's collections, OpenAQ's parameters and locations (`limit` and
 `page`), Scout APM's endpoints, and all three of Svix's listings (`limit` and
 `iterator`, the same way every time).
+
+Nine more were settled by finding the description first. `cauldron discover`
+proposes a document only where it declares a path the Recipe already models, and
+it found four the collection did not have: Orb's, Increase's, PostHog's and
+Column's, now recorded and fingerprinted. Orb pages by `cursor` and `limit` on
+all three of its listings, twenty by default and a hundred at most. Increase's
+own description collapses two numbers into one sentence -- "The default (and
+maximum) is 100 objects" -- so a caller cannot ask for more and never needs to
+ask for the most. PostHog is Django REST Framework's `limit` and `offset`, which
+is also why the next pointer beside it is a whole URL. Column takes `limit`,
+`starting_after` and `ending_before`, a cursor that is a record's own id in both
+directions.
+
+All four were found the same way: those Recipes already served a `next_cursor`,
+a `has_more` or a `next` in the response and said nothing about how a caller
+sends one back. That contradiction is a good place to look -- twenty-four
+listings across sixteen Recipes are still in it.
 
 Scout APM's endpoints listing is the one to remember. Its description says
 "Omit for the full listing (no default limit). Supplying this switches the

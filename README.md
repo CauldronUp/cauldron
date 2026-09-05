@@ -66,7 +66,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 6440 cases, 3308 of them checked against a live API |
-| Spec drift (`cauldron drift`) | Working. 123 Recipes are checked against their provider's own OpenAPI document; 501 name none yet |
+| Spec drift (`cauldron drift`) | Working. 130 Recipes are checked against their provider's own OpenAPI document; 497 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
