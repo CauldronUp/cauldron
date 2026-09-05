@@ -31,7 +31,8 @@ fourteen.
 ## Sources
 
 - Documentation: https://api.inaturalist.org/v1/docs/
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://api.inaturalist.org/swagger.json, last checked 2026-09-05
+  `cauldron drift inaturalist` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

@@ -15,7 +15,8 @@ Novu creates a subscriber implicitly the first time you trigger a workflow again
 ## Sources
 
 - Documentation: https://docs.novu.co/api-reference/overview
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://docs.novu.co/openapi.json, last checked 2026-09-05
+  `cauldron drift novu` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

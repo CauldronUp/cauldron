@@ -19,7 +19,8 @@ Output is also a link, not a value, and the link expires -- a succeeded predicti
 ## Sources
 
 - Documentation: https://replicate.com/docs/reference/http
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://api.replicate.com/openapi.json, last checked 2026-09-05
+  `cauldron drift replicate` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

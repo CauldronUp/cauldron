@@ -13,7 +13,8 @@ on the wrong one produces the same "Not authorized." that a fabricated one does.
 ## Sources
 
 - Documentation: https://developers.make.com/api-documentation/api-reference/scenarios
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://eu1.make.com/api/v1/openapi.json, last checked 2026-09-05
+  `cauldron drift make` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

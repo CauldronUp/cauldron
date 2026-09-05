@@ -12,7 +12,8 @@ index, established by walking the schema rather than the prose.
 ## Sources
 
 - Documentation: https://docs.tavily.com/documentation/api-reference/endpoint/search
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://tavily.com/.well-known/openapi.json, last checked 2026-09-05
+  `cauldron drift tavily` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

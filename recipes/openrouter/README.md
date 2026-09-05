@@ -14,7 +14,8 @@ claim, and one worth stating rather than leaving as a blank field.
 ## Sources
 
 - Documentation: https://openrouter.ai/docs/api-reference/overview
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://openrouter.ai/openapi.json, last checked 2026-09-05
+  `cauldron drift openrouter` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

@@ -29,7 +29,8 @@ sun does not set there in June, and the API reports a zero-length day.
 ## Sources
 
 - Documentation: https://sunrise-sunset.org/api
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://api.sunrise-sunset.org/openapi.json, last checked 2026-09-05
+  `cauldron drift sunrisesunset` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

@@ -15,7 +15,8 @@ Word timings are in milliseconds; treating them as seconds compresses an hour of
 ## Sources
 
 - Documentation: https://www.assemblyai.com/docs/api-reference
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://www.assemblyai.com/openapi.json, last checked 2026-09-05
+  `cauldron drift assemblyai` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 
