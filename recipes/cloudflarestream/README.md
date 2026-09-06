@@ -2,7 +2,7 @@
 
 Emulates the Cloudflare Stream API (v4), for local development and tests.
 
-**9 conformance cases, 5 checked against the live API on 2026-09-03.**
+**11 conformance cases, 5 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

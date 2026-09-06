@@ -2,7 +2,7 @@
 
 Emulates the CloudTalk API (v1.7), for local development and tests.
 
-**9 conformance cases, 4 checked against the live API on 2026-09-01.**
+**11 conformance cases, 4 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

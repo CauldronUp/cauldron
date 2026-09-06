@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-98 paging parameter name(s) across 45 recipe(s) are declared and sent by no
+79 paging parameter name(s) across 40 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5256,3 +5256,19 @@ among them.
 
 A generated case that survives its own mutation is not evidence. Choosing what
 to assert is part of writing the evidence, not a detail after it.
+
+### The record inside the record
+
+Nineteen more names settled, and none of them needed anything from a provider.
+Chargebee's list is a list of one-key objects, Cloudtalk's calls arrive under
+`Cdr`, Contentful's assets keep everything under `fields`, Crowdin's languages
+under `data`. The generator looked for a scalar at the top of the served record,
+found an object, and passed the whole route over as unassertable.
+
+One step further in finds the id. The same fix had already been made in the
+generator that shows unanswered listings, a commit earlier, and not carrying it
+across cost five Recipes their paging evidence for a week.
+
+A cursor is also not always called `id`. Cloudflare Stream's videos carry a
+`uid`, so scanning the fixture for ids returned nothing to try and the route
+looked unpageable when it pages perfectly well.
