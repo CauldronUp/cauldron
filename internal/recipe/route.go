@@ -564,6 +564,13 @@ type Pagination struct {
 	// may return fewer", and it takes no size parameter at all, so a caller
 	// cannot even ask for a number it could compare against.
 	//
+	// Two more turned up the same afternoon, written by different companies
+	// for different purposes, which is the argument that this is a shape
+	// rather than a quirk. Sumo Logic, on a log search: "the number of
+	// messages returned may be less than the limit." Brave Search, on web
+	// results: "the actual number of results returned may be less than
+	// count."
+	//
 	// This is the same bug as MayOvershoot from the other side, and it is the
 	// commoner spelling: `while len(page) == limit` and `if len(page) <
 	// limit: break` both stop early, mid-collection, on a page that was

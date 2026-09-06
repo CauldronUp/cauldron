@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**73 more listings across 48 Recipes declare no paging at all**, and the
+**71 more listings across 47 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,14 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Postscript's subscriber listing takes twenty-odd filters, a sort, and exactly one
+paging parameter -- `page`, "page number of results to start from" -- with no
+per-page, no limit and no cursor anywhere. What its description never says is what
+number the first page has. `first_page` is left at the engine's default of one,
+which is what that phrasing *implies* and not what it *states*, and if Postscript
+numbers from zero the way Braze and Navitia do then the walk starts one page in.
+That doubt is written at the declaration rather than resolved by assertion.
 
 Brave Search is the third provider to document `may_undershoot` -- "the actual
 number of results returned may be less than count" -- after Onfleet and Sumo
