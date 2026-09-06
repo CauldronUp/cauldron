@@ -258,12 +258,12 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// body.error then finds undefined rather than failing, which is the
 	// quieter and worse of the two.
 	if style == "string" {
-		writeJSON(w, status, message)
+		s.writeJSON(w, status, message)
 
 		return status
 	}
 
-	writeJSON(w, status, s.errorBody(spec, category, code, message, status, extra))
+	s.writeJSON(w, status, s.errorBody(spec, category, code, message, status, extra))
 
 	return status
 }

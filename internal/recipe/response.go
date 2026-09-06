@@ -13,6 +13,19 @@ type Responses struct {
 	Error    ErrorResponse    `yaml:"error"`
 	Resource ResourceResponse `yaml:"resource"`
 	Success  SuccessResponse  `yaml:"success"`
+	// BOM puts a UTF-8 byte-order mark in front of every response body.
+	//
+	// Authorize.Net does this, on everything. Recorded live from its public
+	// sandbox: the first three bytes are EF BB BF and the fourth is the
+	// opening brace. Python's json.loads raises "Unexpected UTF-8 BOM (decode
+	// using utf-8-sig)" on the decoded text and Go's encoding/json refuses it
+	// as well, so the fix a client needs is real and not obvious.
+	//
+	// A fake that leaves it out is wrong in the direction that costs most: the
+	// client works locally and throws on its first real response. Opt-in,
+	// because almost nobody does this and a mark nobody sends would be its own
+	// infidelity.
+	BOM bool `yaml:"bom"`
 }
 
 // SuccessResponse describes what a provider adds to every successful body.

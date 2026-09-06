@@ -83,7 +83,7 @@ func TestCoerceKeepsANonFiniteFloatAsText(t *testing.T) {
 func TestWriteJsonDoesNotAnswerSuccessWithNothing(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	writeJSON(rec, http.StatusOK, map[string]any{"amount": math.NaN()})
+	(&Sandbox{}).writeJSON(rec, http.StatusOK, map[string]any{"amount": math.NaN()})
 
 	if rec.Code == http.StatusOK {
 		t.Errorf("an unencodable body answered 200")

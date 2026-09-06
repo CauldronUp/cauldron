@@ -270,6 +270,7 @@ How every response is wrapped, in four blocks.
 | `resource` | block | The envelope a single record travels in. |
 | `error` | block | The envelope every failure travels in. |
 | `success` | block | Constants added to every successful response. |
+| `bom` | bool | Put a UTF-8 byte-order mark in front of every body. Authorize.Net does, on everything: the first three bytes are `EF BB BF` and `json.loads` raises "Unexpected UTF-8 BOM" on it. Opt-in, because almost nobody sends one and a mark nobody sends would be its own infidelity. |
 
 > **`responses.error` is not `errors`.** `responses.error` describes the *envelope* every
 > failure is written into — where the message lives, what the code is called. `errors` is

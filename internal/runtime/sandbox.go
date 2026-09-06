@@ -394,7 +394,7 @@ func (s *Sandbox) missingRequired(resource string, record store.Record) []string
 }
 
 // writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, body any) {
+func (s *Sandbox) writeJSON(w http.ResponseWriter, status int, body any) {
 	// Encoded into a buffer first, so a body that cannot be encoded becomes a
 	// failure the caller can see rather than a success the caller cannot
 	// parse. Writing the status line before asking the encoder meant an
@@ -436,6 +436,13 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	}
 
 	w.WriteHeader(status)
+
+	// A byte-order mark in front of the document, for the providers that send
+	// one. Written here rather than into the buffer so the encoder never sees
+	// it: it is bytes on the wire, not part of the JSON.
+	if s != nil && s.recipe != nil && s.recipe.Responses.BOM {
+		_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	}
 
 	_, _ = w.Write(buffer.Bytes())
 }

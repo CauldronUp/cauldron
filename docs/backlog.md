@@ -6038,3 +6038,32 @@ published commits and force-pushing, which costs everyone with a clone more than
 the space is worth, so the decision was to leave history alone. A clone is
 larger than it should be and that is a known, chosen cost rather than an
 oversight -- which is the only reason this entry exists.
+
+
+### A byte-order mark, and the tool that could not read its own emulator
+
+Authorize.Net puts `EF BB BF` in front of every response body, before the `{`.
+Recorded live from its public sandbox: `json.loads` on the decoded text raises
+"Unexpected UTF-8 BOM (decode using utf-8-sig)", and Go's `encoding/json`
+refuses it too.
+
+The first version of that Recipe stated the mark and did not serve it, because
+the response writer encodes JSON and had nowhere to put bytes. That is the wrong
+direction for a difference to run in -- a client works locally and throws on its
+first real response, which is this project's founding failure happening inside
+the tool built to prevent it -- so `responses.bom` now exists, opt-in, and the
+writer emits the three bytes ahead of the document.
+
+**Serving it broke every case in the Recipe**, which is the part worth writing
+down. `verify` decodes a response before it can read a field, so the moment the
+emulator became faithful, the tool reported six failures reading
+`invalid character 'ï' looking for beginning of value` -- the same error the
+client it is standing in for would have hit. The conformance runner is a client,
+and it had to learn what a surviving client knows: strip the mark before
+decoding. Python spells that `utf-8-sig`. Go does not spell it at all.
+
+One case asserts the mark itself, against the raw body rather than a decoded
+one, because decoding is the step the mark breaks. It is written escape-free --
+`^[^{]`, the document does not begin with its opening brace -- since a regex
+carrying a literal mark is unreadable and, as it turned out, survives neither a
+YAML parser nor a shell heredoc.

@@ -922,7 +922,7 @@ func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string
 		body = withFields(body, matched.spec.Fields)
 	}
 
-	writeJSON(w, status, body)
+	s.writeJSON(w, status, body)
 
 	return status
 }

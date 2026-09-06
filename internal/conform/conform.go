@@ -556,7 +556,15 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 	// itself unable to see the right one.
 	var decoded any
 
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	// A leading byte-order mark is stripped before decoding, the way a client
+	// that survives one has to. Authorize.Net puts EF BB BF in front of every
+	// response, and encoding/json refuses it -- so without this, a Recipe that
+	// faithfully reproduces its provider could not have a single case that
+	// reads a field, and the tool would be reporting the emulator's accuracy
+	// as a failure.
+	//
+	// Python spells this utf-8-sig. Go does not spell it at all.
+	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})))
 	decoder.UseNumber()
 
 	if err := decoder.Decode(&decoded); err != nil {

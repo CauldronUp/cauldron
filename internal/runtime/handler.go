@@ -391,7 +391,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 		}
 	}
 
-	writeJSON(w, status, body)
+	s.writeJSON(w, status, body)
 
 	return status
 }
@@ -867,7 +867,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		status = http.StatusOK
 	}
 
-	writeJSON(w, status, body)
+	s.writeJSON(w, status, body)
 
 	return status
 }
