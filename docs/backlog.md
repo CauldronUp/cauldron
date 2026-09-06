@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-37 listing(s) across 26 recipe(s) have no case that answers them
+30 listing(s) across 21 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -5217,3 +5217,26 @@ overriding the Recipe-wide one, and a verdict that can depend on which scheme
 was presented. Neither is written yet. What is written is that each of these
 files says plainly which of its provider's answers it is serving and which it is
 not, which is the thing that must not be lost if this is ever built.
+
+### One green case is not the credential, it is *a* credential
+
+Seven of the listings nothing had ever answered were not blocked by the
+provider or by the Recipe. They were blocked by the generator taking the first
+green case in the file and treating it as the file's credential.
+
+It usually is not. The first green case in a Recipe is very often a check
+against the empty fixture -- the listing answers, the collection is empty, the
+case is about the envelope -- so the generator seeded `empty`, read back `[]`,
+found no record to assert and gave up. And a Recipe with more than one accepted
+credential presents each of them on different routes, so the header it copied
+came back 401 from the route it was trying to show.
+
+Trying every green case in turn, best fixture for that route's resource first,
+answered five of them. The other two were a different mistake: the record inside
+the collection is sometimes a wrapper around the record. Chargebee's customers
+listing answers a list of one-key objects, and looking for a scalar at the top
+of one found nothing to assert. One step further in finds the id.
+
+Both are the same lesson as the sandbox rewrite. The generator was not wrong
+about the provider; it was wrong about the file, and the file was right there
+to read.
