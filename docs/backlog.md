@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**61 more listings across 40 Recipes declare no paging at all**, and the
+**60 more listings across 39 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,15 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+DHL is the sharpest of the ones that will not settle, because it is the only
+provider so far that *confirms* it pages without saying how. Its Unified Tracking
+reference documents six parameters, every one of them narrowing which shipment,
+and its own changelog records "Added pagination" at version 1.0.10 while no page
+names the parameters. The "Open API Specification" the reference points at is not
+served at any address the page gives. Here `style: none` would contradict DHL's
+own changelog and a guessed name would be worse than silence, so the route keeps
+a note recording exactly that.
 
 Gemini is `pageSize` and `pageToken` -- fifty per page, at most a thousand, and
 the walk ends on a **missing** field rather than a null one. Worth noting against
