@@ -2,7 +2,7 @@
 
 Emulates the HubSpot API (v3), for local development and tests.
 
-**15 conformance cases, 4 checked against the live API on 2026-09-05.**
+**16 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real portal; the refusal cases were struck live, unauthenticated, against api.hubapi.com.
 

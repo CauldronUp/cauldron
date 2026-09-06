@@ -2,7 +2,7 @@
 
 Emulates the Klaviyo API (2024-10-15), for local development and tests.
 
-**14 conformance cases, 3 checked against the live API.**
+**15 conformance cases, 3 checked against the live API.**
 
 Struck live 2026-09-05 against a.klaviyo.com, no account and no key. This file declared one authentication_error, "The API key is missing or invalid.", for every failure; the real API sends three distinct verdicts through two sentences -- a missing credential gets `not_authenticated` / "Authentication credentials were not provided.", while a wrong prefix (Bearer, sent from habit) and the right prefix with a key nobody issued both get an identical `authentication_failed` / "Incorrect authentication credentials." Split and fixed below.
 

@@ -2,7 +2,7 @@
 
 Emulates the Orb API (v1), for local development and tests.
 
-**19 conformance cases, 2 checked against the live API.**
+**20 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.withorb.com, no account and no key. This file declared one authentication_error, code "authentication_error" and message "Invalid API key", for every failure; the real code is a whole URL rather than a short word, and the two real sentences -- "Authorization header is expected and was not found." for a missing credential, "An invalid API key was provided." for a wrong one -- are both different from what was declared. Split and fixed below.
 

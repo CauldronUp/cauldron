@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-531 paging parameter name(s) across 217 recipe(s) are declared and sent by no
+340 paging parameter name(s) across 146 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4547,6 +4547,17 @@ copied honestly. 152 cases across 76 Recipes went in on this pattern, each still
 required to break under the rename it is named for -- the size case under
 `limit_param`, the position case under `cursor_param`. The debt fell from 648 to
 531.
+
+A fixture of **one** can still show half of it, and it is the half nothing else
+proves. The size cannot be shown -- asking for one out of one answers the same
+whether the name was read or not -- but the position can: past the only record the
+collection is empty, and a name the runtime ignored would have answered with the
+record again. 95 more cases went in on that, each saying in its own comment which
+half it shows and which it cannot.
+
+That is the whole remaining shape of this debt, incidentally. Half of it was never
+about missing evidence; it was about asking for evidence a two-record fixture
+cannot give and then declining to ask for the half it can.
 
 The lesson generalises past paging: when an assertion cannot distinguish two
 causes, the fix is usually a second assertion rather than a bigger fixture.

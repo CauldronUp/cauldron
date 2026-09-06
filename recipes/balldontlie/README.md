@@ -2,7 +2,7 @@
 
 Emulates the balldontlie API (v1), for local development and tests.
 
-**6 conformance cases, 4 checked against the live API on 2026-09-02.**
+**7 conformance cases, 4 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

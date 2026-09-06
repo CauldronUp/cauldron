@@ -2,7 +2,7 @@
 
 Emulates the Anthropic API (2023-06-01), for local development and tests.
 
-**20 conformance cases, 6 checked against the live API on 2026-09-02.**
+**21 conformance cases, 6 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

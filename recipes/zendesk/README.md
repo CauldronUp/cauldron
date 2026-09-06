@@ -2,7 +2,7 @@
 
 Emulates the Zendesk API (v2), for local development and tests.
 
-**14 conformance cases, 3 checked against the live API on 2026-09-05.**
+**15 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Most helpdesks need an account, but Zendesk runs its own support desk on Zendesk, and support.zendesk.com needed no account of its own to check an unauthenticated request against. Doing so found this Recipe's own credential model incomplete.
 

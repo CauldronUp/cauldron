@@ -2,7 +2,7 @@
 
 Emulates the Lago API (v1), for local development and tests.
 
-**13 conformance cases, 2 checked against the live API.**
+**14 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.getlago.com, no account and no key. The documented auth failure matched exactly: a missing Authorization header and a well-formed wrong one both answer `{"status":401,"error":"Unauthorized"}`, with no `code` field, byte for byte.
 
