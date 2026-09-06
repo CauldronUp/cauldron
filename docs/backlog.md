@@ -6700,3 +6700,81 @@ Worth noting because the two names are one word apart and both are plausible for
 "pages". Nothing catches this: both are valid keys, both produce a number, and
 the number is small and believable. It surfaced only because the conformance
 case asserted the value rather than the presence.
+
+## Argo CD, whose published API description declares no authentication
+
+Written against Argo CD's own generated Swagger 2.0 document — `argoproj/argo-cd`
+`assets/swagger.json`, 82 paths, read 2026-09-06. Self-hosted with no public
+instance, so nothing is struck live and the Recipe says so.
+
+`securityDefinitions` is absent. So is a top-level `security`. So is any
+per-operation `security`. The machine-readable description of the most widely
+deployed GitOps controller — a system whose whole job is deciding who may change
+what runs in a cluster — says nothing about credentials anywhere.
+
+Argo CD does authenticate: a JWT from `POST /api/v1/session`, sent as
+`Authorization: Bearer`. None of that is in the document, so a client generated
+from it has no credential support and every request it makes is anonymous.
+
+**This Recipe checks the credential anyway**, and says why in the `auth:` block.
+Serving what the document describes — no credential at all — would teach a
+caller that anonymous requests work, and they do not.
+
+### Placeholders, shipped
+
+```json
+"title":       "Consolidate Services"
+"version":     "version not set"
+"description": "Description of all APIs"
+```
+
+Three generator defaults nobody replaced. A tool naming a package from
+`info.title` produces `consolidate-services`; one pinning a client to
+`info.version` pins it to the string `"version not set"`.
+
+### Protobuf field paths in URL templates
+
+Six path parameters contain dots: `{application.metadata.name}`,
+`{project.metadata.name}`, `{creds.url}`, `{repo.repo}`, `{id.value}`,
+`{source.repoURL}`. gRPC-gateway leaking through. A generator turns
+`{application.metadata.name}` into a parameter of that name, which is not a
+legal identifier in most languages, so it becomes `application_metadata_name` or
+`applicationMetadataName` or is dropped, depending on which generator ran.
+
+And one resource takes three different parameter names — `{appName}`,
+`{applicationName}`, `{application.metadata.name}` — so a generated client has
+three unrelated parameters for one value.
+
+Recorded and not routed: a dotted placeholder would collide with the dotted
+field paths this format uses everywhere else. The route uses the plain name and
+the finding is in words.
+
+### Two numbering systems for one event
+
+The only error shape is `runtimeError`: `{code, error, message, details}`, and
+`code` is **gRPC's**, not HTTP's — 5 is `NOT_FOUND`, 7 is `PERMISSION_DENIED`,
+16 is `UNAUTHENTICATED`. So a 404 carries `code: 5` and a 401 carries `code: 16`,
+in a body delivered over HTTP beside a status that is a different number for the
+same event. A client reading `body.code` as a status reads 5.
+
+`error` and `message` are both strings, both for the reason, and the document
+does not say which is populated when.
+
+And every operation declares a 200 and a `default` and nothing else. No 401, no
+403, no 404 anywhere — so the status a failure arrives with is not constrained
+by the document at all.
+
+### The rest
+
+- **`project` and `projects` are the same parameter**, both live on the
+  applications listing, distinguished only by the parenthetical "(legacy name
+  for backwards-compatibility)". Sending both is undefined.
+- **Kubernetes paging**, with `metadata.continue` — an opaque cursor whose own
+  description warns it "may not be possible" to continue "if the server
+  configuration has changed or more than a few minutes have passed". An expiry
+  measured in minutes and no field saying when it expired. The parameter is
+  spelled `continue`, a reserved word in every C-family language.
+- **The empty sync status is a real value.** `Synced`, `OutOfSync`, and `""`
+  meaning the comparison has not run. A dashboard treating falsy as "no data"
+  and `OutOfSync` as "a problem" shows the third as neither. Health is a
+  separate six-valued axis where `Missing` is not `Unknown`.

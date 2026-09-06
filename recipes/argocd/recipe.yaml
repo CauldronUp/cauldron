@@ -1,0 +1,448 @@
+# Argo CD Recipe for Cauldron
+#
+# Written against Argo CD's own generated Swagger 2.0 document, published in its
+# own repository -- github.com/argoproj/argo-cd, assets/swagger.json, 82 paths
+# -- read on 2026-09-06. Argo CD is self-hosted and there is no public instance,
+# so nothing here is verified live: every claim is the provider's own document.
+#
+# **The published document declares no authentication at all.**
+#
+# `securityDefinitions` is absent. So is a top-level `security`. So is any
+# per-operation `security`. The machine-readable description of the most widely
+# deployed GitOps controller -- a system whose entire job is deciding who may
+# change what runs in a cluster -- says nothing about credentials.
+#
+# Argo CD does authenticate: a JWT from POST /api/v1/session, sent as
+# `Authorization: Bearer <token>`. None of that is in the document, so a client
+# generated from it has no credential support and every request it makes is
+# anonymous.
+#
+# **And it ships with the generator's placeholders still in it.**
+#
+#   "title":       "Consolidate Services"
+#   "version":     "version not set"
+#   "description": "Description of all APIs"
+#
+# All three are defaults nobody replaced. A tool that names a generated package
+# from `info.title` produces one called consolidate-services, and a tool that
+# pins a client to `info.version` pins it to the string "version not set".
+#
+# **Six path parameters have dots in their names.**
+#
+#   {application.metadata.name}   {project.metadata.name}
+#   {creds.url}                   {repo.repo}
+#   {id.value}                    {source.repoURL}
+#
+# These are protobuf field paths leaking through gRPC-gateway into the URL
+# template. A generator turns `{application.metadata.name}` into a parameter
+# named `application.metadata.name`, which is not a legal identifier in most
+# languages -- so it becomes application_metadata_name, or applicationMetadataName,
+# or is dropped, depending on which generator you ran.
+#
+# **And one resource is addressed by three different names.**
+#
+#   GET /api/v1/applications/{appName}/server-side-diff
+#   GET /api/v1/applications/{applicationName}/resource-tree
+#   PUT /api/v1/applications/{application.metadata.name}
+#
+# Same resource, same API, three spellings of "which application". A generated
+# client has three unrelated parameters for one value.
+#
+# **`code` is a gRPC status code, not an HTTP one.**
+#
+# The only error shape in the document is `runtimeError`: `{code, error,
+# message, details}`. `code` is an int32 and it is gRPC's -- 5 is NOT_FOUND, 7
+# is PERMISSION_DENIED, 16 is UNAUTHENTICATED -- travelling in a body delivered
+# over HTTP, beside an HTTP status that is a different number for the same
+# event. A client reading `body.code` as a status reads 5 where the response
+# said 404.
+#
+# **And `error` and `message` are both strings, both for the reason.** Two
+# fields, one idea, and the document says nothing about which is populated when.
+#
+# **Every failure is `default`.** The operations declare a 200 and a `default`
+# response and nothing else -- no 401, no 403, no 404. So the status a failure
+# arrives with is not constrained anywhere in the document, and the only thing a
+# generated client knows is that something non-200 has a runtimeError in it.
+#
+# **`project` and `projects` are the same parameter.**
+#
+# Both are on the applications listing. The document's own description of
+# `project`: "the project names to restrict returned list applications (legacy
+# name for backwards-compatibility)". Two live parameters, one meaning, and only
+# a parenthetical tells them apart. Sending both is undefined.
+#
+# **The listing is a Kubernetes list, cursor and all.** `ApplicationList` is
+# `{items, metadata}` where metadata is `v1ListMeta` -- carrying `continue`, an
+# opaque cursor whose own description warns that "continuing a consistent list
+# may not be possible if the server configuration has changed or more than a few
+# minutes have passed". A cursor with an expiry measured in minutes, and no
+# field saying when it expired.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. Argo CD is self-hosted and
+#     there is no public instance.
+#   - Applications, listed and fetched. 82 paths is a GitOps controller:
+#     sessions, repositories, clusters, projects, accounts, certificates, GPG
+#     keys and the sync and rollback operations each want their own evidence.
+#   - The credential this Recipe checks is the bearer token Argo CD actually
+#     uses, which the document does not mention. Serving no credential at all
+#     -- what the document describes -- would teach a caller that anonymous
+#     requests work, and they do not.
+#   - `{application.metadata.name}` is recorded and not routed. This format
+#     names path placeholders and a dotted one would collide with the dotted
+#     field paths used everywhere else in a Recipe. The route here uses the
+#     plain name, and the finding is in words.
+#   - `code` is served as the gRPC code the document types it as. It is not
+#     made to agree with the HTTP status, because upstream it does not.
+
+recipe: argocd
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: "v1"
+  docs: https://argo-cd.readthedocs.io/en/stable/developer-guide/api-docs/
+  spec: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+  spec_hash: 2715b9d44ac565fee75b2291f7d6b251f30c2b32d1ac872c29fe431418fffcc8
+  spec_seen: "2026-09-06"
+
+auth:
+  # Not in the document, which declares no authentication of any kind. This is
+  # what Argo CD actually wants: a JWT from POST /api/v1/session.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+  absent_error: unauthenticated
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    cursor_field: metadata.continue
+  error:
+    style: flat
+    # Two string fields for the reason, and the document does not say which is
+    # populated when. This Recipe fills both, because that is the only
+    # behaviour that does not teach a caller to read one of them.
+    message_field: message
+    code_field: code
+    code_type: number
+
+resources:
+  application:
+    id:
+      # metadata.name, which is what every one of the three path spellings
+      # ultimately means.
+      style: opaque
+      field: name
+    fields:
+      namespace:
+        type: string
+        default: argocd
+      project:
+        type: string
+        default: default
+      # The Kubernetes optimistic-concurrency token, and the same string the
+      # listing takes as a query parameter.
+      resourceVersion:
+        type: string
+      repoURL:
+        type: string
+      path:
+        type: string
+      targetRevision:
+        type: string
+        default: HEAD
+      # Synced, OutOfSync, or empty. Not a boolean, and the empty string is a
+      # real value meaning the comparison has not run.
+      syncStatus:
+        type: string
+        default: Synced
+      # Healthy, Progressing, Degraded, Suspended, Missing, Unknown. Six
+      # states, and Unknown is not the same as Missing.
+      healthStatus:
+        type: string
+        default: Healthy
+
+routes:
+  - method: GET
+    path: /api/v1/applications
+    resource: application
+    operation: list
+    pagination:
+      style: cursor
+      # Kubernetes paging: an opaque continue token whose own description
+      # warns it may stop working after a few minutes.
+      cursor_param: continue
+      limit_param: limit
+      limit: 100
+    filters:
+      # The current spelling.
+      - field: project
+        param: projects
+
+  - method: GET
+    path: /api/v1/applications/{id}
+    resource: application
+    operation: get
+    not_found: not_found
+
+errors:
+  # gRPC code 16. The HTTP status Argo CD pairs it with is 401, and the two
+  # numbers are unrelated.
+  unauthenticated:
+    status: 401
+    code: 16
+    message: "no session information"
+  # gRPC code 5.
+  not_found:
+    status: 404
+    code: 5
+    message: "applications.argoproj.io \"unknown\" not found"
+  # gRPC code 7.
+  permission_denied:
+    status: 403
+    code: 7
+    message: "permission denied: applications, get, default/unknown"
+  # gRPC code 8, RESOURCE_EXHAUSTED.
+  rate_limit:
+    status: 429
+    code: 8
+    message: "rate limit exceeded"
+
+fixtures:
+  empty:
+    application: []
+
+  cluster:
+    application:
+      - name: guestbook
+        namespace: argocd
+        project: default
+        resourceVersion: "48211"
+        repoURL: https://github.com/argoproj/argocd-example-apps
+        path: guestbook
+        targetRevision: HEAD
+        syncStatus: Synced
+        healthStatus: Healthy
+      - name: helm-guestbook
+        namespace: argocd
+        project: infra
+        resourceVersion: "48219"
+        repoURL: https://github.com/argoproj/argocd-example-apps
+        path: helm-guestbook
+        targetRevision: HEAD
+        syncStatus: OutOfSync
+        healthStatus: Degraded
+      - name: kustomize-guestbook
+        namespace: argocd
+        project: infra
+        resourceVersion: "48230"
+        repoURL: https://github.com/argoproj/argocd-example-apps
+        path: kustomize-guestbook
+        # The empty string is a real value: the comparison has not run. Not
+        # the same as OutOfSync, and falsy in every language.
+        syncStatus: ""
+        healthStatus: Missing
+
+conformance:
+  - name: the listing is a Kubernetes list, items and metadata
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      body:
+        # items, not data and not results. The Kubernetes shape, because Argo
+        # CD's resources are custom resources.
+        'items[0].name': guestbook
+        'items[1].name': helm-guestbook
+      absent:
+        - data
+        - results
+
+  - name: the empty sync status is a real value, not a missing one
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      body:
+        # Synced, OutOfSync, and the empty string meaning the comparison has
+        # not run. A dashboard that treats falsy as "no data" and OutOfSync as
+        # "a problem" shows the third one as neither.
+        'items[0].syncStatus': Synced
+        'items[1].syncStatus': OutOfSync
+        'items[2].syncStatus': ""
+        # And health is a separate six-valued axis. Missing is not Unknown and
+        # neither is Degraded.
+        'items[2].healthStatus': Missing
+
+  - name: the filter is projects, and project is its legacy spelling
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      query:
+        # Both parameters are live and mean the same thing. The document tells
+        # them apart with a parenthetical -- "(legacy name for
+        # backwards-compatibility)" -- and says nothing about sending both.
+        projects: infra
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      body:
+        'items[0].name': helm-guestbook
+        'items[1].name': kustomize-guestbook
+      absent:
+        - 'items[2]'
+
+  - name: an application is addressed by its metadata name
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      # One of three spellings this API uses for the same value: appName,
+      # applicationName, and application.metadata.name. The last has dots in
+      # the parameter name, which is a protobuf field path leaking through
+      # gRPC-gateway into a URL template.
+      path: /api/v1/applications/guestbook
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      body:
+        name: guestbook
+        namespace: argocd
+        project: default
+        repoURL: https://github.com/argoproj/argocd-example-apps
+        path: guestbook
+        targetRevision: HEAD
+        resourceVersion: "48211"
+
+  - name: a failure carries a gRPC code, not the HTTP status
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications/no-such-app
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 404
+      body:
+        # gRPC NOT_FOUND, in a body delivered over HTTP, beside a status that
+        # is a different number for the same event. A client reading
+        # body.code as a status reads 5.
+        code: 5
+        message: "applications.argoproj.io \"unknown\" not found"
+
+  - name: no credential is refused, though the document declares none
+    source: https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      headers: {}
+    expect:
+      # The document has no securityDefinitions, no top-level security and no
+      # per-operation security -- so a client generated from it sends nothing
+      # and gets this. Argo CD wants a JWT from POST /api/v1/session.
+      status: 401
+      body:
+        # gRPC UNAUTHENTICATED, beside HTTP 401. Two numbers, one event.
+        code: 16
+        message: "no session information"
+
+  - name: "a permission failure carries a third unrelated number"
+    source: "https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json"
+    arm: permission_denied
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 403
+      body:
+        # gRPC PERMISSION_DENIED. Every operation in this document declares a
+        # 200 and a `default` and nothing else, so no status is constrained
+        # anywhere and this one is only knowable by causing it.
+        code: 7
+        message: "permission denied: applications, get, default/unknown"
+
+  - name: "the rate limit says so in these words"
+    source: "https://argo-cd.readthedocs.io/en/stable/developer-guide/api-docs/"
+    arm: rate_limit
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 429
+      body:
+        code: 8
+        message: "rate limit exceeded"
+
+  - name: "paging is a Kubernetes continue token"
+    source: "https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json"
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      matches:
+        # Under metadata, where Kubernetes puts it, and opaque. Its own
+        # description warns that continuing "may not be possible if the server
+        # configuration has changed or more than a few minutes have passed" --
+        # a cursor with an expiry measured in minutes and no field saying when
+        # it expired.
+        'metadata.continue': '.'
+      body:
+        'items[0].name': guestbook
+      absent:
+        - 'items[2]'
+
+  - name: "the continue token carries the second page"
+    source: "https://raw.githubusercontent.com/argoproj/argo-cd/master/assets/swagger.json"
+    fixture: cluster
+    request:
+      method: GET
+      path: /api/v1/applications
+      query:
+        limit: "2"
+        # The parameter is named continue, which is a reserved word in every
+        # C-family language -- so a generated client cannot name its variable
+        # after it, and several generators rename it to continue_ or _continue
+        # without saying so.
+        continue: "helm-guestbook"
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cauldron.argocd
+    expect:
+      status: 200
+      body:
+        'items[0].name': kustomize-guestbook
+      absent:
+        - 'items[1]'
