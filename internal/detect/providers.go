@@ -820,6 +820,11 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe:   "shlink",
+			npm:      []string{"@shlinkio/shlink-js-sdk"},
+			composer: []string{"shlinkio/shlink-installer"},
+		},
+		{
 			recipe: "exoscale",
 			gomod:  []string{"github.com/exoscale/egoscale"},
 		},

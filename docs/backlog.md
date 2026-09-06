@@ -7564,3 +7564,50 @@ away from the other problem.
 - **There is no single base URL.** The zone is in the hostname, with eight in the
   enum and no default -- so a client must know the zone before it can make any
   request, and there is no cross-zone listing.
+
+## Shlink, where the API version is a path variable and DELETE takes half an identifier
+
+Written against Shlink own OpenAPI 3.1 document -- shlinkio/shlink docs/swagger/,
+18 paths, version 3.0, read 2026-09-06. The document is split across files: every
+path, parameter and schema is a $ref to its own JSON, so reading it meant
+fetching about forty. Self-hosted, and the public demo hosts did not answer.
+
+The paths are `/rest/v{version}/short-urls`, and `version` is a path parameter
+with a string enum of "3", "2", "1". So `/rest/v1/short-urls` and
+`/rest/v3/short-urls` are the same operation with a different substitution, and
+nothing in the schema says which version introduced what.
+
+The document **knows** -- its own filenames record it: `v1_short-urls.json`,
+`v2_visits.json`, `v3_short-urls_{shortCode}_redirect-rules.json`. That knowledge
+is in the file layout and not in the API description, so a v3 feature requested
+at v1 is a syntactically valid request a generated client will happily build.
+
+### A DELETE whose target depends on an optional query parameter
+
+A short code is unique **per domain**, not globally, and `domain` is an optional
+query parameter on the GET, the PATCH and the DELETE.
+
+So the URL of a DELETE does not say which record it removes. Omitting the domain
+deletes the one on the default domain, which may not be the one the caller meant
+-- and there is no error, because both are real short URLs.
+
+`domain: null` means the default domain rather than the absence of one, so the
+falsy value is a specific domain and grouping by that field files every
+default-domain link under the key `null`.
+
+### The rest
+
+- **`tags[]` and `excludeTags[]`** carry literal square brackets in the
+  parameter name -- PHP array convention -- which is not an identifier in any
+  language a generator targets.
+- **The records are two levels down** under the resource own name, so
+  `body.data` is undefined and `body.shortUrls.data` is the list.
+- **Five numbers in the pagination block count three different things**, and
+  `itemsPerPage` is what was asked for rather than what arrived.
+- **`visitsSummary` separates bots from humans** and `total` includes the bots,
+  so the obvious field is the flattering one.
+- **`hasRedirectRules` says the destination is conditional** without saying on
+  what, so the `longUrl` beside it may not be where anyone lands.
+- **Errors are RFC 7807 with real type URIs** rather than about:blank, so unlike
+  PeerTube the `type` is actually a discriminator -- and `invalidElements` is
+  spelled without a hyphen, so it is a property access.
