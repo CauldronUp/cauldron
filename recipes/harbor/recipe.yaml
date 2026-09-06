@@ -1,0 +1,443 @@
+# Harbor Recipe for Cauldron
+#
+# Written against Harbor's own Swagger 2.0 document, published in its own
+# repository -- github.com/goharbor/harbor, api/v2.0/swagger.yaml, 135 paths,
+# version 2.0 -- read on 2026-09-06. Harbor is self-hosted and there is no
+# public instance, so nothing here is verified live: every claim is the
+# provider's own document.
+#
+# **Every boolean in a project's metadata is a string.**
+#
+# ProjectMetadata declares eight settings and every one of them is
+# `type: string`. From the document's own descriptions:
+#
+#   public                       "The valid values are \"true\", \"false\"."
+#   enable_content_trust         "The valid values are \"true\", \"false\"."
+#   enable_content_trust_cosign  "The valid values are \"true\", \"false\"."
+#   prevent_vul                  "The valid values are \"true\", \"false\"."
+#   auto_scan                    "The valid values are \"true\", \"false\"."
+#   auto_sbom_generation         "The valid values are \"true\", \"false\"."
+#   reuse_sys_cve_allowlist      "The valid values are \"true\", \"false\"."
+#
+# So `project.metadata.public` is the string "false" on a private project, and
+# the string "false" is truthy in JavaScript, Python, Ruby, PHP and Perl. Code
+# that shows a badge when a project is public shows it on every project. Code
+# that refuses to push when `prevent_vul` is set refuses always.
+#
+# These are the settings that decide whether unsigned images may be pulled and
+# whether vulnerable images may run, and the type that carries them cannot be
+# tested for truth.
+#
+# **A header decides what a path segment means.**
+#
+# `X-Is-Resource-Name`, a boolean header defaulting to false. The document's own
+# words: "the parameter which supports both name and id in the path ... When the
+# X-Is-Resource-Name is false and the parameter can be converted to an integer,
+# the parameter will be as an id, otherwise, it will be as a name."
+#
+# So `/projects/123` is project id 123 -- unless you send the header, in which
+# case it is the project named "123". The URL does not say which resource it
+# addresses; a header does. A project whose name is all digits is unreachable
+# without it, and two callers sending the same URL can get two different
+# projects.
+#
+# **A repository name must be URL-encoded twice.**
+#
+# In the document's own words, on the repository_name path parameter: "If it
+# contains slash, encode it twice over with URL encoding. e.g. a/b -> a%2Fb ->
+# a%252Fb".
+#
+# Nearly every repository name contains a slash -- `library/nginx` is the shape
+# of the thing. And every HTTP client library encodes path parameters once, for
+# you, correctly. So passing `library/nginx` to a generated client produces
+# `library%2Fnginx` on the wire, which is one encoding, and Harbor wants two. The
+# right call requires encoding before handing the value to the thing that will
+# encode it again -- and the wrong one is not an error, it is a lookup for a
+# repository nobody has.
+#
+# **One path segment holds two kinds of identifier.** `reference` is documented
+# as "can be digest or tag". A tag named `sha256` and a digest are the same
+# segment, and nothing in the request says which was meant.
+#
+# **The total is a header and so is the next page.** A listing answers
+# `X-Total-Count` and `Link` together -- the count in one header, the pagination
+# in another, and nothing in the body. Harbor is the third Recipe here to need
+# `count_header`, after Gitea and Basecamp.
+#
+# **Two fields one character apart, one of them deprecated.**
+# `current_user_role_id` is "deprecated and will be removed in future versions";
+# `current_user_role_ids` is the array that replaced it. Singular gone, plural
+# current, and a client reading the wrong one keeps working until it does not.
+#
+# **The search parameter is a language.** `q` supports, in the document's own
+# words, "exact match(k=v)", "fuzzy match(k=~v)", "range(k=[min~max])", "list
+# with union releationship(k={v1 v2 v3})" and "list with intersetion
+# relationship(k=(v1 v2 v3))" -- braces, parentheses, brackets and tildes, all
+# of which need URL encoding, inside a single query-string value. The two
+# spelling mistakes are the document's.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. Harbor is self-hosted and
+#     there is no public instance.
+#   - Projects, listed and fetched. 135 paths is a registry: repositories,
+#     artifacts, tags, scanners, replication, retention, robot accounts,
+#     webhooks and the quota surface each want their own evidence.
+#   - `X-Is-Resource-Name` is recorded and not served. Serving it would mean
+#     routing one path two ways from a header, and what this Recipe would then
+#     be demonstrating is its own routing rather than Harbor's.
+#   - The double encoding is recorded and not served: this Recipe has no route
+#     taking a repository name, and adding one to demonstrate an encoding rule
+#     would demonstrate Go's URL parsing instead.
+#   - Only basic auth is modelled, which is all the document declares. Robot
+#     accounts are real and are not in it.
+
+recipe: harbor
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: "v2.0"
+  docs: https://goharbor.io/docs/edge/build-customize-contribute/configure-swagger/
+  spec: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+  spec_hash: ac4cb150bcb189356a1d827e15fc7dfef91d1cdfe1c1a0d473da4a7e0d80ab5e
+  spec_seen: "2026-09-06"
+
+auth:
+  # All the document declares, though Harbor also has robot accounts.
+  scheme: basic
+  credential: password
+  keys:
+    - Harbor12345
+  absent_error: unauthorized
+
+responses:
+  list:
+    style: bare
+    link_header: true
+    # The count in a header and nothing in the body. Third Recipe here to need
+    # this, after Gitea and Basecamp.
+    count_header: X-Total-Count
+  error:
+    # {"errors": [{"code": "...", "message": "..."}]} -- an array, even for one
+    # failure, so a client reads body.errors[0].message and gets undefined if
+    # it reads body.message.
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+
+resources:
+  project:
+    id:
+      style: numeric
+      field: project_id
+      type: number
+    fields:
+      name:
+        type: string
+        required: true
+      owner_id:
+        type: number
+        default: 1
+      owner_name:
+        type: string
+      # x-omitempty: false in the document, so a zero is serialised rather
+      # than dropped -- which is the opposite of Go's default and the reason
+      # the extension is there.
+      repo_count:
+        type: number
+        default: 0
+      creation_time:
+        type: datetime
+      update_time:
+        type: datetime
+      # Deprecated, and one character from the field that replaced it.
+      current_user_role_id:
+        type: number
+        default: 1
+      current_user_role_ids:
+        type: list
+      # Every setting in here is a string, including the ones that decide
+      # whether unsigned or vulnerable images may be used.
+      metadata:
+
+routes:
+  - method: GET
+    path: /api/v2.0/projects
+    resource: project
+    operation: list
+    pagination:
+      style: page
+      cursor_param: page
+      limit_param: page_size
+      limit: 10
+      max_limit: 100
+      first_page: 1
+    filters:
+      - field: name
+        param: name
+
+  - method: GET
+    path: /api/v2.0/projects/{id}
+    resource: project
+    operation: get
+    not_found: not_found
+
+errors:
+  unauthorized:
+    status: 401
+    code: UNAUTHORIZED
+    message: "unauthorized"
+  not_found:
+    status: 404
+    code: NOT_FOUND
+    message: "project 999 not found"
+  forbidden:
+    status: 403
+    code: FORBIDDEN
+    message: "the user does not have permission to the resource"
+  rate_limit:
+    status: 429
+    code: TOO_MANY_REQUESTS
+    message: "too many requests"
+
+fixtures:
+  empty:
+    project: []
+
+  registry:
+    project:
+      - project_id: 1
+        name: library
+        owner_id: 1
+        owner_name: admin
+        repo_count: 4
+        creation_time: "2026-01-04T09:00:00.000Z"
+        update_time: "2026-08-19T16:22:00.000Z"
+        current_user_role_id: 1
+        current_user_role_ids: [1]
+        metadata:
+          # The string, not the boolean. Truthy in every language that has a
+          # notion of truthiness.
+          public: "true"
+          enable_content_trust: "false"
+          prevent_vul: "false"
+          severity: none
+          auto_scan: "false"
+          reuse_sys_cve_allowlist: "true"
+      - project_id: 2
+        name: internal
+        owner_id: 1
+        owner_name: admin
+        # Zero, and serialised rather than dropped because of x-omitempty.
+        repo_count: 0
+        creation_time: "2026-03-17T11:41:00.000Z"
+        update_time: "2026-09-02T08:05:00.000Z"
+        current_user_role_id: 2
+        current_user_role_ids: [2, 3]
+        metadata:
+          # A private project, and this is the string "false".
+          public: "false"
+          enable_content_trust: "true"
+          prevent_vul: "true"
+          severity: high
+          auto_scan: "true"
+          reuse_sys_cve_allowlist: "false"
+
+conformance:
+  - name: every setting in project metadata is a string
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      body:
+        # The string "false", not the boolean. Truthy in JavaScript, Python,
+        # Ruby, PHP and Perl -- so code that shows a badge when a project is
+        # public shows it on the private one too.
+        '[1].metadata.public': "false"
+        '[0].metadata.public': "true"
+        # And the two that decide whether unsigned or vulnerable images may be
+        # used, carried by the same type.
+        '[1].metadata.enable_content_trust': "true"
+        '[1].metadata.prevent_vul': "true"
+        '[0].metadata.prevent_vul': "false"
+
+  - name: the total travels in a header, because the body is a bare array
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      headers:
+        # X-Total-Count and Link together, and nothing in the body. A listing
+        # is a bare array, so there is nowhere in it for either to live.
+        X-Total-Count: "2"
+      body:
+        '[0].name': library
+
+  - name: a zero repository count is sent rather than dropped
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      body:
+        # x-omitempty: false in the document, which exists because Go would
+        # otherwise drop it -- and an absent count reads as unknown where a
+        # zero reads as empty.
+        '[1].repo_count': 0
+        '[0].repo_count': 4
+
+  - name: the deprecated role field sits one character from its replacement
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects/2
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      body:
+        # Deprecated, and it carries only the highest role. The plural beside
+        # it carries all of them, and a caller with two roles reading the
+        # singular sees one.
+        current_user_role_id: 2
+        current_user_role_ids: [2, 3]
+        name: internal
+
+  - name: a project is addressed by its numeric id unless a header says otherwise
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      # Without X-Is-Resource-Name, a segment that parses as an integer is an
+      # id. With it, the same segment is a name -- so a project called "1"
+      # cannot be reached by this URL, and two callers sending it can get two
+      # different projects.
+      path: /api/v2.0/projects/1
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      body:
+        project_id: 1
+        name: library
+        # The creator, always, and not whoever has admin on it now -- the
+        # document says "always means the creator of the project", so it is a
+        # historical fact rather than a current permission.
+        owner_id: 1
+        owner_name: admin
+        creation_time: "2026-01-04T09:00:00.000Z"
+        update_time: "2026-08-19T16:22:00.000Z"
+
+  - name: the name filter narrows a listing
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      query:
+        name: internal
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      body:
+        '[0].name': internal
+      absent:
+        - '[1]'
+
+  - name: paging is page and page_size, capped at a hundred
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      query:
+        page: "1"
+        page_size: "1"
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 200
+      headers:
+        # Still the whole set, which is what makes the header worth reading.
+        X-Total-Count: "2"
+      body:
+        '[0].name': library
+      absent:
+        - '[1]'
+
+  - name: a failure is an array even when there is one of them
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects/999
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 404
+      body:
+        # errors[0], not message. A client reading body.message finds
+        # undefined and reports the reason as nothing.
+        'errors[0].code': NOT_FOUND
+        'errors[0].message': "project 999 not found"
+
+  - name: no credential is refused
+    source: https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers: {}
+    expect:
+      status: 401
+      body:
+        'errors[0].code': UNAUTHORIZED
+        'errors[0].message': "unauthorized"
+
+  - name: "a forbidden request says so in these words"
+    source: "https://raw.githubusercontent.com/goharbor/harbor/main/api/v2.0/swagger.yaml"
+    arm: forbidden
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 403
+      body:
+        'errors[0].code': FORBIDDEN
+        'errors[0].message': "the user does not have permission to the resource"
+
+  - name: "the rate limit says so in these words"
+    source: "https://goharbor.io/docs/edge/build-customize-contribute/configure-swagger/"
+    arm: rate_limit
+    fixture: registry
+    request:
+      method: GET
+      path: /api/v2.0/projects
+      headers:
+        Authorization: Basic YWRtaW46SGFyYm9yMTIzNDU=
+    expect:
+      status: 429
+      body:
+        'errors[0].code': TOO_MANY_REQUESTS
+        'errors[0].message': "too many requests"

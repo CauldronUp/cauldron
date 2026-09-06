@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "harbor",
+			gomod:  []string{"github.com/goharbor/go-client"},
+		},
+		{
 			recipe: "outline",
 			npm:    []string{"@outlinewiki/outline-client"},
 		},

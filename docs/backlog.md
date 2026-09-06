@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and three Recipes send at least one identifier as a number now, and each
+One hundred and four Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6939,3 +6939,73 @@ and `rejected_error`, so the collision is reproduced rather than smoothed.
   `archivedAt`, `deletedAt` — a never-published draft has all three null and only
   their names say which state it is in.
 - **No rate-limit headers on anything struck.**
+
+## Harbor, where the setting that blocks vulnerable images is the string "false"
+
+Written against Harbor's own Swagger 2.0 document — `goharbor/harbor`
+`api/v2.0/swagger.yaml`, 135 paths, read 2026-09-06. Self-hosted with no public
+instance, so nothing is struck live and the Recipe says so.
+
+`ProjectMetadata` declares eight settings and **every one of them is
+`type: string`**, with the document's own descriptions saying the valid values
+are `"true"` and `"false"`:
+
+`public`, `enable_content_trust`, `enable_content_trust_cosign`, `prevent_vul`,
+`auto_scan`, `auto_sbom_generation`, `reuse_sys_cve_allowlist`.
+
+So `project.metadata.public` is the string `"false"` on a private project, and
+`"false"` is truthy in JavaScript, Python, Ruby, PHP and Perl. Code that shows a
+badge when a project is public shows it on every project. Code that refuses to
+push when `prevent_vul` is set refuses always.
+
+These are the settings deciding whether unsigned images may be pulled and
+whether vulnerable images may run, and the type carrying them cannot be tested
+for truth.
+
+### A header decides what a path segment means
+
+`X-Is-Resource-Name`, a boolean header defaulting to false. The document's own
+words: "the parameter which supports both name and id in the path … When the
+X-Is-Resource-Name is false and the parameter can be converted to an integer,
+the parameter will be as an id, otherwise, it will be as a name."
+
+`/projects/123` is project id 123 — unless you send the header, in which case it
+is the project *named* "123". The URL does not say which resource it addresses.
+A project whose name is all digits is unreachable without the header, and two
+callers sending the same URL can get two different projects.
+
+Recorded and not served: routing one path two ways from a header would
+demonstrate this Recipe's routing rather than Harbor's.
+
+### Double URL encoding, documented
+
+From the `repository_name` parameter: "If it contains slash, encode it twice
+over with URL encoding. e.g. a/b -> a%2Fb -> a%252Fb".
+
+Nearly every repository name contains a slash — `library/nginx` is the shape of
+the thing. And every HTTP client library encodes path parameters once, for you,
+correctly. So passing `library/nginx` to a generated client puts
+`library%2Fnginx` on the wire, which is one encoding, and Harbor wants two. The
+right call requires encoding before handing the value to the thing that will
+encode it again — and the wrong one is not an error, it is a lookup for a
+repository nobody has.
+
+### The rest
+
+- **`reference` is a digest or a tag**, in one path segment, with nothing saying
+  which was meant.
+- **`X-Total-Count` and `Link` together**, with nothing in the body. Third
+  Recipe to need `count_header` after gitea and basecamp — the key added
+  earlier today has now paid for itself three times.
+- **`current_user_role_id` is deprecated and `current_user_role_ids` replaced
+  it**, one character apart. The singular carries only the highest role, so a
+  caller with two roles reading it sees one.
+- **`repo_count` carries `x-omitempty: false`** — a vendor extension existing
+  because Go would otherwise drop the zero, and an absent count reads as
+  *unknown* where a zero reads as *empty*.
+- **`q` is a query language in a query-string value**: `k=v`, `k=~v`,
+  `k=[min~max]`, `k={v1 v2 v3}`, `k=(v1 v2 v3)` — braces, parentheses, brackets
+  and tildes, all needing encoding. The two spelling mistakes in the document's
+  description of it ("releationship", "intersetion") are the document's.
+- **A failure is an array even when there is one of them**, so `body.message` is
+  undefined and a client reports the reason as nothing.
