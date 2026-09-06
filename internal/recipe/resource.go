@@ -404,3 +404,101 @@ func (r Recipe) aboutResource(c Case, resource string) bool {
 
 	return false
 }
+
+// UnservedField counts the declared fields the emulator can never send.
+//
+// UnassertedField counts names with no evidence behind them. This is the harder
+// version of the same question: names the fake will not produce at all. The
+// Recipe says a customer carries default_currency, a fixture holds a customer,
+// and the response omits the key entirely -- so code written against Cauldron
+// reads undefined and finds out what the provider really sends the first time
+// it talks to one. That is the failure this whole project exists to prevent,
+// and it was going unmeasured while the weaker version of it was counted.
+//
+// The rule is the sandbox's own, read off the shaping it does. A declared field
+// reaches the wire when a fixture record sets it, when it has a default, when
+// it is null_when_unset, or when its type is one the sandbox stamps from the
+// clock and the Recipe has not said stamped: false. Nothing else appears.
+//
+// Only resources some fixture actually holds are counted. A resource nothing
+// seeds has no record for any of its fields to be missing from, and the listing
+// counters already say so in plainer words.
+//
+// And a field some case asserts is not counted, whatever this rule thinks it
+// knows: a green case asserting the name has seen it. Fourteen fields arrive
+// that way, nearly all of them written by a request and echoed back -- Square's
+// payment note, SingleStore's admin password -- so this is a strict subset of
+// UnassertedField, which is what the report line says it is.
+func (r Recipe) UnservedField() int {
+	unserved := 0
+
+	for what, resource := range r.Resources {
+		set, held := r.fixtureFields(what)
+		if !held {
+			continue
+		}
+
+		for name, field := range resource.Fields {
+			if field.In == "-" || set[name] {
+				continue
+			}
+
+			if field.Default != nil || field.NullWhenUnset {
+				continue
+			}
+
+			if stamps(field.Type) && (field.Stamped == nil || *field.Stamped) {
+				continue
+			}
+
+			// A field some case asserts has been seen on the wire, whatever
+			// this rule thinks. A write case is the usual way: Square's
+			// payment note is sent in the request body and echoed back, so
+			// the field reaches a client without any fixture setting it.
+			// Counting those would be claiming the emulator cannot do
+			// something a green case shows it doing.
+			wire := name
+			if field.As != "" {
+				wire = field.As
+			}
+
+			if r.assertsFieldOf(what, wire) {
+				continue
+			}
+
+			unserved++
+		}
+	}
+
+	return unserved
+}
+
+// fixtureFields is every field name some fixture record of this resource sets,
+// and whether any fixture holds one at all.
+func (r Recipe) fixtureFields(resource string) (map[string]bool, bool) {
+	set := map[string]bool{}
+	held := false
+
+	for _, fixture := range r.Fixtures {
+		for _, record := range fixture[resource] {
+			held = true
+
+			for name := range record {
+				set[name] = true
+			}
+		}
+	}
+
+	return set, held
+}
+
+// stamps reports whether the sandbox fills a field of this type from its clock
+// when nothing else has.
+func stamps(kind string) bool {
+	switch kind {
+	case "timestamp", "timestamp_ms", "datetime", "timestamp_ms_string", "msdate":
+		return true
+	}
+
+	return false
+}

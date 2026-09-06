@@ -44,6 +44,7 @@ func runVerify(ctx *context, args []string) int {
 		unshown, unshownRecipes             int
 		hollow, hollowRecipes               int
 		unnamed, unnamedRecipes             int
+		unserved, unservedRecipes           int
 		failedRecipes                       []string
 	)
 
@@ -142,6 +143,15 @@ func runVerify(ctx *context, args []string) int {
 			unnamedRecipes++
 		}
 
+		// And the harder version of the same question: a name the emulator
+		// cannot send at all, because no fixture sets it and nothing else
+		// fills it in. Unasserted is a gap in the evidence; unserved is a gap
+		// in the fake.
+		if n := sandbox.Recipe().UnservedField(); n > 0 {
+			unserved += n
+			unservedRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -190,6 +200,11 @@ func runVerify(ctx *context, args []string) int {
 	if unnamed > 0 {
 		fmt.Fprintf(ctx.stdout, "%d record field name(s) across %d recipe(s) are declared and asserted by no case.\n",
 			unnamed, unnamedRecipes)
+	}
+
+	if unserved > 0 {
+		fmt.Fprintf(ctx.stdout, "%d of those across %d recipe(s) no fixture sets, so the emulator never sends them.\n",
+			unserved, unservedRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

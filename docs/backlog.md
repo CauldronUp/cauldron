@@ -5557,6 +5557,8 @@ Where it stands now:
 ```
 604 record field name(s) across 216 recipe(s) are declared and asserted
 by no case.
+162 of those across 86 recipe(s) no fixture sets, so the emulator never
+sends them.
 ```
 
 Two exclusions, both for the same reason as elsewhere. A field declared `in: "-"`
@@ -5791,3 +5793,33 @@ over it.
 
 Removing the greedy support again fails the test twelve times, which is the only
 evidence worth having that a regression test regresses.
+
+### The harder half of the same question: 162 names the fake cannot send
+
+`UnassertedField` counts names with no evidence behind them. Underneath it sits
+a worse thing, which was going unmeasured while the weaker version of it was
+counted: names the emulator will not produce **at all**.
+
+The Recipe says a customer carries `default_currency`. A fixture holds a
+customer. The response omits the key. Code written against Cauldron reads
+`undefined` and finds out what the provider really sends the first time it talks
+to one -- which is the exact failure this project exists to prevent, happening
+inside the tool meant to prevent it.
+
+The rule is the sandbox's own, read off the shaping it does rather than guessed
+at. A declared field reaches the wire when a fixture record sets it, when it has
+a `default`, when it is `null_when_unset`, or when its type is one the sandbox
+stamps from the clock and the Recipe has not said `stamped: false`.
+
+Two exclusions keep it honest. A resource nothing seeds has no record for its
+fields to be missing from, and the listing counters already say that in plainer
+words. And a field some case asserts has been seen on the wire whatever this
+rule thinks -- fourteen arrive that way, nearly all written by a request and
+echoed back, like Square's payment note and SingleStore's admin password. So the
+figure is a strict subset of the one above it, which is what the report line
+claims.
+
+Closing these needs a value in a fixture, and a value is the one thing that
+cannot be read off the file. It is the same wall, named more precisely: not
+"the fixtures are thin" but "here are 162 field names a client would find
+missing, in 86 Recipes".

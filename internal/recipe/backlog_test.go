@@ -504,3 +504,30 @@ func TestTheBacklogCountsUnassertedFields(t *testing.T) {
 		t.Errorf("the backlog spreads those names across %d Recipes and they are across %d", n, recipes)
 	}
 }
+
+func TestTheBacklogCountsUnservedFields(t *testing.T) {
+	fields, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnservedField(); n > 0 {
+			fields += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) of those across (\d+) recipe\(s\) no fixture sets`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != fields {
+		t.Errorf("the backlog says %d field names no fixture sets and %d are", n, fields)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those names across %d Recipes and they are across %d", n, recipes)
+	}
+}
