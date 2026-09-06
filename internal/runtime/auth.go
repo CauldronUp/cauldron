@@ -272,6 +272,25 @@ func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, stri
 		if presented == "" {
 			return recipe.Absent, presented
 		}
+	case "path":
+		// The credential is a segment of the URL itself, so it cannot be sent
+		// separately from the request it authenticates: no default header, no
+		// interceptor, and every log line that records a path records the
+		// secret. Telegram's is the first segment of every path it serves.
+		//
+		// A path too short to hold the segment presented nothing, which is
+		// absent rather than wrong -- the verdict a missing header gets.
+		segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+
+		if auth.Segment >= len(segments) {
+			return recipe.Absent, presented
+		}
+
+		presented = segments[auth.Segment]
+
+		if presented == "" {
+			return recipe.Absent, presented
+		}
 	case "basic":
 		user, password, ok := r.BasicAuth()
 		if !ok {

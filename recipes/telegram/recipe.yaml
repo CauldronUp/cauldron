@@ -1,0 +1,495 @@
+# Telegram Bot API Recipe for Cauldron
+#
+# Written against Telegram's own documentation at core.telegram.org/bots/api --
+# 2850 documented fields, read on 2026-09-06 -- and struck live against
+# api.telegram.org on the same day. Every live request used a deliberately
+# invalid token: strings of the right shape that identify no bot.
+#
+# **The credential is the route.**
+#
+#   GET https://api.telegram.org/bot<token>/getMe
+#
+# The token is the first path segment, prefixed with the literal "bot". It
+# cannot be set once as a default header, cannot be attached by an interceptor,
+# and lands in every access log, proxy log and browser history that records a
+# URL. Every response also carries `Access-Control-Allow-Origin: *`, so a
+# browser can call this API directly -- with the bot's token in the URL bar.
+#
+# This is the fifth Recipe here whose credential is a path segment, after
+# [alchemy](../alchemy), [pubnub](../pubnub), [thesportsdb](../thesportsdb) and
+# Inngest. The first four each wrote a paragraph explaining that no auth scheme
+# could describe it and worked around it. This one is served by
+# `scheme: path`, which those four are why the format now has.
+#
+# **The shape of the token decides whether the URL exists.** Struck live:
+#
+#   /bot123456789:AAFakeToken.../getMe   401  {"ok":false,"error_code":401,"description":"Unauthorized"}
+#   /bot123456789:AAF/getMe              401  same
+#   /botabc:def/getMe                    404  {"ok":false,"error_code":404,"description":"Not Found"}
+#   /bot123456789/getMe                  404  same
+#   /botnope/getMe                       404  same
+#
+# A token whose first part is not digits, or which has no colon, makes the path
+# not exist. A well-formed token nobody issued is refused. So the same wrong
+# credential produces 404 or 401 depending on how it is spelled, and a client
+# reporting "that endpoint is gone" is reporting a typo in its own secret.
+#
+# And `/bot0:0/getMe` answers **401 "Unauthorized: invalid token specified"** --
+# a longer sentence, same status, for bot id zero alone. Recorded and not
+# served: it is one value special-cased, and this format has no way to say
+# "this exact credential answers differently" without a route for it.
+#
+# **An unknown method with a bad token is 401, not 404.** Struck live:
+# /bot<wrong>/thisMethodDoesNotExist answers Unauthorized. The token is checked
+# before the method, so nobody without a working token can find out whether a
+# method exists -- which also means the documented case-insensitivity of method
+# names ("All methods in the Bot API are case-insensitive") could not be
+# confirmed on the wire from outside. getMe, getme, GETME and gEtMe were all
+# tried and all four answered the credential failure first.
+#
+# **DELETE, PUT and PATCH answer 501 with an empty body.**
+#
+#   DELETE /bot<token>/getMe
+#   HTTP/1.1 501 Not Implemented
+#   Content-Length: 0
+#   (no Content-Type)
+#
+# Not 405. 501 means the server does not implement the method for any resource
+# at all. And the body is empty with no content type, so these are the only
+# three responses this API sends that are not JSON -- in an API whose entire
+# contract is "the response contains a JSON object, which always has a Boolean
+# field ok". A client that calls .json() on a response throws on exactly these
+# and on nothing else.
+#
+# **Telegram disclaims its own error code.** From the documentation, verbatim:
+#
+#   "An Integer 'error_code' field is also returned, but its contents are
+#    subject to change in the future."
+#
+# So the one machine-readable part of a failure is the part the provider says
+# not to depend on, and what is left is `description` -- English prose. Every
+# Telegram bot library in the world switches on those strings.
+#
+# **94 fields are typed `True`.** Not Boolean: `True`, a type with one
+# inhabitant, where the field is present when it holds and absent when it does
+# not. The same document types 362 other fields `Boolean`, so both encodings
+# are in use for the same kind of fact and only the type column says which --
+# `is_premium` is `True` and `is_bot` is `Boolean`, on the same object.
+#
+# **100 fields are typed `Integer or String`**, a union declared as the type, so
+# a client has to accept either for one field.
+#
+# **Reading the second page destroys the first.** getUpdates takes an `offset`,
+# and Telegram's own description of it:
+#
+#   "An update is considered confirmed as soon as getUpdates is called with an
+#    offset higher than its update_id."
+#
+#   "The negative offset can be specified to retrieve updates starting from
+#    -offset update from the end of the updates queue. All previous updates
+#    will be forgotten."
+#
+# So this GET mutates. Paging forward permanently discards everything behind
+# the cursor, and a negative offset -- a legal value for a parameter called
+# offset -- forgets the queue. There is no way to re-read a page. A retry
+# framework that treats GET as safe to repeat is right by accident here, and a
+# client that pages ahead before it has finished processing has destroyed the
+# data it skipped.
+#
+# **Identifiers are sized to fit JavaScript.** From the documentation of every
+# id field: "at most 52 significant bits, so a 64-bit integer or
+# double-precision float type are safe for storing this identifier." Telegram
+# constrains its own identifier space to what a double can hold exactly, and
+# says so. Almost every other provider in this collection sends an int64 as a
+# string instead and leaves the reader to work it out.
+
+recipe: telegram
+capability: chat
+version: 0.1.0
+
+upstream:
+  api: "9.3"
+  docs: https://core.telegram.org/bots/api
+  # No spec: Telegram publishes its Bot API as an HTML page and nothing else.
+  # There are third-party OpenAPI translations of it and none is Telegram's,
+  # so fingerprinting one would be recording somebody else's reading of the
+  # documentation rather than the documentation.
+
+auth:
+  scheme: path
+  # The first segment of every path, and the whole of it: "bot" then the token.
+  segment: 0
+  prefix: bot
+  # What separates the 404 from the 401, struck live. Digits, a colon, then
+  # something. abc:def and a bare number both make the path not exist.
+  shape: '^[0-9]+:.+$'
+  keys:
+    - "123456789:cauldron-fixture-token-0000000000"
+  # A path too short to hold a segment, which for this API is a request to the
+  # host root. Telegram answers a 302 there rather than JSON; recorded, and
+  # this is the nearest thing the format can say.
+  absent_error: not_found
+  # The token did not look like one, so the URL does not exist. 404.
+  shape_error: not_found
+  # The token looked like one and belongs to no bot. 401.
+  rejected_error: unauthorized
+
+responses:
+  success:
+    fields:
+      # "The response contains a JSON object, which always has a Boolean field
+      # ok." Slack's shape, and Telegram commits to it in the same sentence
+      # that describes the API.
+      ok: true
+  list:
+    style: wrapped
+    key: result
+  error:
+    style: flat
+    message_field: description
+    code_field: error_code
+    code_type: number
+    fields:
+      ok: false
+
+resources:
+  update:
+    id:
+      field: update_id
+      style: numeric
+    fields:
+      message:
+
+  bot:
+    id:
+      field: id
+      # Documented as "at most 52 significant bits", which is the largest
+      # integer a double holds exactly. Sized to JavaScript on purpose.
+      style: numeric
+    fields:
+      # Typed Boolean in the documentation, beside is_premium on the same
+      # object typed True. Both are on User.
+      is_bot:
+        type: boolean
+        default: true
+      first_name:
+        type: string
+      username:
+        type: string
+      can_join_groups:
+        type: boolean
+        default: true
+      can_read_all_group_messages:
+        type: boolean
+        default: false
+      supports_inline_queries:
+        type: boolean
+        default: false
+
+routes:
+  # A singleton dressed as a result. There is no collection here and no id in
+  # the path: getMe answers the bot the token belongs to.
+  - method: GET
+    path: /bot{token}/getMe
+    resource: bot
+    operation: list
+    list:
+      collapse_single: true
+    pagination:
+      # One bot, no parameters, no next page.
+      style: none
+
+  # The same method as a POST, because every method in this API is both. The
+  # documentation says so and it is worth serving rather than describing:
+  # a client written against one verb works against the other, and a fake that
+  # served only GET would refuse half of what the provider accepts.
+  - method: POST
+    path: /bot{token}/getMe
+    resource: bot
+    operation: list
+    list:
+      collapse_single: true
+    pagination:
+      # One bot, no parameters, no next page.
+      style: none
+
+  - method: GET
+    path: /bot{token}/getUpdates
+    resource: update
+    operation: list
+    pagination:
+      # Served unpaged, deliberately, and this is the interesting decision in
+      # the Recipe.
+      #
+      # getUpdates takes an `offset` that is neither an offset nor an ordinary
+      # cursor. It is an update_id, and it is INCLUSIVE: Telegram's own words
+      # are "Identifier of the first update to be returned", so offset=N
+      # answers the record N names. Every cursor this format serves is
+      # exclusive -- it resumes *after* the record named -- and the two differ
+      # by exactly one record, on the endpoint a bot calls in a loop forever.
+      #
+      # An off-by-one in a fake is the failure this collection exists to
+      # prevent, so the cursor is not served rather than served wrong. The
+      # format has no inclusive-cursor option today; one provider needing one
+      # is not enough to add it, and the case is recorded here for the next.
+      #
+      # The other half cannot be served at all: sending the parameter deletes
+      # data. "An update is considered confirmed as soon as getUpdates is
+      # called with an offset higher than its update_id", and a negative offset
+      # forgets the queue outright. A paging control that destroys the page
+      # before it has no counterpart in this format and should not have one.
+      style: none
+
+errors:
+  unauthorized:
+    status: 401
+    code: "401"
+    # Struck live. Two words, and the error_code beside them repeats the HTTP
+    # status Telegram says not to depend on.
+    message: "Unauthorized"
+
+  not_found:
+    status: 404
+    code: "404"
+    message: "Not Found"
+
+  # Struck live: an empty body, no Content-Type, and 501 rather than 405. The
+  # only responses this API sends that are not JSON.
+  method_not_allowed:
+    status: 501
+    empty: true
+
+fixtures:
+  empty:
+    update: []
+    bot:
+      - id: 123456789
+        is_bot: true
+        first_name: Cauldron Test Bot
+        username: cauldron_test_bot
+        can_join_groups: true
+        can_read_all_group_messages: false
+        supports_inline_queries: false
+
+  chat:
+    bot:
+      - id: 123456789
+        is_bot: true
+        first_name: Cauldron Test Bot
+        username: cauldron_test_bot
+        can_join_groups: true
+        can_read_all_group_messages: false
+        supports_inline_queries: false
+    update:
+      - update_id: 870123401
+        message:
+          message_id: 41
+          date: 1788700000
+          text: hello
+          chat:
+            id: -1001234567890
+            type: supergroup
+            title: Cauldron
+          from:
+            id: 55501
+            is_bot: false
+            first_name: Ada
+            # Typed True in the documentation rather than Boolean: present
+            # when it holds, absent when it does not, never false.
+            is_premium: true
+      - update_id: 870123402
+        message:
+          message_id: 42
+          date: 1788700120
+          text: how are you
+          chat:
+            id: -1001234567890
+            type: supergroup
+            title: Cauldron
+          from:
+            id: 55502
+            is_bot: false
+            first_name: Grace
+      - update_id: 870123403
+        message:
+          message_id: 43
+          date: 1788700300
+          text: fine thanks
+          chat:
+            id: -1001234567890
+            type: supergroup
+            title: Cauldron
+          from:
+            id: 55501
+            is_bot: false
+            first_name: Ada
+            is_premium: true
+
+conformance:
+  - name: a token of the wrong shape makes the path not exist
+    source: https://api.telegram.org/botnope/getMe
+    verified: "2026-09-06"
+    fixture: chat
+    request:
+      method: GET
+      path: /botnope/getMe
+    expect:
+      # Struck live, three ways: botnope, botabc:def and bot123456789 with no
+      # colon all answer this. The credential is the route, so a typo in it is
+      # reported as a missing endpoint.
+      status: 404
+      body:
+        ok: false
+        error_code: 404
+        description: "Not Found"
+
+  - name: a well-formed token nobody issued is 401 instead
+    source: https://api.telegram.org/bot123456789:AAFakeTokenForProbingOnly00000000000/getMe
+    verified: "2026-09-06"
+    fixture: chat
+    request:
+      method: GET
+      path: /bot987654321:AAFakeTokenForProbingOnly00000000000/getMe
+    expect:
+      # Same wrong credential, different spelling, different status.
+      status: 401
+      body:
+        ok: false
+        error_code: 401
+        description: "Unauthorized"
+
+  - name: the error code repeats the status the provider disclaims
+    source: https://core.telegram.org/bots/api
+    verified: "2026-09-06"
+    fixture: chat
+    request:
+      method: GET
+      path: /bot987654321:AAFakeTokenForProbingOnly00000000000/getMe
+    expect:
+      status: 401
+      body:
+        # "An Integer 'error_code' field is also returned, but its contents
+        # are subject to change in the future." So the machine-readable half
+        # of a failure is disclaimed and description is what is left.
+        error_code: 401
+        ok: false
+
+  - name: DELETE answers 501 with nothing in it
+    source: https://api.telegram.org/bot123456789:AAFakeTokenForProbingOnly00000000000/getMe
+    verified: "2026-09-06"
+    fixture: chat
+    request:
+      method: DELETE
+      path: /bot123456789:cauldron-fixture-token-0000000000/getMe
+    expect:
+      # Struck live: 501 Not Implemented, Content-Length 0, no Content-Type.
+      # Not 405. PUT and PATCH answer the same. The only three responses this
+      # API sends that a client cannot call .json() on.
+      status: 501
+      no_body: true
+
+  - name: getMe is a singleton wrapped in a result
+    source: https://core.telegram.org/bots/api#getme
+    fixture: chat
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getMe
+    expect:
+      status: 200
+      body:
+        # No collection, no id in the path: the token decides which bot.
+        ok: true
+        'result.username': cauldron_test_bot
+        'result.is_bot': true
+
+  - name: the same method answers a POST
+    source: https://core.telegram.org/bots/api
+    fixture: chat
+    request:
+      method: POST
+      path: /bot123456789:cauldron-fixture-token-0000000000/getMe
+    expect:
+      # Every method in this API is both a GET and a POST, so a client written
+      # against either works. Served rather than described, because a fake
+      # offering one verb would refuse what the provider accepts.
+      status: 200
+      body:
+        ok: true
+        'result.username': cauldron_test_bot
+
+  - name: updates arrive under result with their own identifiers
+    source: https://core.telegram.org/bots/api#getupdates
+    fixture: chat
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getUpdates
+    expect:
+      status: 200
+      body:
+        ok: true
+        'result[0].update_id': 870123401
+        'result[2].message.text': fine thanks
+
+  - name: a field typed True is present rather than true
+    source: https://core.telegram.org/bots/api#user
+    fixture: chat
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getUpdates
+    expect:
+      status: 200
+      body:
+        # is_premium is typed `True` in the documentation -- one inhabitant,
+        # present when it holds -- while is_bot beside it is typed Boolean.
+        # 94 fields use the first encoding and 362 use the second.
+        'result[0].message.from.is_premium': true
+        'result[0].message.from.is_bot': false
+      absent:
+        # Grace is not a premium user, so the field is not there rather than
+        # false. A client reading `.is_premium === false` never matches.
+        - 'result[1].message.from.is_premium'
+
+  - name: the bot describes what it may do rather than what it is
+    source: https://core.telegram.org/bots/api#getme
+    fixture: chat
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getMe
+    expect:
+      status: 200
+      body:
+        # Three permission booleans on the object that identifies the bot, so
+        # getMe is both "who am I" and "what am I allowed to do". They are the
+        # only place a client can read the privacy-mode setting, which decides
+        # whether the bot sees group messages at all -- and it is named for
+        # its opposite.
+        'result.can_join_groups': true
+        'result.can_read_all_group_messages': false
+        'result.supports_inline_queries': false
+        'result.first_name': Cauldron Test Bot
+
+  - name: a chat identifier is negative and a user identifier is not
+    source: https://core.telegram.org/bots/api#chat
+    fixture: chat
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getUpdates
+    expect:
+      status: 200
+      body:
+        # Supergroup ids are large negative numbers and user ids are positive,
+        # so the sign of an integer is what says which kind of thing it names.
+        'result[0].message.chat.id': -1001234567890
+        'result[0].message.from.id': 55501
+
+  - name: a bot with no updates answers an empty array
+    source: https://core.telegram.org/bots/api#getupdates
+    fixture: empty
+    request:
+      method: GET
+      path: /bot123456789:cauldron-fixture-token-0000000000/getUpdates
+    expect:
+      status: 200
+      body:
+        ok: true
+        result: []

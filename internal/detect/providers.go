@@ -886,6 +886,15 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// Five clients, each checked by counting api.telegram.org in its
+			// published archive: grammy 7, node-telegram-bot-api 4, telegraf 2,
+			// the PHP SDK 3, and the Go client in 2 files.
+			recipe:   "telegram",
+			composer: []string{"irazasyed/telegram-bot-sdk"},
+			npm:      []string{"grammy", "node-telegram-bot-api", "telegraf"},
+			gomod:    []string{"github.com/go-telegram-bot-api/telegram-bot-api/v5"},
+		},
+		{
 			// The PHP SDK fails the host grep the other three pass and is
 			// mapped anyway. It hardcodes no host: baseUrl is a constructor
 			// argument, which is the right design for a product meant to be

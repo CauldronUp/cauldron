@@ -130,6 +130,28 @@ type Auth struct {
 	// Param is the parameter carrying the credential, when the scheme is
 	// query or body.
 	Param string `yaml:"param"`
+	// Segment is the zero-based path segment carrying the credential, when
+	// the scheme is path.
+	//
+	// Five Recipes wrote the same paragraph before this existed. Alchemy:
+	// "the credential is a path segment ... every other scheme Cauldron
+	// declares assumes the credential travels somewhere a request can carry
+	// it independently of the route. Here it *is* the route." PubNub: "none
+	// of Cauldron's five auth schemes describe a path segment", and it
+	// served a wrong key as a literal route matching one exact bad value.
+	// TheSportsDB and Inngest made the same trade, and Telegram makes five.
+	//
+	// The position rather than a placeholder name, because the position is
+	// what is invariant. Telegram's credential is segment 0 of every path
+	// it serves, Alchemy's is segment 1, PubNub's is segment 3 -- while the
+	// placeholder is named differently by each route that carries it, and a
+	// Recipe-wide credential cannot be pinned to one route's spelling.
+	//
+	// Prefix composes with it and is what Telegram needs: its segment is
+	// literally "bot" followed by the token, so a path that does not begin
+	// /bot is malformed before anything is compared -- which is exactly
+	// what the real API answers, and with the status it answers it under.
+	Segment int `yaml:"segment"`
 	// Prefix is stripped from the credential before comparison, e.g. "Bearer ".
 	Prefix string `yaml:"prefix"`
 	// Also names other carriers the same credential may arrive in.

@@ -722,6 +722,11 @@ func TestEveryValidAuthSchemeActuallyChecksSomething(t *testing.T) {
 		"header": {Scheme: "header", Header: "X-Api-Key", Keys: []string{"right"}},
 		"query":  {Scheme: "query", Param: "api_key", Keys: []string{"right"}},
 		"body":   {Scheme: "body", Param: "apiKey", Keys: []string{"right"}},
+		// Segment 1, so the credential is not the first thing in the path:
+		// a scheme that only ever read segment 0 would pass a test written
+		// with 0 and be wrong for Alchemy, PubNub and TheSportsDB, whose
+		// credentials sit at 1 and 3.
+		"path": {Scheme: "path", Segment: 1, Keys: []string{"right"}},
 	}
 
 	// none is the one scheme that is meant to accept anything, and it is
@@ -808,6 +813,12 @@ func sandboxWithAuth(t *testing.T, auth recipe.Auth) *Sandbox {
 func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
 	req := httptest.NewRequest(http.MethodGet, "/v1/customers", nil)
 
+	if auth.Scheme == "path" {
+		// The credential IS the route, so the request has to be built
+		// around it rather than have it attached.
+		req = httptest.NewRequest(http.MethodGet, "/v1/"+credential+"/customers", nil)
+	}
+
 	if auth.Scheme == "body" {
 		// A body credential needs a body, and needs the request to be one
 		// that carries one. Canny reads every listing as a POST for exactly
@@ -828,7 +839,7 @@ func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
 		q := req.URL.Query()
 		q.Set(auth.Param, credential)
 		req.URL.RawQuery = q.Encode()
-	case "body":
+	case "body", "path":
 		// Already carried, above.
 	default:
 		req.Header.Set("Authorization", credential)

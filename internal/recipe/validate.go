@@ -26,7 +26,7 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-	validSchemes    = []string{"bearer", "basic", "header", "query", "body", "none"}
+	validSchemes    = []string{"bearer", "basic", "header", "query", "body", "path", "none"}
 	validOperations = []string{"create", "get", "list", "update", "delete"}
 	validPagination = []string{"", "cursor", "offset", "page", "none"}
 	// The categories a Recipe may declare. Kept short on purpose: a taxonomy

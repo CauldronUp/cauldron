@@ -80,9 +80,10 @@ A map of header name to:
 
 | key | type | meaning |
 |---|---|---|
-| `scheme` | string | One of `bearer`, `basic`, `header`, `query`, `body`, `none`. `body` is the credential as a field in the request body, which Canny does: it cannot be set once as a default header, so every call site carries it, and it lands in anything that logs bodies. |
+| `scheme` | string | One of `bearer`, `basic`, `header`, `query`, `body`, `path`, `none`. `body` is the credential as a field in the request body, which Canny does: it cannot be set once as a default header, so every call site carries it, and it lands in anything that logs bodies. |
 | `header` | string | The header carrying the credential, when the scheme is `header`. |
 | `param` | string | The parameter carrying it, when the scheme is `query` or `body`. |
+| `segment` | integer | The zero-based path segment carrying the credential, when the scheme is `path`. The credential *is* the route, so it cannot be sent independently of the request it authenticates: no default header, no interceptor, and every log that records a path records the secret. Telegram's is segment 0 of every path it serves, Alchemy's is 1, PubNub's is 3. The position rather than a placeholder name, because the position is what is invariant across the routes a Recipe-wide credential covers. `prefix` composes with it, which is what Telegram needs: its segment is literally `bot` followed by the token. |
 | `prefix` | string | Stripped before comparison, e.g. `"Bearer "`. |
 | `credential` | string | Which half of a basic credential carries the secret: `username` (the default, Twilio's account SID) or `password` (Mailgun, whose username is the constant `api`). |
 | `keys` | list | The credentials the emulator accepts. Fixtures only. |
