@@ -2,7 +2,7 @@
 
 Emulates the Bitbucket API (2.0), for local development and tests.
 
-**10 conformance cases, 4 checked against the live API on 2026-08-22.**
+**12 conformance cases, 4 checked against the live API on 2026-08-22.**
 
 ## What this Recipe found
 

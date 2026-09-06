@@ -2,7 +2,7 @@
 
 Emulates the Art Institute of Chicago API (artinstituteofchicago), for local development and tests.
 
-**11 conformance cases, all of them checked against the live API on 2026-08-29.**
+**13 conformance cases, 11 checked against the live API on 2026-08-29.** The two unchecked ones are the paging pair: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

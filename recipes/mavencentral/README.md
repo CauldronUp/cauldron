@@ -2,7 +2,7 @@
 
 Emulates the Maven Central API (solrsearch), for local development and tests.
 
-**9 conformance cases, all of them checked against the live API on 2026-08-27.**
+**11 conformance cases, 9 checked against the live API on 2026-08-27.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

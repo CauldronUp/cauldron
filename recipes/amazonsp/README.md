@@ -2,7 +2,7 @@
 
 Emulates the Amazon SP-API API (v0), for local development and tests.
 
-**10 conformance cases, 2 checked against the live API.**
+**12 conformance cases, 2 checked against the live API.**
 
 Two were struck live against sellingpartnerapi-na.amazon.com on 2026-09-05: an entirely absent token and a present, invented one both answer 403 code Unauthorized, and this file had given both the same empty "details" string. They are not the same sentence live -- an absent token says "Access token is missing in the request header." and a present, wrong one says "The access token you provided is revoked, malformed or invalid."
 

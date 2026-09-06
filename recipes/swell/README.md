@@ -2,7 +2,7 @@
 
 Emulates the Swell API (backend), for local development and tests.
 
-**11 conformance cases, 6 checked against the live API on 2026-09-01.**
+**13 conformance cases, 6 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

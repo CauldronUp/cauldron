@@ -2,7 +2,7 @@
 
 Emulates the Miro API (v2), for local development and tests.
 
-**9 conformance cases, 1 checked against the live API.**
+**11 conformance cases, 1 checked against the live API.**
 
 Struck live 2026-09-05 against api.miro.com, no account and no key -- a missing credential and a wrong one both answer the identical body. This file declared code "1.0000" and "Invalid or missing access token"; the real answer is `tokenNotProvided` / "No authorization data was found on the request". Fixed below.
 

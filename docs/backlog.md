@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-648 paging parameter name(s) across 258 recipe(s) are declared and sent by no
+531 paging parameter name(s) across 217 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4527,6 +4527,29 @@ One bug is worth keeping. The first version asserted `[0].id` and Axiom answered
 identifier is printed under another key. A generator that assumes `id` is called
 `id` writes cases that fail on every Recipe that renames it, and there are
 plenty.
+
+### Two cases beat a third record
+
+The three-record rule was right about one case and wrong about the problem. One
+case cannot prove both halves at once -- with two records, asking for a page of
+one *after* the first returns a single record whether or not the size was read.
+Two cases can, and they need nothing the fixture does not already hold:
+
+1. `limit=1` with no position. The first record comes back and the second does
+   not, which can only happen if the size was read -- ignore the name and the
+   whole collection arrives, because the whole collection is two.
+2. `limit=1` at the position after the first record. The second record comes
+   back, which can only happen if the position was read.
+
+That is strictly better than growing the fixture, and it is the answer to the 23
+clones that had to be withdrawn because a slug or an airport code cannot be
+copied honestly. 152 cases across 76 Recipes went in on this pattern, each still
+required to break under the rename it is named for -- the size case under
+`limit_param`, the position case under `cursor_param`. The debt fell from 648 to
+531.
+
+The lesson generalises past paging: when an assertion cannot distinguish two
+causes, the fix is usually a second assertion rather than a bigger fixture.
 
 A fourth relaxation, and the sharpest of them: **the fixture is not the answer
 about a value's type.** Shopify writes its product id as the string

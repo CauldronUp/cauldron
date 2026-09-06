@@ -2,7 +2,7 @@
 
 Emulates the finch API (v1), for local development and tests.
 
-**17 conformance cases, 6 checked against the live API on 2026-09-05.**
+**19 conformance cases, 6 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real connection; the refusal cases were struck live, unauthenticated, against api.tryfinch.com.
 

@@ -2,7 +2,7 @@
 
 Emulates the Buildkite API (v2), for local development and tests.
 
-**10 conformance cases, 1 checked against the live API.**
+**12 conformance cases, 1 checked against the live API.**
 
 Struck live against api.buildkite.com on 2026-09-05, both with no Authorization header and with a made-up Bearer token: byte-identical 401. This file had truncated the message to "Authentication required"; Buildkite sends a longer sentence with a link to its own auth docs.
 

@@ -2,7 +2,7 @@
 
 Emulates the Rick and Morty API (rickandmorty), for local development and tests.
 
-**11 conformance cases, all of them checked against the live API on 2026-08-30.**
+**13 conformance cases, 11 checked against the live API on 2026-08-30.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

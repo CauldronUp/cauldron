@@ -2,7 +2,7 @@
 
 Emulates the Tink API (v1), for local development and tests.
 
-**13 conformance cases, 9 checked against the live API on 2026-08-31.**
+**15 conformance cases, 9 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

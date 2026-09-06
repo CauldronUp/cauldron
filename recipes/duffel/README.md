@@ -2,7 +2,7 @@
 
 Emulates the Duffel API (v2), for local development and tests.
 
-**8 conformance cases, 1 checked against the live API on 2026-08-31.**
+**10 conformance cases, 1 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

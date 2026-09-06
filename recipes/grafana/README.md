@@ -2,7 +2,7 @@
 
 Emulates the Grafana API (v1), for local development and tests.
 
-**12 conformance cases, 3 checked against the live API on 2026-09-05.**
+**14 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource cases cite Grafana's own generated Swagger document rather than a real instance. Grafana is self-hosted, but Grafana Labs runs a public demo at play.grafana.org, and the refusal cases were struck live against it -- though its anonymous-viewer configuration meant not everything could be settled; see the header.
 

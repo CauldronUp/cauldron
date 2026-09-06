@@ -2,7 +2,7 @@
 
 Emulates the WorkOS API (v1), for local development and tests.
 
-**16 conformance cases, 3 checked against the live API on 2026-09-05.**
+**18 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Most of this Recipe still cites documentation, since directory sync needs a real IdP connection. The credential and routing shapes needed no account at all, and checking them live found this Recipe's own error shape wrong.
 
