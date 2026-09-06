@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**67 more listings across 46 Recipes declare no paging at all**, and the
+**63 more listings across 42 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,21 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Gemini is `pageSize` and `pageToken` -- fifty per page, at most a thousand, and
+the walk ends on a **missing** field rather than a null one. Worth noting against
+Google Calendar's `maxResults` and `pageToken`, which is a different pair on
+another Google API: guessing from the vendor does not work either. Groq's model
+catalogue takes no parameters at all, the fourth model listing here to settle that
+way after OpenAI's, xAI's and Perplexity's -- half a model catalogue is a client
+that thinks a model does not exist. Honeycomb says "all" twice in one sentence
+about its dataset listing and gives it nothing to ask for fewer with.
+
+Zilliz pages by `pageSize` and `currentPage`, which is a name this survey has met
+as a *response* field -- the Guardian reports one -- and here it is the request
+parameter. No default and no maximum is stated for either, so neither is declared:
+the 10 in Zilliz's example is an example, not a default, and writing it down as
+one would be inventing a fact.
 
 Moodle needed its own source rather than its documentation, and the two functions
 this Recipe models split cleanly. `core_course_get_courses` takes exactly one
