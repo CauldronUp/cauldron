@@ -227,13 +227,6 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 			add("%s: pagination in %q must be query or body", where, in)
 		}
 
-		// A page cannot be both bigger and smaller than the size asked for.
-		// The two say opposite things about the same provider, and a Recipe
-		// carrying both describes neither.
-		if route.Pagination.MayOvershoot && route.Pagination.MayUndershoot {
-			add("%s: pagination declares both may_overshoot and may_undershoot, which are opposite claims about one page", where)
-		}
-
 		if !contains(validPagination, route.Pagination.Style) {
 			add("%s: pagination.style %q is not supported", where, route.Pagination.Style)
 		}

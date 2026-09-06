@@ -124,15 +124,43 @@ func TestUndershootingNeverServesAnEmptyPage(t *testing.T) {
 	}
 }
 
-// And a Recipe cannot claim both. They are opposite statements about one page,
-// and a file carrying both describes no provider at all.
-func TestOvershootingAndUndershootingTogetherAreRefused(t *testing.T) {
+// And a Recipe may claim both, because a provider can do both. This was
+// refused as a contradiction until Modern Treasury turned up saying it in one
+// sentence about one endpoint: "the actual number of records returned may be
+// less than, equal to, or more than the requested amount."
+//
+// Doing both at once would cancel out and demonstrate neither, so they take
+// turns by position: the first page overshoots and every page after it
+// undershoots. A two-page walk meets both, and which one a request gets is
+// decided by the request rather than by chance.
+func TestAProviderCanBothOvershootAndUndershoot(t *testing.T) {
 	r := advisory()
 	r.Routes[0].Pagination.MayOvershoot = true
 	r.Routes[0].Pagination.MayUndershoot = true
 
-	if err := r.Validate(); err == nil {
-		t.Fatal("a route declaring both may_overshoot and may_undershoot validated")
+	if err := r.Validate(); err != nil {
+		t.Fatalf("a route declaring both may_overshoot and may_undershoot was refused: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	seed(t, s, 25)
+
+	first := listThings(t, s, "/v1/things?limit=5")
+	a, _ := first["things"].([]any)
+	if len(a) != 6 {
+		t.Errorf("the first page served %d records for limit=5, want 6", len(a))
+	}
+
+	last := a[len(a)-1].(map[string]any)["id"].(string)
+
+	second := listThings(t, s, "/v1/things?limit=5&cursor="+last)
+	b, _ := second["things"].([]any)
+	if len(b) != 4 {
+		t.Errorf("the second page served %d records for limit=5, want 4", len(b))
 	}
 }
 

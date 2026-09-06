@@ -555,6 +555,14 @@ type Pagination struct {
 	//
 	// Declared, this emulator serves one extra record on every page that is
 	// not the last, so that loop breaks here rather than in production.
+	//
+	// This and MayUndershoot are not exclusive, though they were refused
+	// together for the first few hours they existed. Modern Treasury settles
+	// it in one sentence about one endpoint: "the actual number of records
+	// returned may be less than, equal to, or more than the requested
+	// amount." When both are set they take turns by position -- the first
+	// page overshoots, every page after it undershoots -- because doing both
+	// at once would cancel out and demonstrate neither.
 	MayOvershoot bool `yaml:"may_overshoot"`
 	// MayUndershoot says a page can carry fewer records than the size asked
 	// for without being the last page, for the providers that fill a page
@@ -580,6 +588,8 @@ type Pagination struct {
 	// Declared, this emulator serves one fewer record on every page that is
 	// not the last, and never fewer than one -- a page of zero would end the
 	// walk for a different and untrue reason.
+	//
+	// See MayOvershoot for what happens when both are declared.
 	MayUndershoot bool `yaml:"may_undershoot"`
 	// LimitParam names the query parameter carrying the page size, for the
 	// providers that do not call it "limit". Google Calendar calls it

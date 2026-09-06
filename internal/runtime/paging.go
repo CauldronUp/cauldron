@@ -12,6 +12,21 @@ import (
 	"github.com/CauldronUp/cauldron/internal/recipe"
 )
 
+// cursorName is the parameter a caller sends the position in, defaulted the
+// same way the rest of this file defaults it.
+func cursorName(spec recipe.Pagination) string {
+	if spec.CursorParam != "" {
+		return spec.CursorParam
+	}
+
+	switch spec.Style {
+	case "page", "offset":
+		return spec.Style
+	default:
+		return "cursor"
+	}
+}
+
 // nextPageURL renders the request that fetches the page after this one.
 //
 // It is this request with the position parameter moved on, which is what every

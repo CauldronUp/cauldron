@@ -630,11 +630,32 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// keeps the offset arithmetic honest: a page that served 24 records
 	// advances the position by 24 rather than by the 25 that were asked for.
 	if !unpaged {
-		if matched.spec.Pagination.MayOvershoot {
+		over := matched.spec.Pagination.MayOvershoot
+		under := matched.spec.Pagination.MayUndershoot
+
+		// A provider that does both. Modern Treasury is the reason this is
+		// not refused as a contradiction: "the actual number of records
+		// returned may be less than, equal to, or more than the requested
+		// amount", in one sentence, about one endpoint.
+		//
+		// Doing both at once would cancel out and demonstrate neither, so
+		// they take turns by position: the first page overshoots, every page
+		// after it undershoots. A two-page walk therefore meets both, and it
+		// is decided by the request rather than by chance, so a test that
+		// passes once passes always.
+		if over && under {
+			if pagingFrom(r, matched.spec.Pagination).get(cursorName(matched.spec.Pagination)) == "" {
+				under = false
+			} else {
+				over = false
+			}
+		}
+
+		if over {
 			limit++
 		}
 
-		if matched.spec.Pagination.MayUndershoot && limit > 1 {
+		if under && limit > 1 {
 			limit--
 		}
 	}

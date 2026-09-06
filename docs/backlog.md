@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**71 more listings across 47 Recipes declare no paging at all**, and the
+**68 more listings across 46 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1622,6 +1622,17 @@ a provider trims (`max_limit`) and could say it refuses
 them, and the emulator acts on both: a page that is not the last serves one extra
 record where the provider overshoots, and one fewer where it undershoots -- never
 zero, because an empty page ends a walk for a reason that is not true.
+
+Modern Treasury then proved half of that first design wrong within the day. The
+validator refused `may_overshoot` and `may_undershoot` together as opposite
+claims about one page. Modern Treasury makes both in one sentence about one
+endpoint: "the actual number of records returned may be less than, equal to, or
+more than the requested amount." They are not opposites, they are one provider.
+The rule is gone, and when both are declared they take turns by position -- the
+first page overshoots and every page after it undershoots -- because doing both
+at once would cancel out and demonstrate neither. Modern Treasury draws the
+conclusion the keys exist for: keep paginating until the cursor header is absent,
+because the page size tells you nothing about whether you are finished.
 
 Both are deliberate and deterministic rather than random. A fake that misbehaves
 only sometimes is a fake nobody can write a test against, and the entire point is
