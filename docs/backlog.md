@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-30 listing(s) across 21 recipe(s) have no case that answers them
+27 listing(s) across 19 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -5326,3 +5326,22 @@ Make's scenarios, Hardcover's editions, HERE's geocode results. Those need a
 fixture written, not a generator taught, and writing provider-shaped fixture
 data from documentation is exactly the kind of guess this whole line of work has
 been removing. They stay counted.
+
+### The credential was in the Recipe all along
+
+The generator that shows an unanswered listing copies its request from a green
+case elsewhere in the file, because a path and a credential are two things it
+cannot invent. That is true of the path. It was never true of the credential.
+
+A Recipe's `auth` block names the scheme, the header, the prefix and the keys it
+accepts. Building a credential from that is reading the file, not inventing a
+secret -- and it works where copying does not, because several Recipes
+authenticate every route while their only green cases are the two or three that
+need no credential at all: Toggl's status endpoint, Navitia's root.
+
+Two other small things came out of the same pass. Heroku answers **206 Partial
+Content** to a listing, which is what its Range paging does and what the Recipe
+models; insisting on 200 had hidden four listings behind a status code that was
+never wrong. And a route whose path ends in a slash is not the route without
+one -- Sentry writes `/organizations/{organization}/projects/` and answers 404
+to the trimmed version, which is a real difference and worth reproducing.
