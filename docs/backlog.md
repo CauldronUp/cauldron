@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**45 more listings across 25 Recipes declare no paging at all**, and the
+**44 more listings across 24 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,15 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Basiq's dated record turned up something larger than its paging. Its reference
+could not be reached at any address -- api.basiq.io/reference/<operation> 404s for
+every name, docs.basiq.io does not have the page, api.docs.basiq.io does not
+resolve -- and the connect.json that Recipe records as its own `upstream.spec`
+describes `/users`, `/jobs` and `/connections` **without containing
+`/institutions` at all**. The spec a Recipe cites not containing the route the
+Recipe models is a bigger question than the page size, and it is written at the
+route rather than papered over.
 
 Avalara pages by `$top` and `$skip` -- OData's spelling, dollar signs and all:
 "to view page 3 with a page size of 100, you'd use $top=100&$skip=200". A leading
