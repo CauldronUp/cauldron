@@ -7808,3 +7808,81 @@ list with the names and the date rather than into `providers.go`.
 Two Recipes in a row now, both unmapped after checking. The `radarr-api`
 fabrication was not a one-off lapse — inventing a plausible package name is the
 path of least resistance every time, and only the check stops it.
+
+## Casdoor, an identity provider whose user schema declares the password
+
+Written against Casdoor's own generated Swagger 2.0 document —
+`casdoor/casdoor` `swagger/swagger.json`, 234 paths, version 1.503.0, read
+2026-09-06. Self-hosted with no public instance, so nothing is struck live.
+
+`object.User` has **181 properties**. Among them:
+
+```
+password          accessSecret     totpSecret
+passwordSalt      accessToken      originalToken
+passwordType      accessKey        originalRefreshToken
+```
+
+`GET /api/get-user` declares `object.User` as its 200 response schema, and
+`writeOnly` appears **zero times in 350 kilobytes of JSON**.
+
+So as published, the document says a user fetch returns that user's password,
+their salt, their TOTP secret and three tokens. On an identity provider. A
+generated client's `User` type carries all nine; a logged response body carries
+them; a cache holds them.
+
+Bounded the same way as Coolify: a claim about the document, not about the
+running server. Casdoor may strip these in the handler and there is no public
+instance to check, so the Recipe does not claim it either way, and the fixture
+uses `PLACEHOLDER-NOT-A-SECRET`.
+
+### Three Recipes now triangulate one keyword
+
+| provider | `writeOnly` uses | consequence |
+|---|---|---|
+| Coolify | 0 in 192 paths | a password declared on an application listing |
+| Casdoor | 0 in 234 paths | a password, salt and TOTP secret declared on a user fetch |
+| Exoscale | 1 in 261 paths | firewall rules hidden from a security-group listing |
+
+The keyword exists for exactly one job, and across three infrastructure and
+identity APIs read this week it is used once — where it costs a caller
+information — and never where it would protect one.
+
+### Deletion is a POST at a path whose name says delete
+
+Twenty-eight `delete-*` paths, every one POST. The verb lives in the path and the
+method disagrees with it, so a reviewer grepping for `DELETE` finds nothing, a
+proxy rule on the method never fires, and an audit classifying by method files
+every deletion as a write.
+
+The `get-*` paths *are* GET — so the method is redundant with the path name on
+104 endpoints and contradicts it on 28.
+
+### The rest
+
+- **Three numbered payload slots.** `data`, `data2`, `data3`, each described as
+  "support string, struct or []struct" and none typed. Which holds what is per
+  endpoint and the document says for none of them.
+- **`status` is a string in the body**, `"ok"` or `"error"`, at HTTP 200 — so a
+  failure is a success as far as the transport is concerned.
+- **Two definitions the generator produced by accident:**
+  `"232967.<nil>.string"` and `"233025.string.string"` — schema names containing
+  a line number, a Go nil and a type name.
+- **One Casdoor serves many issuers**, because
+  `/.well-known/{application}/openid-configuration` sits beside the unqualified
+  one — so a client fetching the plain path gets a different issuer from the one
+  it was configured for.
+- **A user is identified by the pair `(owner, name)`**, and the scope travels as
+  a query parameter rather than a path segment.
+- **`isAdmin` and `isForbidden` are separate axes** nothing collapses into a
+  role.
+
+### Mapped, after checking
+
+`casdoor-js-sdk`, `casdoor-nodejs-sdk` and `github.com/casdoor/casdoor-go-sdk`
+all resolve and are Casdoor's own. The bare npm name `casdoor` also resolves and
+is deliberately left out — a bare name taken by somebody else is what the `canny`
+row on the unmapped table records.
+
+First Recipe in three to get a mapping at all, and it got one because the
+packages are real.
