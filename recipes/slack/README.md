@@ -2,7 +2,7 @@
 
 Emulates the Slack API (2026-05), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API on 2026-09-05.**
+**12 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Most of this Recipe cites documentation rather than a workspace, because a
 real one needs an app and a bot token. The credential shape does not, and

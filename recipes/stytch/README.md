@@ -2,7 +2,7 @@
 
 Emulates the Stytch API (v1), for local development and tests.
 
-**13 conformance cases, 3 checked against the live API on 2026-09-05.**
+**14 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Stytch has a real test environment, so most cases here still cite documentation rather than the sandbox itself. The credential and routing failures needed no project at all, and checking them live found this Recipe's own auth model wrong on every axis.
 

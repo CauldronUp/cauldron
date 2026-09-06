@@ -41,6 +41,7 @@ func runVerify(ctx *context, args []string) int {
 		guessed, guessedRecipes             int
 		unstated, unstatedRecipes           int
 		unsent, unsentRecipes               int
+		unshown, unshownRecipes             int
 		failedRecipes                       []string
 	)
 
@@ -115,6 +116,14 @@ func runVerify(ctx *context, args []string) int {
 			unsentRecipes++
 		}
 
+		// And the one underneath all three: a listing no case answers
+		// successfully. Nothing can be added to a request that does not
+		// exist, so this is where the other counts are actually blocked.
+		if n := sandbox.Recipe().UnshownListing(); n > 0 {
+			unshown += n
+			unshownRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -148,6 +157,11 @@ func runVerify(ctx *context, args []string) int {
 	if unsent > 0 {
 		fmt.Fprintf(ctx.stdout, "%d paging parameter name(s) across %d recipe(s) are declared and sent by no case, so renaming them would break nothing.\n",
 			unsent, unsentRecipes)
+	}
+
+	if unshown > 0 {
+		fmt.Fprintf(ctx.stdout, "%d listing(s) across %d recipe(s) have no case that answers them successfully at all.\n",
+			unshown, unshownRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

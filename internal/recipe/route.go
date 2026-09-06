@@ -864,6 +864,60 @@ func bodyCarries(body any, name string) bool {
 	return true
 }
 
+// UnshownListing counts the listings no conformance case answers successfully.
+//
+// A Recipe can declare a collection, a page size, an envelope and a cursor
+// field, and have nothing at all that shows what the listing answers. Every
+// case touching it can be checking a failure -- no credential, a wrong method,
+// an unknown path -- and the file still reads as a description of a working
+// endpoint.
+//
+// This was found once already, in passing: the rule that a response field name
+// needs a case asserting it turned up "two of them ... with no successful list
+// case at all: every case touching the collection was checking a failure, so
+// nothing asserted what a working listing looks like". Two was the number
+// visible from that angle. Counted directly it is far larger, and it is the
+// reason so many paging parameters cannot be settled -- there is no green
+// request to add a page size to.
+//
+// A listing counts as shown when some case asks for it, by this method and a
+// path that matches this route, and expects 200. An arming case is excluded:
+// it installs a failure on purpose, so a 200 beside it would be describing the
+// arm rather than the listing.
+func (r Recipe) UnshownListing() int {
+	unshown := 0
+
+	for _, route := range r.Routes {
+		if route.Operation != "list" {
+			continue
+		}
+
+		if !r.showsListing(route) {
+			unshown++
+		}
+	}
+
+	return unshown
+}
+
+func (r Recipe) showsListing(route Route) bool {
+	for _, c := range r.Conformance {
+		if c.Arm != "" || c.Request.Method != route.Method {
+			continue
+		}
+
+		if !samePath(c.Request.Path, route.Path) {
+			continue
+		}
+
+		if c.Expect.Status == 0 || c.Expect.Status == 200 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ChangeEmit is one conditional emission: an event, and the field whose change
 // triggers it.
 type ChangeEmit struct {

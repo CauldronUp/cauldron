@@ -4487,6 +4487,47 @@ and only the second one is the question worth asking. With that fixed, 30 more
 candidates were dropped, and the ones that fell are the Recipes whose fixtures
 carry a count somebody asserted on purpose.
 
+### The listing nothing has ever answered
+
+Chasing the paging debt found something underneath it. Of the routes whose
+parameter names no case sends, the largest single reason is not a small fixture
+or an awkward envelope: **218 of them are on listings no case answers at all.**
+Nothing can be added to a request that does not exist.
+
+`verify` counts that too now:
+
+```
+168 listing(s) across 134 recipe(s) have no case that answers them
+successfully at all.
+```
+
+A listing counts as shown when some case asks for it, by that method and a
+matching path, and expects 200. Every case touching the other 168 is checking a
+failure -- a missing credential, a wrong method, an unknown path -- so the
+collection, the envelope, the page size and the cursor field beside them are a
+description with no evidence under it. The Recipe is green and has never seen the
+endpoint work.
+
+This was found once before, sideways. The rule that a response field name needs a
+case asserting it turned up "two of them ... with no successful list case at all:
+every case touching the collection was checking a failure". Two is what that
+angle could see. Counted head-on it was 168.
+
+46 of them now have one, built the same way as the paging cases: the credential
+headers and the fixture come from a green case elsewhere in the same file, the
+path comes from the route, and the assertion is the two records the fixture holds
+in the order it holds them. Ten more went red and were withdrawn -- Chargebee,
+DigitalOcean, GitLab, Gorgias, Greenhouse, Heroku, Hetzner, Recharge, WooCommerce
+and WordPress -- each because the listing answers something the fixture alone does
+not predict, which is the finding for the next person rather than a failure of
+the sweep.
+
+One bug is worth keeping. The first version asserted `[0].id` and Axiom answered
+`missing`, because Axiom's dataset declares `id.field: name`: the store's
+identifier is printed under another key. A generator that assumes `id` is called
+`id` writes cases that fail on every Recipe that renames it, and there are
+plenty.
+
 ### The clone that shared an email address
 
 Growing a fixture by copying its last record leaves every field duplicated but

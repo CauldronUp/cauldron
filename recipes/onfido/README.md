@@ -2,7 +2,7 @@
 
 Emulates the Onfido API (v3.6), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.onfido.com, no account and no key -- and this file's declared authentication failure matched exactly, word for word, whether no Authorization header was sent at all or the wrong scheme (Bearer) was.
 
