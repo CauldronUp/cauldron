@@ -910,7 +910,11 @@ func (r Recipe) showsListing(route Route) bool {
 			continue
 		}
 
-		if c.Expect.Status == 0 || c.Expect.Status == 200 {
+		// Any success shows it, not only a 200. Heroku answers 206 to a
+		// listing because its paging is a Range header, and Agora answers
+		// 201 to several of its reads. Counting those as unshown sent a
+		// Recipe looking for evidence it already had.
+		if c.Expect.Status == 0 || (c.Expect.Status >= 200 && c.Expect.Status < 300) {
 			return true
 		}
 	}

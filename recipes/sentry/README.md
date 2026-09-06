@@ -2,7 +2,7 @@
 
 Emulates the Sentry API (0), for local development and tests.
 
-**14 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real organisation. The credential check itself was verified directly against sentry.io on 2026-09-05.
 

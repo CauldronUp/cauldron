@@ -107,3 +107,45 @@ func TestOnlyListingsCountAsUnshown(t *testing.T) {
 		t.Errorf("a get and a create counted as unshown listings: %d", n)
 	}
 }
+
+// A success is not always a 200.
+//
+// Heroku answers 206 Partial Content to a listing, because its paging is a
+// Range header and a partial answer is what that means. Agora answers 201 to
+// several of its reads. Both are shown by the cases in their Recipes, and this
+// counter called them unshown -- so a Recipe was told to go and find evidence
+// it already had, and the generator that went looking wrote the case a second
+// time under a name that did not collide with the first.
+func TestAnySuccessShowsAListing(t *testing.T) {
+	for _, status := range []int{201, 202, 206} {
+		r := &Recipe{
+			Routes: []Route{{Method: "GET", Path: "/v1/things", Operation: "list"}},
+			Conformance: []Case{{
+				Name:    "the listing answers",
+				Request: Request{Method: "GET", Path: "/v1/things"},
+				Expect:  Expectation{Status: status},
+			}},
+		}
+
+		if n := r.UnshownListing(); n != 0 {
+			t.Errorf("a listing answered with %d: counted %d unshown, want 0", status, n)
+		}
+	}
+}
+
+// A refusal is still a refusal, whatever else moved.
+func TestAFailureDoesNotShowAListing(t *testing.T) {
+	for _, status := range []int{301, 400, 401, 404, 500} {
+		r := &Recipe{
+			Routes: []Route{{Method: "GET", Path: "/v1/things", Operation: "list"}},
+			Conformance: []Case{{
+				Request: Request{Method: "GET", Path: "/v1/things"},
+				Expect:  Expectation{Status: status},
+			}},
+		}
+
+		if n := r.UnshownListing(); n != 1 {
+			t.Errorf("a listing answered with %d: counted %d unshown, want 1", status, n)
+		}
+	}
+}

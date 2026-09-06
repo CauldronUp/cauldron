@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-62 paging parameter name(s) across 31 recipe(s) are declared and sent by no
+57 paging parameter name(s) across 29 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-27 listing(s) across 19 recipe(s) have no case that answers them
+21 listing(s) across 17 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -5345,3 +5345,27 @@ models; insisting on 200 had hidden four listings behind a status code that was
 never wrong. And a route whose path ends in a slash is not the route without
 one -- Sentry writes `/organizations/{organization}/projects/` and answers 404
 to the trimmed version, which is a real difference and worth reproducing.
+
+### The counter was asking for evidence six Recipes already had
+
+`UnshownListing` treated a listing as shown only by a case expecting 200.
+Heroku answers **206 Partial Content** to a listing, because its paging is a
+Range header and a partial answer is what that means. Agora answers **201** to
+several of its reads. Both are shown, plainly, by cases already in their files.
+
+Six listings were counted as unanswered on that basis, and the generator sent
+after them did what it was told: it asked the sandbox, got an answer, and wrote
+a case that already existed under a name one word longer. Two Recipes briefly
+carried the same evidence twice.
+
+The fix is four characters wide -- any 2xx, not 200 -- and it is the same
+mistake as every other one in this section, at the other end of the pipe. A
+measurement that is slightly wrong does not produce slightly wrong work. It
+produces confident work on a problem nobody has.
+
+Ten of the twenty-one that remain are in Recipes whose fixtures hold no record
+of that resource at all: Dub's links, Melio's bills, payments and vendors,
+Rippling's employees, FullStory's users and sessions, Transitland's departures.
+Every one of those has exactly one fixture, `empty`, and nothing to serve. They
+need fixture data written from the provider's documentation, which is the guess
+this line of work has spent a fortnight removing, so they stay counted.
