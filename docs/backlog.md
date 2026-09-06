@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and five Recipes send at least one identifier as a number now, and each
+One hundred and six Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -7102,3 +7102,60 @@ count header is still the whole set.
 - **`created` and `updated`, not `created_at` and `updated_at`**, so a client
   mapping the usual spelling writes undefined into both. And the search
   parameter is `s`.
+
+## CrowdSec, whose block list contains entries marked not to block
+
+Written against CrowdSec own Swagger 2.0 document -- crowdsecurity/crowdsec
+pkg/models/localapi_swagger.yaml, 13 paths, read 2026-09-06. The Local API runs
+on the operator own machine, so nothing is struck live and the Recipe says so.
+
+A Decision carries `simulated`: "true if the decision result from a scenario in
+simulation mode". Simulation is how an operator tries a scenario without acting
+on it -- so the decisions list, which is the list a bouncer reads to decide who
+to turn away, contains entries deliberately not meant to be enforced.
+
+`simulated` is readOnly and not in `required`, so it may be absent, and absent
+is falsy. That fails safe for truthiness -- absent reads as not-simulated, which
+enforces -- and wrong for anyone counting simulations. A bouncer that never reads
+the field enforces every simulation the operator was testing.
+
+### A header name that is a header name and a value prefix
+
+```yaml
+JWTAuthorizer:
+  type: apiKey
+  in: header
+  name: "Authorization: Bearer"
+```
+
+Under `in: header`, `name` is the header name. `Authorization: Bearer` is not
+one -- it contains a colon and a space, neither legal in a header name. A
+generator that does what the document says produces a header called
+`Authorization: Bearer` with the token as its value, which most HTTP libraries
+reject outright and the rest send as a malformed line. The other scheme,
+`X-Api-Key`, is correct -- so one of the two credentials in this document cannot
+be used by anything generated from it.
+
+Recorded and not served: emitting a malformed header line to demonstrate a
+defect in a document would put the defect in the emulator.
+
+### The rest
+
+- **Two lifetimes, both strings.** `duration` is Go duration syntax ("4h",
+  "168h" -- no day unit) and `until` is an absolute date, and nothing says
+  which wins if they disagree.
+- **Two identifiers whose reality depends on direction.** `id` is "(only
+  relevant for GET ops)"; `uuid` is "only relevant for LAPI->CAPI, ignored for
+  cscli->LAPI and crowdsec->LAPI". A decision identity depends on the operation
+  and on which of four directions the traffic flows, said in prose rather than
+  in the schema.
+- **An open enum with no members.** `type` "might be ban, captcha or something
+  custom" -- three named possibilities, no enum, an invitation to invent more.
+- **`scope` says what `value` is measured in**, so code parsing `value` as an
+  IP throws on every Range decision.
+- **A plural field holding one string.** `errors` is "more detail on individual
+  errors", `type: string` -- so iterating it iterates characters.
+- **Nine filters and no pagination.** On a busy installation the listing is the
+  whole blocklist and there is no way to ask for part of it.
+- **No credential is 403, not 401**, so a client branching on 401 to fetch a
+  credential never fetches one.
