@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "gotify",
+			npm:    []string{"gotify"},
+		},
+		{
 			recipe: "sonarr",
 			npm:    []string{"sonarr-api"},
 		},

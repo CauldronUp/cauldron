@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and two Recipes send at least one identifier as a number now, and each
+One hundred and three Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6552,3 +6552,84 @@ Widening it again buys two more counts. So the check now parses the spelled
 number: split on the hundreds, look the remainder up in the table, add. Below a
 hundred it is still a lookup, because English below a hundred is a table and not
 a grammar.
+
+## Gotify, where `since` means less than
+
+Written against Gotify's own generated Swagger 2.0 document — `gotify/server`
+`docs/spec.json`, 30 paths, version 2.1.0, read 2026-09-06. Self-hosted with no
+public instance, so nothing is struck live and the Recipe says so.
+
+The document's own words for the parameter on `GET /message`:
+
+> since — "return all messages with an ID less than this value"
+
+In every other Recipe in this collection `since` means *after*: after this time,
+after this position, going forward. Here it pages backwards, because messages
+come newest-first and paging means walking into the past.
+
+A client that assumes the usual sense sends the id it started from and receives
+the same page again, or sends the newest id it has seen and receives everything
+it already had. Nothing errors — `since` is a valid parameter with a valid
+value, and the answer is a correct page of the wrong end.
+
+### Seven security definitions, three wire positions, and a prefix letter
+
+`appTokenAuthorizationHeader` and `clientTokenAuthorizationHeader` are both
+`Authorization`. `appTokenHeader` and `clientTokenHeader` are both
+`X-Gotify-Key`. `appTokenQuery` and `clientTokenQuery` are both `?token=`.
+
+So which kind of token you sent is **not visible in the request**. It is the
+token's first character — the document's own examples are `Axxxxxxxxxx` for an
+application token and `Cxxxxxxxxxx` for a client token. The whole access-control
+model is a prefix letter.
+
+And they do not reach the same endpoints. `POST /message` accepts both;
+`GET /message`, `DELETE /message`, `/application`, `/client` and `/current/user`
+accept a client token only. An application token can write and cannot read.
+That is a good design, and it means using the wrong of two identical-looking
+credentials answers 401 on an endpoint that plainly exists and that the other
+token just read.
+
+**This one is served, not just described.** The route-level `auth:` override
+gives the read route the client token alone and leaves the write route taking
+both, so a caller who mixes them up gets the real refusal locally. It was
+described-only in the first draft, which would have made the Recipe's central
+finding the one thing the emulator did not reproduce.
+
+### The rest
+
+- **`paging.next` is a relative path, not a URL** — documented as "the relative
+  path for the next page … Should be combined with the gotify base url", example
+  `/message?limit=50&since=123456`. Every other provider here that sends a next
+  link sends an absolute URL, and a client passing this to a URL constructor
+  resolves it against whatever base it holds.
+- **No total anywhere.** `size` is this page, `limit` is what was asked for,
+  `since` is the last id seen.
+- **The error body repeats the HTTP status**, and the published description of
+  `errorDescription` reads, in full, "The http error code." — the description of
+  the field above it, copied. A generated client documents the wrong thing about
+  the only field carrying the explanation.
+- **`extras` is namespaced with a double colon**, `client::display`, which is
+  not a JSON convention and is awkward in every language offering dotted access.
+- **The shipped document's host is `localhost`** with no basePath, so a client
+  generated from it points at the machine it was generated on.
+- **The credential may travel in `?token=`** as a declared scheme. Recorded and
+  not served: serving it would make a credential in a URL the easy path in local
+  development. Third provider in two days to document one — Gitea's deprecated
+  `access_token`, Sonarr and Radarr's `apikey`, and now this.
+
+### A case that could not fail
+
+The validator caught the create case asserting only values the request had sent,
+which passes whatever the emulator does. Fixed by asserting what the server
+decides: the assigned id, the stamped date, and `appid` — which the caller never
+sends, because an application token posts as its own application. That last one
+is the better assertion anyway: a message's origin is the credential, not the
+body.
+
+### Still open
+
+- 30 paths and this covers one. Applications, clients, users, plugins and the
+  websocket stream are unexamined.
+- Per-application scoping is not modelled: upstream an app token posts only as
+  its own application, and here any app token posts as the fixture's.
