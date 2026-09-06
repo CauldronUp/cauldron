@@ -2,7 +2,7 @@
 
 Emulates the ElevenLabs API (v1), for local development and tests.
 
-**16 conformance cases, none checked against a live API.**
+**17 conformance cases, none checked against a live API.**
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 

@@ -2,7 +2,7 @@
 
 Emulates the OpenAQ API (v3), for local development and tests.
 
-**16 conformance cases, 8 checked against the live API on 2026-08-31.**
+**17 conformance cases, 8 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

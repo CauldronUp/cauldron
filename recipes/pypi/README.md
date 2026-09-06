@@ -2,7 +2,7 @@
 
 Emulates the PyPI API (json), for local development and tests.
 
-**15 conformance cases, 13 checked against the live API on 2026-08-25.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**17 conformance cases, 13 checked against the live API on 2026-08-25.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

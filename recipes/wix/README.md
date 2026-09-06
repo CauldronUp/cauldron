@@ -2,7 +2,7 @@
 
 Emulates the Wix API (v1), for local development and tests.
 
-**21 conformance cases, 4 checked against the live API on 2026-09-05.**
+**22 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The order and fulfilment cases still cite documentation, since a real order needs a real site. The credential shape needed no site at all, and checking it live found this Recipe's single failure model wrong for every operation it checked.
 

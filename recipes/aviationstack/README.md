@@ -2,7 +2,7 @@
 
 Emulates the AviationStack API (v1), for local development and tests.
 
-**11 conformance cases, 6 checked against the live API on 2026-09-03.**
+**12 conformance cases, 6 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

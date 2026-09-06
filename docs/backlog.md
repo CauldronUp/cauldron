@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-873 record field name(s) across 287 recipe(s) are declared and asserted
+695 record field name(s) across 245 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5638,3 +5638,27 @@ names across a handful of Recipes, and turned up one more listing nobody had
 answered. The bug had been in the shared helper the whole time; nothing had
 asked it for a path shaped like that until a resource with no listing needed
 its fetch route.
+
+### Two ways of reading a path that the generator did not share with the engine
+
+The engine credits a field name to any assertion whose path names it at *any*
+depth: `time_entries[0].client.id` names `time_entries`, `client` and `id`, and
+`mentions` has said so since long before this work started. The generator was
+matching only the last segment, so every field declared as a map went
+uncredited -- Harvest's `client`, its `task`, its `user_assignment` -- and the
+case that would have credited them was already being written for the scalar
+underneath.
+
+The engine also lets a backslash escape a dot, so a provider that puts one
+inside a field name is still reachable. Alpha Vantage names its quote fields
+`01. symbol`, `02. open`, `03. high`; without the escape the path splits in the
+middle of the name and reaches nothing, and all ten read as unobservable on a
+response that carries every one of them.
+
+178 names across 78 Recipes, and neither needed anything the file did not
+already have. Both were the generator holding a narrower idea of the assertion
+language than the thing that reads it.
+
+695 names remain. 261 of those are in Recipes whose fixtures hold no record of
+the resource, which is the wall every counter on this page ends at, and the rest
+are fields no fixture sets -- a name declared, never served, and now visibly so.
