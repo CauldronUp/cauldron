@@ -2526,6 +2526,7 @@ than a client for its API.
 | Canny | The bare npm name `canny` is a DOM module manager published by somebody else -- "Simple dom module manager with basic view support", repository `eightyfour/canny` -- and neither `canny-node` nor `@canny/sdk` exists. Canny's own reference documents raw HTTP and names no client library, which fits an API whose credential is a POST body field: there is not much for a client to wrap |
 | Column | No official SDK |
 | Overseerr | Checked `@jellyseerr/overseerr-api`, `overseerr-api`, `overseerr` and `@overseerr/api` against the registry on 2026-09-06; all four are 404. Overseerr's own documentation shows raw HTTP and names no client library |
+| Audiobookshelf | Checked `audiobookshelf`, `@audiobookshelf/api` and `abs-api` on 2026-09-06; all three are 404. The project publishes an OpenAPI document and no client |
 | Deel | No official SDK found under any obvious name |
 | FastSpring | No official SDK |
 | Fivetran | No official Node or Go client found |
@@ -7745,3 +7746,65 @@ the names and the date rather than into `providers.go`.
 That is the discipline the `radarr-api` fabrication earned one commit earlier,
 applied the first time it came up — and it came up immediately, which suggests
 the failure mode is not rare.
+
+## Audiobookshelf, where a listing returns the server's filesystem layout
+
+Written against Audiobookshelf's own OpenAPI 3.0 document —
+`advplyr/audiobookshelf` `docs/openapi.json`, 31 paths, read 2026-09-06.
+Self-hosted with no public instance, so nothing is struck live.
+
+`libraryItemBase` — the shape a library listing answers with — declares `path`,
+`relPath`, `ino`, `mtimeMs`, `ctimeMs`, `birthtimeMs` and `isFile`. That is
+`stat(2)`, on every record, in an API about audiobooks.
+
+A client rendering a library shows **absolute server paths**; a logged response
+body contains the machine's directory structure; and `ino` is the filesystem
+inode, exposed as a string because an inode number does not survive JavaScript's
+53-bit floats.
+
+Three filesystem timestamps sit beside two application ones, so a record carries
+five notions of *when* and only two are about the library. `birthtimeMs: 0` is a
+real POSIX instant rather than an absence — not every filesystem records a birth
+time.
+
+### Paging is zero-indexed, and inert until you ask for a limit
+
+The document's own words:
+
+> `page` — "The page number (zero indexed) to return. **If no limit is
+> specified, then page will have no effect.**"
+> `limit` — `default: 0`
+
+So `page=1` is the **second** page, and a client that starts counting at one —
+which is what almost every other provider in this collection wants — silently
+skips the first. And a client that sends only `page` gets the whole library every
+time while the parameter it did send does nothing.
+
+Both failures are quiet: the response is a valid page of valid records.
+
+### The rest
+
+- **Booleans are integers.** `desc` is `type: integer, default: 0`; `minified`
+  is `type: integer, minimum: 0`. And `minified` **switches the response
+  schema** — one endpoint, two record shapes, selected by a parameter that reads
+  like a display preference.
+- **Every record carries the identifier it used to have.** `id` is a uuid "after
+  2.3.0"; `oldLibraryItemId` is the pre-2.3.0 form, nullable — so a client that
+  migrated data keyed by the old id needs the second field, and one that did not
+  cannot tell "no old id" from "not populated".
+- **Both of those constraints live in `format`**, not `pattern`:
+  `"li_[a-z0-9]{18}"` and `"[0-9]*"`. `format` is an open string that tooling
+  ignores when it does not recognise the value; `pattern` exists for exactly
+  this and would have been checked.
+- **Missing and invalid are separate booleans**, so present-but-unreadable is a
+  third state that a client checking only `isMissing` shows as fine.
+
+### Second Recipe under the mapping discipline
+
+`audiobookshelf`, `@audiobookshelf/api` and `abs-api` were all checked against
+the npm registry on 2026-09-06 and all three are 404, so it goes on the unmapped
+list with the names and the date rather than into `providers.go`.
+
+Two Recipes in a row now, both unmapped after checking. The `radarr-api`
+fabrication was not a one-off lapse — inventing a plausible package name is the
+path of least resistance every time, and only the check stops it.
