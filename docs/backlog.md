@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**58 more listings across 37 Recipes declare no paging at all**, and the
+**54 more listings across 33 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,18 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Electricity Maps answers its zone list as a **keyed object**, not an array -- 350
+zones under 350 codes, struck live, with `?limit=2` ignored. A "page" of a keyed
+object is not a smaller object, it is a different one with keys missing, and a
+client looking up "DE" in a truncated one concludes Germany is not covered. That
+is a sharper failure than a short list, and the fake was serving ten of them.
+
+Sendcloud's spec corrected its own Recipe. The header called next and previous
+"cursor **URLs**"; the v2 description types both as `{"type": "integer",
+"nullable": true}`, and the parameter that consumes them is called `cursor` and
+described as a "token". A token that is an integer, called a token, is the sort
+of thing a client stores in the wrong column once and then forever.
 
 SerpApi documents a position and no size, and gives away the size in its own
 worked example: `start` "skips the given number of results ... 0 (default) is the
