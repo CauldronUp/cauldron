@@ -275,6 +275,19 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 		// time by a key that lives in the path. It is not defensible on a
 		// collection: a page of records with nothing to tell them apart
 		// cannot be what the provider sends, because nobody could address
+		// A route can only be empty by design if it is a listing, and only
+		// honestly if nothing in the file describes a record in it. The
+		// declaration exists to explain a permanent absence, and a route that
+		// answers with records is not absent -- it would be using the
+		// declaration to switch the question off.
+		if route.Empty {
+			if route.Operation != "list" {
+				add("%s: empty says a listing finds nothing, and this is a %s", where, route.Operation)
+			} else if r.describesRecord(route) {
+				add("%s: empty says nothing matches, but a case asserts a record in this route's collection", where)
+			}
+		}
+
 		// the second one.
 		for i, f := range route.Filters {
 			fwhere := fmt.Sprintf("%s: filters[%d]", where, i)

@@ -2,7 +2,7 @@
 
 Emulates the Jisho API (v1), for local development and tests.
 
-**10 conformance cases, 8 checked against the live API on 2026-08-30.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**8 conformance cases, all of them checked against the live API on 2026-08-30.**
 
 ## What this Recipe found
 

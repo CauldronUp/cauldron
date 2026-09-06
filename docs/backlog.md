@@ -5475,3 +5475,28 @@ Of the twenty-one still hollow, two are meant to be. iNaturalist's
 routes whose whole purpose is the empty answer, and there is no record to
 describe because a match would defeat the point. The rest have no fixture
 holding a record of the resource.
+
+### The generator wrote a case that was true of the emulator and false of Jisho
+
+`/api/v1/search/words-no-match` is a search for a keyword nothing matches. The
+emulator serves every path for a resource out of the same store, so seeding a
+fixture with a word in it and asking that path returns the word -- and the
+generator, aiming at the hollow listings, wrote a case asserting exactly that.
+It passed. It is also the opposite of what the route is for.
+
+That is the one kind of case worth nothing at all: green against the fake,
+wrong about the provider, and it would have been quietly correct-looking
+forever. What caught it was a rule written ten minutes earlier for a different
+reason.
+
+`empty: true` on a route says it models the answer when nothing matches, and the
+validator refuses it on a route whose collection some case describes. Declaring
+it on Jisho's two no-match routes turned the contradiction into an error, and
+the two cases came back out. OpenAIRE's `publications-no-match` and
+iNaturalist's twelve-nines observation carry the same declaration and passed
+without argument.
+
+The counter drops those four, which is the point: a count that can never reach
+zero teaches its reader to stop looking. Nineteen listings are answered only
+empty now, and every one of them is a Recipe with no record to serve rather
+than a route that means it.

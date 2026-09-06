@@ -253,6 +253,24 @@ type Route struct {
 	// string field set to "-" is cleared rather than inherited, which is how
 	// a route says the provider sends nothing there.
 	List *ListResponse `yaml:"list"`
+	// Empty says this route exists to model the answer when nothing matches.
+	//
+	// Five routes across four Recipes are a real listing with a query that
+	// finds nothing: Jisho's words-no-match and words-no-keyword, OpenAIRE's
+	// publications-no-match, iNaturalist's observation id of twelve nines,
+	// Deezer's search-empty-parameter. They exist because the provider answers
+	// differently when nothing matches, and the difference is worth a route of
+	// its own -- OpenAIRE sends its total as the string "0" where a populated
+	// answer sends the number 1, which is a client bug waiting to happen.
+	//
+	// There is no record in these to describe, by construction, so counting
+	// them as listings that need one produces a number that can never reach
+	// zero. A count nobody can clear is a count nobody reads.
+	//
+	// The declaration has to be true of the file: a route claiming it while
+	// some case asserts a record inside its collection is refused, so this
+	// explains the emptiness rather than silencing the question.
+	Empty bool `yaml:"empty"`
 	// Envelope overrides how this route wraps a single object, for the
 	// providers that do not wrap every resource the same way.
 	//
@@ -965,6 +983,10 @@ func (r Recipe) HollowListing() int {
 
 	for _, route := range r.Routes {
 		if route.Operation != "list" {
+			continue
+		}
+
+		if route.Empty {
 			continue
 		}
 
