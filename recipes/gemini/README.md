@@ -2,7 +2,7 @@
 
 Emulates the Gemini API (v1beta), for local development and tests.
 
-**11 conformance cases, 4 checked against the live API on 2026-09-05.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite Google's discovery document rather than an observation on a real project; the refusal cases were struck live, unauthenticated, against generativelanguage.googleapis.com.
 

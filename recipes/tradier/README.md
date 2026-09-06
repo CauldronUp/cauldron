@@ -2,7 +2,7 @@
 
 Emulates the tradier API (v1), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API on 2026-09-05.**
+**12 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Tradier has a sandbox with its own separate host, so the order cases still cite documentation. The credential shape needed no account at all, and checking it live found this Recipe's own fault case had never been run against a real request.
 

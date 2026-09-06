@@ -2,7 +2,7 @@
 
 Emulates the TaxJar API (v2), for local development and tests.
 
-**11 conformance cases, 3 checked against the live API on 2026-09-05.**
+**12 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 TaxJar has a real sandbox, so the rate and tax cases still cite documentation rather than a token of their own. The credential shape needed no token at all, and checking it live found this Recipe's message incomplete.
 

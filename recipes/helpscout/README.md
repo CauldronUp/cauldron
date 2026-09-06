@@ -2,7 +2,7 @@
 
 Emulates the Help Scout API (v2), for local development and tests.
 
-**16 conformance cases, 4 checked against the live API on 2026-09-05.**
+**19 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real mailbox, because a reply sends a real email. The refusal cases were struck live, unauthenticated, against api.helpscout.net.
 

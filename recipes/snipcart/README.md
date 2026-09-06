@@ -2,7 +2,7 @@
 
 Emulates the Snipcart API (v3), for local development and tests.
 
-**14 conformance cases, 5 checked against the live API on 2026-09-01.**
+**16 conformance cases, 5 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

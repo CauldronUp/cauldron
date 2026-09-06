@@ -2,7 +2,7 @@
 
 Emulates the Supabase API (v1), for local development and tests.
 
-**10 conformance cases, 2 checked against the live API on 2026-09-05.**
+**12 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Most of this Recipe still cites documentation, since projects and secrets need a real account. The credential shape needed no account at all, and checking it live found something worse than a wrong claim.
 

@@ -2,7 +2,7 @@
 
 Emulates the truelayer API (v1), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API on 2026-09-05.**
+**22 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 The consent and transaction cases still cite documentation, since a real connection needs a real bank. The credential shape needed no consent at all, and checking it live found this Recipe's own message wrong.
 

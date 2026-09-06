@@ -2,7 +2,7 @@
 
 Emulates the Docker Hub API (v2), for local development and tests.
 
-**14 conformance cases, 7 checked against the live API on 2026-08-23.**
+**16 conformance cases, 7 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 

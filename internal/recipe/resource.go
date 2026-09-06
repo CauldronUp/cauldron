@@ -305,6 +305,15 @@ func (f Field) WireName(name string) string {
 // The name looked for is the one on the wire, so a field stored under one name
 // and sent under another is credited by a case asserting what the response
 // actually carries.
+//
+// There is already a rule that looks like this one and is not. A fixture may
+// only set fields the resource declares, so renaming a declared field breaks
+// every fixture holding it -- which guards that the field *exists*. It says
+// nothing about where the field appears in the response. Nesting one under an
+// object with `in:`, or renaming what it is sent as with `as:`, changes the
+// path a client reads and leaves every case green. Tried on Strava: moving
+// average_speed under a metrics object passed all fourteen cases, and failed
+// the moment one of them asserted the path.
 func (r Recipe) UnassertedField() int {
 	unasserted := 0
 

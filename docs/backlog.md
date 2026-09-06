@@ -4510,7 +4510,7 @@ Nothing can be added to a request that does not exist.
 question -- a listing answered, but only ever empty:
 
 ```
-14 listing(s) across 11 recipe(s) have no case that answers them
+11 listing(s) across 8 recipe(s) have no case that answers them
 successfully at all.
 19 more across 16 recipe(s) are answered only empty, so no case
 describes a record in them.
@@ -5546,16 +5546,18 @@ The records inside those envelopes had no such rule. They are the larger half by
 an order of magnitude -- an envelope has three or four names in it and a resource
 has thirty -- and they are the half a client spends its time in.
 
+It read **4359 across 500 Recipes** the day it was written -- 9637 field names
+are declared across the corpus and fewer than half of them were asserted
+anywhere. A Recipe could say a customer carries `default_currency` and
+`delinquent` and `invoice_prefix`, pass every case it had, and be describing
+three names it invented, because nothing ever looked inside the collection.
+
+Where it stands now:
+
 ```
-4359 record field name(s) across 500 recipe(s) are declared and asserted
+1100 record field name(s) across 310 recipe(s) are declared and asserted
 by no case.
 ```
-
-Nine thousand six hundred and thirty-seven field names are declared across the
-corpus and fewer than half of them are asserted anywhere. A Recipe can say a
-customer carries `default_currency` and `delinquent` and `invoice_prefix`, pass
-every case it has, and be describing three names it invented, because nothing
-ever looked inside the collection.
 
 Two exclusions, both for the same reason as elsewhere. A field declared `in: "-"`
 is one the Recipe says the wire never carries, and asking for evidence of an
@@ -5568,3 +5570,30 @@ against a string no response contains.
 This one is mechanically closable, unlike the paging remainder. The values are
 already in the file: seed a fixture, ask the route, assert the fields that come
 back. The next entries are that work.
+
+### 3259 of them settled in one sweep, and nothing was invented to do it
+
+817 cases across 442 Recipes, each one seeded from a fixture already in the file
+and asserting the paths the sandbox actually answered with. The counter went
+from 4359 to 1100.
+
+The objection to raise first is that this looks like a rule that already exists.
+A fixture may only set fields the resource declares, so renaming a declared
+field breaks every fixture holding it. That guards the field's *existence* and
+nothing else. It says nothing about where the field turns up in the response:
+nesting one under an object with `in:`, or changing what it is sent as with
+`as:`, moves the path a client reads and leaves every case green.
+
+Tried on Strava before the sweep, to be sure the counter was measuring
+something. Moving `average_speed` under a `metrics` object passed all fourteen
+cases. The same change failed the moment one case asserted the path.
+
+Four cases were dropped by the check that says so out loud -- three on Bluesky
+and one on Geoapify, where `verify` never mentioned the case name at all, which
+means it never ran it. Worth a look; the drop is loud precisely so that it gets
+one.
+
+What is left is mostly what has no record to observe: a Recipe whose fixtures
+hold nothing of that resource cannot show a field on it, which is the same wall
+the listing counters ran into. 1100 names across 310 Recipes, and the wall is
+the same shape.

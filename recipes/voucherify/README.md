@@ -2,7 +2,7 @@
 
 Emulates the Voucherify API (v1), for local development and tests.
 
-**18 conformance cases, 4 checked against the live API on 2026-09-05.**
+**20 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The redemption and voucher cases still cite documentation, since a real redemption needs a real project. The credential shape needed no project at all, and checking it live found this Recipe's own error wrong.
 

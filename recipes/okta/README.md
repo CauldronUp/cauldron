@@ -2,7 +2,7 @@
 
 Emulates the Okta API (v1), for local development and tests.
 
-**15 conformance cases, 3 checked against the live API.**
+**18 conformance cases, 3 checked against the live API.**
 
 Struck live 2026-09-05 against a generic, unprovisioned `*.okta.com` subdomain (confirmed generic by comparing it against a second, certainly-unregistered one and getting byte-identical bodies -- see the header). Three different rejections came back, not the one this file declared: no credential at all is a 403 naming an invalid session; a right-scheme token nobody issued matches this file's existing 401; and the wrong scheme word (Bearer, sent from habit) -- which this file's own existing case had asserted the 401 JSON shape for -- answers no body at all, empty. Split and fixed.
 

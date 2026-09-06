@@ -2,7 +2,7 @@
 
 Emulates the Serper API (unversioned), for local development and tests.
 
-**9 conformance cases, 7 checked against the live API on 2026-09-01.**
+**10 conformance cases, 7 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

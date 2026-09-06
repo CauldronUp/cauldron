@@ -2,7 +2,7 @@
 
 Emulates the Apideck API (unify), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Two were struck live against unify.apideck.com on 2026-09-05, and corrected a detail this file had guessed at: an absent Authorization header does not get "Verify your Api Key is being set correctly in the authorization header." -- it gets a "detail" naming the missing header directly. Sending any Authorization value at all changes the failure entirely: Apideck refuses for the application id instead, because no app id this project can invent is ever a real, registered one, and that is checked before the token.
 

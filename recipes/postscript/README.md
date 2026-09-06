@@ -2,7 +2,7 @@
 
 Emulates the Postscript API (2.0), for local development and tests.
 
-**15 conformance cases, 7 checked against the live API on 2026-09-01.**
+**17 conformance cases, 7 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

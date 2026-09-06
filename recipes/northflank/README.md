@@ -2,7 +2,7 @@
 
 Emulates the Northflank API (v1), for local development and tests.
 
-**15 conformance cases, 8 checked against the live API on 2026-09-01.**
+**17 conformance cases, 8 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the Bunny API (v1), for local development and tests.
 
-**21 conformance cases, 11 checked against the live API on 2026-09-01.**
+**23 conformance cases, 11 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the Printful API (v1), for local development and tests.
 
-**18 conformance cases, 4 checked against the live API.**
+**19 conformance cases, 4 checked against the live API.**
 
 Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real store. Those checks were verified directly against api.printful.com, unauthenticated, on 2026-09-05.
 

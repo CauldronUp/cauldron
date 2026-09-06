@@ -2,7 +2,7 @@
 
 Emulates the Together AI API (v1), for local development and tests.
 
-**5 conformance cases, 4 checked against the live API on 2026-09-01.**
+**6 conformance cases, 4 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

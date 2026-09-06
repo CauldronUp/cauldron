@@ -2,7 +2,7 @@
 
 Emulates the Twitch API (helix), for local development and tests.
 
-**9 conformance cases, 3 checked against the live API on 2026-08-31.**
+**11 conformance cases, 3 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

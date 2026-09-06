@@ -2,7 +2,7 @@
 
 Emulates the Guardian API (v1), for local development and tests.
 
-**16 conformance cases, 14 checked against the live API on 2026-09-01.** The unchecked one is the paging case: it sends the two parameter names this Recipe declares, which is a claim about the provider read from its own description rather than struck against it.
+**18 conformance cases, 14 checked against the live API on 2026-09-01.** The unchecked one is the paging case: it sends the two parameter names this Recipe declares, which is a claim about the provider read from its own description rather than struck against it.
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the NCBI Entrez API (entrez-eutils), for local development and tests.
 
-**17 conformance cases, 16 checked against the live API on 2026-08-31.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**18 conformance cases, 16 checked against the live API on 2026-08-31.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

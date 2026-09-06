@@ -2,7 +2,7 @@
 
 Emulates the Render API (v1), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API on 2026-08-31.**
+**13 conformance cases, 2 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

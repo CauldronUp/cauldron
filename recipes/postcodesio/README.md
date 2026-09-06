@@ -2,7 +2,7 @@
 
 Emulates the Postcodes.io API (postcodesio), for local development and tests.
 
-**15 conformance cases, all of them checked against the live API on 2026-08-29.**
+**16 conformance cases, 15 checked against the live API on 2026-08-29.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

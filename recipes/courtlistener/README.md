@@ -2,7 +2,7 @@
 
 Emulates the CourtListener API (v4), for local development and tests.
 
-**23 conformance cases, 16 checked against the live API on 2026-09-02.**
+**25 conformance cases, 16 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

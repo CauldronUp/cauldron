@@ -2,7 +2,7 @@
 
 Emulates the marqeta API (v3), for local development and tests.
 
-**20 conformance cases, 3 checked against the live API.**
+**22 conformance cases, 3 checked against the live API.**
 
 Struck live 2026-09-05 against sandbox-api.marqeta.com, no account and no key. This file declared the 401 as code "401" / "Unauthorized"; the real one, identical whether no credential is sent, a wrong one, or the two halves swapped, is code "401001" / "Invalid credential has been detected". Fixed below.
 

@@ -2,7 +2,7 @@
 
 Emulates the Pinecone API (2026-04), for local development and tests.
 
-**11 conformance cases, 3 checked against the live API.**
+**12 conformance cases, 3 checked against the live API.**
 
 Everything about the data plane's missing host and the readiness fields still cites documentation, because reaching them needs a real project. The credential checks were verified directly against api.pinecone.io, unauthenticated, on 2026-09-05.
 

@@ -2,7 +2,7 @@
 
 Emulates the FusionAuth API (v1), for local development and tests.
 
-**13 conformance cases, 4 checked against the live API on 2026-09-05.**
+**14 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real install. FusionAuth is self-hosted, but FusionAuth itself runs a public instance at demo.fusionauth.io -- apparently for exactly this kind of check -- and the refusal cases were struck live, unauthenticated, against it.
 

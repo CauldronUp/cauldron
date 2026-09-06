@@ -2,7 +2,7 @@
 
 Emulates the Trello API (1), for local development and tests.
 
-**10 conformance cases, 3 checked against the live API on 2026-09-05.**
+**13 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Trello has no sandbox, so the board and card cases still cite documentation. The credential shape needed no account at all, and checking it live found this Recipe's own claim backwards.
 

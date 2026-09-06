@@ -2,7 +2,7 @@
 
 Emulates the Clever API (v3.0), for local development and tests.
 
-**16 conformance cases, 7 checked against the live API on 2026-09-03.**
+**19 conformance cases, 7 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

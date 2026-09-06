@@ -2,7 +2,7 @@
 
 Emulates the Shopify API (2026-01), for local development and tests.
 
-**12 conformance cases, 1 checked against the live API.**
+**14 conformance cases, 1 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because a real, running store needs an account. One credential shape was checked directly against a shop subdomain Shopify has never issued, on 2026-09-05.
 

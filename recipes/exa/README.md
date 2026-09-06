@@ -2,7 +2,7 @@
 
 Emulates the Exa API (unversioned), for local development and tests.
 
-**10 conformance cases, 8 checked against the live API on 2026-09-03.**
+**11 conformance cases, 8 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

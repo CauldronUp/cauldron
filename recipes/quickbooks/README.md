@@ -2,7 +2,7 @@
 
 Emulates the QuickBooks API (v3), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**14 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real company. The credential check itself was verified directly against quickbooks.api.intuit.com on 2026-09-05.
 

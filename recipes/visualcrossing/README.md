@@ -2,7 +2,7 @@
 
 Emulates the Visual Crossing API (rest), for local development and tests.
 
-**9 conformance cases, 8 checked against the live API on 2026-09-02.**
+**10 conformance cases, 8 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

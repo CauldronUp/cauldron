@@ -2,7 +2,7 @@
 
 Emulates the Google Address Validation API (v1), for local development and tests.
 
-**12 conformance cases, 4 checked against the live API on 2026-09-05.**
+**13 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite protocol buffer definitions rather than an observation on a real project, because calling this API needs a billed key; the refusal cases were struck live, unauthenticated, against addressvalidation.googleapis.com.
 

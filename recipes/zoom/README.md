@@ -2,7 +2,7 @@
 
 Emulates the Zoom API (v2), for local development and tests.
 
-**20 conformance cases, 3 checked against the live API on 2026-09-05.**
+**23 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The meeting and recurrence cases still cite documentation, since a real meeting needs a real account. The credential and routing shapes needed no account at all, and checking them live confirmed this Recipe's existing claim and found one more.
 

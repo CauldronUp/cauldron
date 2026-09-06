@@ -2,7 +2,7 @@
 
 Emulates the Airtable API (v0), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**12 conformance cases, 2 checked against the live API.**
 
 Two cases were struck live against api.airtable.com on 2026-09-05, and the first corrected a mistake: this file had claimed a missing token gets the message "You should provide valid api key to perform this operation", which the live host does not send -- it sends "Authentication required".
 

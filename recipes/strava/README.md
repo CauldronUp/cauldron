@@ -2,7 +2,7 @@
 
 Emulates the Strava API (v3), for local development and tests.
 
-**11 conformance cases, 7 checked against the live API on 2026-09-02.**
+**14 conformance cases, 7 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the Gusto API (v1), for local development and tests.
 
-**17 conformance cases, 4 checked against the live API on 2026-09-05.**
+**19 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real company, because a submitted payroll pays real people and cannot be undone. The refusal cases were struck live, unauthenticated, against api.gusto.com.
 

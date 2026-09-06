@@ -2,7 +2,7 @@
 
 Emulates the Fitbit API (1), for local development and tests.
 
-**11 conformance cases, 7 checked against the live API on 2026-09-02.**
+**12 conformance cases, 7 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

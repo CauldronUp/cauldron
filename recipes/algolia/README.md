@@ -2,7 +2,7 @@
 
 Emulates the Algolia API (1), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**17 conformance cases, 2 checked against the live API.**
 
 Two were struck live against latency-dsn.algolia.net on 2026-09-05, and both corrected this file. The casing was wrong -- Algolia sends "Invalid Application-ID or API key", and this had it as "Application-Id" throughout. More than casing: this had also claimed that omitting the application-id header gets a distinct, differently-worded failure from sending a bad key. Live, with a correct-looking key and no Application-Id header at all, Algolia sends the identical generic message -- it does not say which credential was the problem, and this file's belief that it did was never checked before now.
 

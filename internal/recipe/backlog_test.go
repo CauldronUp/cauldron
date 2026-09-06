@@ -477,3 +477,30 @@ func backlogFigure(t *testing.T, pattern string) []string {
 
 	return found
 }
+
+func TestTheBacklogCountsUnassertedFields(t *testing.T) {
+	fields, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnassertedField(); n > 0 {
+			fields += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) record field name\(s\) across (\d+) recipe\(s\) are declared and asserted`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != fields {
+		t.Errorf("the backlog says %d field names are asserted by no case and %d are", n, fields)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those names across %d Recipes and they are across %d", n, recipes)
+	}
+}

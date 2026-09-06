@@ -2,7 +2,7 @@
 
 Emulates the npm registry API (registry), for local development and tests.
 
-**12 conformance cases, 8 checked against the live API on 2026-08-22.**
+**14 conformance cases, 8 checked against the live API on 2026-08-22.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the Watchmode API (v1), for local development and tests.
 
-**13 conformance cases, 10 checked against the live API on 2026-09-03.**
+**15 conformance cases, 10 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

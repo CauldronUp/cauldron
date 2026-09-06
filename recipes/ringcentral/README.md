@@ -2,7 +2,7 @@
 
 Emulates the RingCentral API (v1.0), for local development and tests.
 
-**24 conformance cases, 2 checked against the live API.**
+**27 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it means placing real calls. The credential check itself was verified directly against platform.ringcentral.com, unauthenticated, on 2026-09-05 -- exactly the production host the next paragraph explains this Recipe cannot go further into.
 

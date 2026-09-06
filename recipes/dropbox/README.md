@@ -2,7 +2,7 @@
 
 Emulates the Dropbox API (2), for local development and tests.
 
-**12 conformance cases, 3 checked against the live API on 2026-09-05.**
+**13 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource shapes cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against api.dropboxapi.com.
 

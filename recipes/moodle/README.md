@@ -2,7 +2,7 @@
 
 Emulates the Moodle API (rest), for local development and tests.
 
-**12 conformance cases, 9 checked against the live API on 2026-09-03.**
+**15 conformance cases, 9 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

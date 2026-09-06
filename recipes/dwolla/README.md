@@ -2,7 +2,7 @@
 
 Emulates the dwolla API (v1), for local development and tests.
 
-**20 conformance cases, 3 checked against the live API on 2026-09-05.**
+**23 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against api-sandbox.dwolla.com.
 

@@ -2,7 +2,7 @@
 
 Emulates the OneSignal API (v1), for local development and tests.
 
-**16 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against onesignal.com, no account and no key. No credential at all is refused with a different sentence than this file declared. More surprising: a client doing standard HTTP Basic -- the key, base64 encoded with a colon -- does not read as "no credential" to OneSignal's parser at all. It reads as a deprecated v1 user token, and answers 400 with two error messages instead of 401 with one, which is what this file's own existing case for exactly that request had asserted and never checked.
 

@@ -2,7 +2,7 @@
 
 Emulates the Printify API (v1), for local development and tests.
 
-**15 conformance cases, 3 checked against the live API.**
+**16 conformance cases, 3 checked against the live API.**
 
 Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real shop. Those checks were verified directly against api.printify.com, unauthenticated, on 2026-09-05.
 

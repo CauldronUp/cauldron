@@ -2,7 +2,7 @@
 
 Emulates the JustCall API (2.1), for local development and tests.
 
-**10 conformance cases, 7 checked against the live API on 2026-09-01.**
+**11 conformance cases, 7 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the IPinfo API (core), for local development and tests.
 
-**8 conformance cases, all of them checked against the live API on 2026-09-02.**
+**9 conformance cases, 8 checked against the live API on 2026-09-02.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

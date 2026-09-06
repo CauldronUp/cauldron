@@ -2,7 +2,7 @@
 
 Emulates the Tavily API (unversioned), for local development and tests.
 
-**8 conformance cases, 6 checked against the live API on 2026-09-03.**
+**9 conformance cases, 6 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

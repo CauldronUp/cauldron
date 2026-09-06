@@ -2,7 +2,7 @@
 
 Emulates the Unleash API (v8), for local development and tests.
 
-**11 conformance cases, 3 checked against the live API on 2026-09-05.**
+**14 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Unleash publishes a public demo instance, and its credential failures needed no account of their own to check. Doing so found this Recipe's single error model wrong twice over.
 

@@ -2,7 +2,7 @@
 
 Emulates the SonarCloud API (v1), for local development and tests.
 
-**10 conformance cases, 2 checked against the live API on 2026-09-05.**
+**12 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Most of this Recipe was read out of SonarCloud's own self-description at `api/webservices/list`. The credential shape needed no organisation to check, and checking it live found this Recipe's own auth model wrong.
 

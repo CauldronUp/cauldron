@@ -2,7 +2,7 @@
 
 Emulates the Box API (2.0), for local development and tests.
 
-**13 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.box.com on 2026-09-05, and corrected a case that had asserted a flat JSON body for an unauthorized request. Box sends no body at all either way -- Content-Length 0 -- and puts the failure entirely in a WWW-Authenticate header, which names an absent token and a present, wrong one differently: "invalid_request" / "The access token was not found." for one, "invalid_token" / "The access token provided is invalid." for the other.
 

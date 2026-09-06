@@ -2,7 +2,7 @@
 
 Emulates the PropelAuth API (backend/v1), for local development and tests.
 
-**7 conformance cases, 5 checked against the live API on 2026-09-01.**
+**9 conformance cases, 5 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

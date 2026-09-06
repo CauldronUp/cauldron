@@ -2,7 +2,7 @@
 
 Emulates the Typeform API (1), for local development and tests.
 
-**16 conformance cases, 3 checked against the live API on 2026-09-05.**
+**19 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Typeform has no sandbox, so the response and form cases still cite documentation. The credential and routing shapes needed no account at all, and checking them live found this Recipe's own status code wrong.
 

@@ -2,7 +2,7 @@
 
 Emulates the Budibase API (v1), for local development and tests.
 
-**8 conformance cases, 4 checked against the live API on 2026-09-01.**
+**9 conformance cases, 4 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

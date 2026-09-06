@@ -2,7 +2,7 @@
 
 Emulates the Upstash API (v2), for local development and tests.
 
-**6 conformance cases, 1 checked against the live API on 2026-08-31.**
+**7 conformance cases, 1 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 
