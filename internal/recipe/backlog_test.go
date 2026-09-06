@@ -531,3 +531,30 @@ func TestTheBacklogCountsUnservedFields(t *testing.T) {
 		t.Errorf("the backlog spreads those names across %d Recipes and they are across %d", n, recipes)
 	}
 }
+
+func TestTheBacklogCountsUnshownErrors(t *testing.T) {
+	errors, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnshownError(); n > 0 {
+			errors += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) declared error\(s\) across (\d+) recipe\(s\) have no case asserting`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != errors {
+		t.Errorf("the backlog says %d errors have no case asserting them and %d do", n, errors)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those errors across %d Recipes and they are across %d", n, recipes)
+	}
+}

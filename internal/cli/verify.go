@@ -45,6 +45,7 @@ func runVerify(ctx *context, args []string) int {
 		hollow, hollowRecipes               int
 		unnamed, unnamedRecipes             int
 		unserved, unservedRecipes           int
+		unsaid, unsaidRecipes               int
 		failedRecipes                       []string
 	)
 
@@ -152,6 +153,14 @@ func runVerify(ctx *context, args []string) int {
 			unservedRecipes++
 		}
 
+		// And the same question about how a provider says no. An error's
+		// wording is what a client switches on, and renaming one broke
+		// nothing.
+		if n := sandbox.Recipe().UnshownError(); n > 0 {
+			unsaid += n
+			unsaidRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -205,6 +214,11 @@ func runVerify(ctx *context, args []string) int {
 	if unserved > 0 {
 		fmt.Fprintf(ctx.stdout, "%d of those across %d recipe(s) no fixture sets, so the emulator never sends them.\n",
 			unserved, unservedRecipes)
+	}
+
+	if unsaid > 0 {
+		fmt.Fprintf(ctx.stdout, "%d declared error(s) across %d recipe(s) have no case asserting what they say.\n",
+			unsaid, unsaidRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

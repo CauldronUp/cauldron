@@ -5559,6 +5559,8 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
+956 declared error(s) across 348 recipe(s) have no case asserting what
+they say.
 ```
 
 Two exclusions, both for the same reason as elsewhere. A field declared `in: "-"`
@@ -5919,3 +5921,35 @@ the first route that covered anything, and the rest of the names looked
 unobservable. It now keeps going until the names run out or the routes do.
 
 593 names left, and the 140 is the only category still owed an explanation.
+
+### How a provider says no: 956 refusals nothing quotes back
+
+The same rule, applied to the other half of what a Recipe describes. A Recipe
+declares what a provider sends when it refuses -- a status, a code, a message,
+sometimes a header that tells two refusals apart -- and nothing checked any of
+it. Rename a message and every case stays green, exactly as with a paging
+parameter or a field name.
+
+The status alone does not show it, and that is the whole point of declaring the
+rest. Providers answer 401 to a missing credential *and* to a wrong one, 404 to
+an unknown path *and* an unknown id, and the difference between those pairs is
+never the number. Box tells `token_not_found` from `token_invalid` by the
+`error=` part of a `WWW-Authenticate` header and neither carries a message at
+all.
+
+```
+956 declared error(s) across 348 recipe(s) have no case asserting what
+they say.
+```
+
+An entry counts as shown when some case expects its status and asserts one of
+the things that tells it apart: the code, the fixed part of the message, or one
+of its headers. The fixed part matters because a message usually carries a
+`{detail}` the case fills in, so "Not Found: thing" shows "Not Found: {detail}".
+
+Two measurement mistakes on the way to that number, both found by hand-checking
+a Recipe rather than trusting the total. Pusher's failures are plain text and
+asserted with `body_matches`, which the first count did not read -- ten entries
+that looked unshown and were not. Box's two token errors differ only by a
+header, which the second count did not read -- two more. 1262, then 1147, then
+977, and 956 once the engine's own reading of a case replaced the script's.

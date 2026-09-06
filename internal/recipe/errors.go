@@ -2,6 +2,11 @@
 
 package recipe
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Error is a named failure mode that `cauldron fault` can inject.
 type Error struct {
 	Status int    `yaml:"status"`
@@ -102,4 +107,128 @@ type Error struct {
 	// it should be able to say so rather than serve a helpful sentence the
 	// provider never sent.
 	Empty bool `yaml:"empty"`
+}
+
+// UnshownError counts the declared errors whose wording no case asserts.
+//
+// A Recipe says what a provider sends when it refuses: a status, a code, a
+// message, sometimes a header that tells two refusals apart. That wording is
+// the part a client switches on, the part a support thread quotes, and the part
+// an integration's error handling is written against -- and it had no rule
+// behind it. Rename a message and every case stays green, which is the same
+// hole the paging parameters and the field names were in.
+//
+// The status alone does not show it. Providers routinely answer 401 to a
+// missing credential and to a wrong one, and 404 to an unknown path and an
+// unknown id, and the whole value of declaring both is that they differ in
+// what they say rather than in the number.
+//
+// An entry is shown when some case expects its status and asserts one of the
+// things that tells it apart: the code, the fixed part of the message, or one
+// of its headers. The fixed part matters because a message often carries a
+// {detail} the case fills in -- "Not Found: thing" shows "Not Found: {detail}".
+func (r Recipe) UnshownError() int {
+	unshown := 0
+
+	said := map[int][]string{}
+	for _, c := range r.Conformance {
+		if c.Expect.Status == 0 {
+			continue
+		}
+
+		said[c.Expect.Status] = append(said[c.Expect.Status], asserted(c)...)
+	}
+
+	for _, spec := range r.Errors {
+		seen := said[spec.Status]
+
+		if !showsError(seen, spec) {
+			unshown++
+		}
+	}
+
+	return unshown
+}
+
+// showsError reports whether anything a case asserted at that status carries a
+// part of this error's wording.
+func showsError(seen []string, spec Error) bool {
+	if spec.Code != "" && carries(seen, spec.Code) {
+		return true
+	}
+
+	if stem := fixedPart(spec.Message); stem != "" && carries(seen, stem) {
+		return true
+	}
+
+	for _, value := range spec.Headers {
+		if stem := fixedPart(value); stem != "" && carries(seen, stem) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// asserted is every value a case claims about a response, flattened.
+func asserted(c Case) []string {
+	var out []string
+
+	var walk func(any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for _, v := range typed {
+				walk(v)
+			}
+		case []any:
+			for _, v := range typed {
+				walk(v)
+			}
+		case nil:
+		default:
+			out = append(out, fmt.Sprint(typed))
+		}
+	}
+
+	walk(map[string]any{"body": c.Expect.Body})
+
+	for _, v := range c.Expect.Matches {
+		out = append(out, v)
+	}
+
+	for _, v := range c.Expect.Headers {
+		out = append(out, v)
+	}
+
+	for _, v := range c.Expect.HeaderMatches {
+		out = append(out, v)
+	}
+
+	if c.Expect.BodyMatches != "" {
+		out = append(out, c.Expect.BodyMatches)
+	}
+
+	return out
+}
+
+// fixedPart is the leading text of a message before any {placeholder}, which is
+// the most of it a case can be expected to repeat.
+func fixedPart(message string) string {
+	if at := strings.Index(message, "{"); at >= 0 {
+		message = message[:at]
+	}
+
+	return strings.TrimRight(strings.TrimSpace(message), ".:")
+}
+
+// carries reports whether any asserted value contains this text.
+func carries(seen []string, want string) bool {
+	for _, s := range seen {
+		if strings.Contains(s, want) {
+			return true
+		}
+	}
+
+	return false
 }
