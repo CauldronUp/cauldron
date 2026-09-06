@@ -2,7 +2,7 @@
 
 Emulates the Plaid API (2020-09-14), for local development and tests.
 
-**12 conformance cases, 1 checked against the live API.**
+**13 conformance cases, 1 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs an item this Recipe cannot fabricate. The credential shape itself was checked directly against sandbox.plaid.com, unauthenticated, on 2026-09-05.
 

@@ -2,7 +2,7 @@
 
 Emulates the Recurly API (v2021-02-25), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Everything past the version gate and the credential check still cites documentation rather than an observation, because reaching it needs a real site. The credential check itself was verified directly against v3.recurly.com on 2026-09-05.
 

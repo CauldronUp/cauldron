@@ -2,7 +2,7 @@
 
 Emulates the fivetran API (v1), for local development and tests.
 
-**18 conformance cases, 4 checked against the live API on 2026-09-05.**
+**20 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against api.fivetran.com.
 

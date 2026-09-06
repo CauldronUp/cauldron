@@ -2,7 +2,7 @@
 
 Emulates the courier API (v1), for local development and tests.
 
-**16 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.courier.com on 2026-09-05, and found the failure this file describes disagreeing with itself: the wire status is 403, not the 401 this file had, and the body carries its own "status" field reading 401 anyway -- a client reading that field gets a different answer than the response it was actually given. There is also no "type" field on the wire at all.
 

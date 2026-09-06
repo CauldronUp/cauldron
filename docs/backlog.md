@@ -5559,7 +5559,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-956 declared error(s) across 348 recipe(s) have no case asserting what
+714 declared error(s) across 320 recipe(s) have no case asserting what
 they say.
 ```
 
@@ -5953,3 +5953,30 @@ asserted with `body_matches`, which the first count did not read -- ten entries
 that looked unshown and were not. Box's two token errors differ only by a
 header, which the second count did not read -- two more. 1262, then 1147, then
 977, and 956 once the engine's own reading of a case replaced the script's.
+
+### 242 refusals now say what they say
+
+241 cases across 181 Recipes, none dropped, and the count went from 956 to 714.
+Each one makes the refusal happen and asserts what came back, envelope and all:
+Stripe's `DELETE /v1/customers` answers a 404 whose message quotes the method
+and the path back at you, and nothing in the file had ever seen it.
+
+Only refusals with a natural trigger were written -- a request a client could
+actually make. Sending no credential, sending one nobody issued, asking for a
+path the provider does not serve, using a method a route does not take, asking
+for an id nothing was seeded under. Rate limiting is the one exception, armed
+through the sandbox's fault endpoint, which is what the format's `arm:` is for
+and what a client cannot produce on demand.
+
+**Deliberately not written**: `insufficient_funds`, `conflict`,
+`quota_exceeded` and the rest of the domain-specific refusals. Every one of them
+can be armed on any route, and the answer would be true of the emulator and
+nonsense about the provider -- a payment declining on a GET of a customer list.
+That is the Jisho mistake from earlier today, and the reason 714 is the right
+number to stop at rather than a number to drive to zero.
+
+One detail worth keeping. The generated cases pin a request id with a pattern
+rather than a value, because a request id is the sandbox's own counter and
+asserting it exactly would pin the emulator's bookkeeping instead of the
+provider's wording. The hand-written cases in this corpus already did that; the
+generator had to be told.

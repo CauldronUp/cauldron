@@ -2,7 +2,7 @@
 
 Emulates the Calendly API (v2), for local development and tests.
 
-**17 conformance cases, 1 checked against the live API.**
+**19 conformance cases, 1 checked against the live API.**
 
 Struck live against api.calendly.com on 2026-09-05, both with no Authorization header at all and with a made-up Bearer token: byte-identical 401, and this file's claim held exactly -- title "Unauthenticated", message "The access token is invalid".
 

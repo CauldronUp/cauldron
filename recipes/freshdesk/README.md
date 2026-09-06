@@ -2,7 +2,7 @@
 
 Emulates the Freshdesk API (v2), for local development and tests.
 
-**21 conformance cases, 3 checked against the live API on 2026-09-05.**
+**22 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real help desk. Freshdesk is multi-tenant with no shared host, so the refusal cases were struck live, unauthenticated, against support.freshdesk.com -- Freshdesk's own help desk, running on its own product.
 

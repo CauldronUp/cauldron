@@ -2,7 +2,7 @@
 
 Emulates the Coda API (v1), for local development and tests.
 
-**23 conformance cases, 3 checked against the live API on 2026-09-01.**
+**25 conformance cases, 3 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

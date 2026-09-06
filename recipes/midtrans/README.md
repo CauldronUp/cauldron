@@ -2,7 +2,7 @@
 
 Emulates the midtrans API (v2), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.sandbox.midtrans.com (api.midtrans.com itself timed out from this network; the sandbox host answered normally). This file declared one authentication_error for every failure, "Unauthorized transaction, please check client or server key" -- the real API sends two different sentences, "Operation is not allowed due to unauthorized payload." for a missing credential and "Unknown Merchant server_key/id" for one nobody issued, and this file's own existing case for the second one had invented text that passed only because the emulator agreed with itself. Fixed below.
 

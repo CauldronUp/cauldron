@@ -2,7 +2,7 @@
 
 Emulates the Persona API (2023-01-05), for local development and tests.
 
-**18 conformance cases, 2 checked against the live API.**
+**19 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs an account this Recipe cannot invent. The credential check itself was verified directly against api.withpersona.com on 2026-09-05.
 

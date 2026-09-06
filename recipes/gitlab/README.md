@@ -2,7 +2,7 @@
 
 Emulates the GitLab API (v4), for local development and tests.
 
-**16 conformance cases, 5 checked against the live API on 2026-08-23.**
+**17 conformance cases, 5 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 

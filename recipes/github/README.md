@@ -2,7 +2,7 @@
 
 Emulates the GitHub API (2022-11-28), for local development and tests.
 
-**21 conformance cases, 15 checked against the live API on 2026-08-23.**
+**22 conformance cases, 15 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 

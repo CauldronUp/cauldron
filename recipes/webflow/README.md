@@ -2,7 +2,7 @@
 
 Emulates the Webflow API (2.0.0), for local development and tests.
 
-**18 conformance cases, 2 checked against the live API on 2026-09-05.**
+**19 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Webflow has no sandbox, so the CMS and collection cases still cite documentation. The credential shape needed no site at all, and checking it live found this Recipe's own sentence and code wrong.
 

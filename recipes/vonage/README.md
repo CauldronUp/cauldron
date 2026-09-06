@@ -2,7 +2,7 @@
 
 Emulates the Vonage API (1), for local development and tests.
 
-**15 conformance cases, 4 checked against the live API on 2026-09-05.**
+**16 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 Vonage has no test mode for sending, so the send-path cases still cite documentation. The credential shape needed no account at all, and checking it live found two different provider APIs living in one Recipe, each with a failure shape that had never been run.
 

@@ -2,7 +2,7 @@
 
 Emulates the Sanity API (v2021-06-07), for local development and tests.
 
-**9 conformance cases, 1 checked against the live API.**
+**11 conformance cases, 1 checked against the live API.**
 
 Everything about drafts, queries, and datasets still cites documentation rather than an observation, because reaching it needs a real project subdomain. One credential shape was checked directly against api.sanity.io, the generic host, unauthenticated, on 2026-09-05.
 

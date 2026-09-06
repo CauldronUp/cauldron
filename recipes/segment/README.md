@@ -2,7 +2,7 @@
 
 Emulates the Segment API (v1beta), for local development and tests.
 
-**16 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real workspace. The credential check itself was verified directly against api.segmentapis.com on 2026-09-05.
 

@@ -2,7 +2,7 @@
 
 Emulates the Postmark API (1.0), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**17 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real server token. The credential and routing checks were verified directly against api.postmarkapp.com on 2026-09-05.
 

@@ -2,7 +2,7 @@
 
 Emulates the apify API (v2), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.apify.com on 2026-09-05, and they closed a real gap: this file had declared a token-not-provided error and never wired it to anything -- no route and no auth verdict pointed at it, so an actually-absent credential fell through to an "authentication_error" entry that did not exist in this file at all. Apify also distinguishes an absent token from a present, wrong one, with a different code and sentence for each.
 

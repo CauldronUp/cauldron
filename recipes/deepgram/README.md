@@ -2,7 +2,7 @@
 
 Emulates the Deepgram API (v1), for local development and tests.
 
-**8 conformance cases, 2 checked against the live API.**
+**9 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.deepgram.com on 2026-09-05: the wrong Bearer prefix, a bare key with no scheme at all, and no header whatsoever all come back byte-identical 401 err_code INVALID_AUTH, "Invalid credentials." -- and this file's claim held exactly.
 
