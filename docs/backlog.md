@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and six Recipes send at least one identifier as a number now, and each
+One hundred and seven Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -7159,3 +7159,58 @@ defect in a document would put the defect in the emulator.
   whole blocklist and there is no way to ask for part of it.
 - **No credential is 403, not 401**, so a client branching on 401 to fetch a
   credential never fetches one.
+
+## Portainer, and a 2xx that means some of it did not happen
+
+Written against Portainer's own generated Swagger 2.0 document —
+`portainer/portainer` `api/docs/swagger.yaml`, 224 paths, version 2.45.0, read
+2026-09-06. Self-hosted with no public instance, so nothing is struck live.
+
+The bulk delete of environments answers **207**, described in the document as
+"Partial success. Some environments were deleted successfully, while others
+failed."
+
+207 is in the 2xx range. `response.ok` is true. `status < 300` passes.
+`raise_for_status()` does not raise. Every idiom for "did that work" says yes,
+and the answer is that some of the environments a caller asked to remove are
+still there.
+
+And the report of what failed is a list of integers: `{"deleted":[3],
+"errors":[4]}`. `errors` is an array of environment identifiers — not errors,
+ids. Which ones failed, and nothing whatever about why: no code, no message, no
+per-item status. A caller wanting a reason retries them one at a time.
+
+Served raw rather than through the error table, because Portainer's own schema
+for that body is `{deleted, errors}` and nothing else — routing it through the
+errors machinery would add a `message` the provider never sends.
+
+**And the destructive verb is the deprecated one.** `DELETE /endpoints` carries
+"Deprecated: use the `POST` endpoint instead", so the supported bulk delete is
+`POST /endpoints/delete`. A reviewer scanning a codebase for destructive calls
+by HTTP verb finds nothing.
+
+### The rest
+
+- **Field names are Go struct names**: `Id`, `Name`, `URL`, `Type`, `Status`,
+  `TLSConfig`, `PublicURL`. PascalCase on the wire because the structs carry no
+  JSON tags, so a client mapping camelCase by convention reads undefined from
+  every one.
+- **`Status` and `Type` are bare integers** — 1 up, 2 down, 3 provisioning, 4
+  error — with the meaning in a description rather than a name, and every value
+  truthy.
+- **Access control is embedded in each record**, keyed by user or team id as a
+  string, because it is a Go map with an integer key and JSON has no integer
+  keys. A listing of environments is also a dump of who may reach each one.
+- **Paging is `start`**, and the listing is a bare array with no total, beside
+  twelve filter parameters. The endpoint is a filter language that cannot say
+  how many things there are.
+- **A 404 surfaces the database's own words**: "object not found inside the
+  database".
+
+### A near miss worth recording
+
+Updating the README counts with a blanket replace of `"504 "` to `"505 "` also
+rewrote two unrelated sentences in the drift-status table, which used 504 as its
+example of a transient docs-host failure. Caught by reading the diff, not by any
+test — the figures the tests guard were all correct, and the prose they sat
+inside was not. Wiring scripts should target the row, not the number.
