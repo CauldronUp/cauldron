@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "karakeep",
+			npm:    []string{"@karakeep/sdk"},
+		},
+		{
 			recipe: "coolify",
 			npm:    []string{"coolify-sdk"},
 		},

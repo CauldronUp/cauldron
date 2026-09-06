@@ -7273,3 +7273,65 @@ After the Portainer near-miss — a blanket `"504 "` → `"505 "` rewriting two
 unrelated sentences — this Recipe's wiring script matches each README row by a
 regex that includes its surrounding text, asserts the old value is in that line,
 and replaces only within it. Eight lines changed, all of them counts.
+
+## Karakeep, whose only non-JSON response is the one you most need to read
+
+Struck live against `try.karakeep.app` on 2026-09-06 with no account — both live
+cases are refusals. Written against Karakeep's own OpenAPI 3.0 document,
+`karakeep-app/karakeep` `packages/open-api/karakeep-openapi-spec.json`, 35 paths.
+
+```
+GET /api/v1/bookmarks?limit=1        (no credential)
+HTTP 401  Content-Type: text/plain;charset=UTF-8
+Unauthorized
+```
+
+Twelve bytes of prose. Every success in this API is `application/json`, and the
+document declares an `Error` schema with `code` and `message` both required —
+which the 401 does not use. Its declared content type in the document is
+`text/plain` too, so this is intended.
+
+A client calling `.json()` on every response throws here, on the one response
+whose meaning it most needs, and reports a JSON parse error at position 0 rather
+than a credential problem.
+
+**And the two refusals are byte-identical.** Sending nothing and sending a token
+that will not decode give the same status, content type and twelve bytes. The
+Recipe declares `absent_error` and `rejected_error` as the same error, so it
+cannot tell them apart either — which is the finding, not a gap.
+
+### Null as a declared enum member
+
+Three status fields — `taggingStatus`, `summarizationStatus`, `embeddingStatus`
+— each declared `enum: ["success", "failure", "pending", null]`.
+
+`null` is a fourth *value* meaning never attempted, not a missing field. Four
+states, three independent copies on one record, and the fourth is the one every
+`if (status)` and `status ?? "…"` collapses into the others. `source` is the same
+shape with eight members plus null.
+
+### A oneOf where one variant has no payload
+
+| `content.type` | fields |
+|---|---|
+| `link` | 23 |
+| `text` | 3 |
+| `asset` | 7 |
+| `unknown` | **1** — its own name |
+
+An exhaustive switch has to handle a variant carrying nothing, and
+`bookmark.content.url` is undefined on three of the four. `assets[].assetType`
+has twelve members and one of those is also `unknown`.
+
+### The rest
+
+- **Tags say whether a machine wrote them.** `attachedBy` is `"ai"` or
+  `"human"`, required on every tag. A client rendering tags uniformly presents
+  guesses and decisions identically; one syncing them elsewhere copies the
+  guesses in as facts.
+- **Two creation timestamps and only one required.** `createdAt` is in
+  `required`, `firstCreatedAt` is not, and nothing says how they differ.
+- **The cursor is required and nullable**, so `"nextCursor" in body` is useless
+  and `=== null` is the only correct end-of-listing test.
+- **`favourited` carries the British spelling**, field and query parameter both,
+  so an American-spelled client filters nothing and reads undefined.
