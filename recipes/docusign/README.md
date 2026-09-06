@@ -2,7 +2,7 @@
 
 Emulates the Docusign API (v2.1), for local development and tests.
 
-**13 conformance cases, 4 checked against the live API on 2026-09-05.**
+**14 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource shapes cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against demo.docusign.net.
 

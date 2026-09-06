@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-695 paging parameter name(s) across 267 recipe(s) are declared and sent by no
+691 paging parameter name(s) across 265 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-122 listing(s) across 100 recipe(s) have no case that answers them
+67 listing(s) across 53 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -4527,6 +4527,32 @@ One bug is worth keeping. The first version asserted `[0].id` and Axiom answered
 identifier is printed under another key. A generator that assumes `id` is called
 `id` writes cases that fail on every Recipe that renames it, and there are
 plenty.
+
+Three more relaxations took the unshown count from 122 to 67, and each was a
+mistake in the generator rather than a limit of the Recipes.
+
+**One record is enough.** The first version required two, because it asserted an
+order and an order needs something to order. But the question a listing case
+answers is "what does this endpoint return", and one record answers it -- 62
+listings were being skipped for wanting a second row they did not need. The case
+now asserts what the fixture holds and, with `absent`, that there is no more of
+it than that.
+
+**A scoped listing needs the scope its own record carries.** Akamai's activations
+are scoped by `propertyId`, and filling the placeholder with the first property in
+the fixture asks a different property for its activations, gets an empty list, and
+fails an assertion for a reason that looks like an emulator bug and is a bad
+request.
+
+**A route may override the collection key.** Akamai's activation listing wraps
+twice, at `activations.items`, while the Recipe-wide key is `items`. Reading the
+Recipe-wide one asserts a path the response does not have.
+
+And one that would have been much louder: appending a case to the end of the file
+works only when `conformance` is the last top-level key. For Akamai it is not, and
+a case block landing after `webhooks:` parses as a sequence where a mapping
+belongs -- the Recipe stops loading at all. Cases are inserted at the end of the
+conformance list now.
 
 The two counts feed each other, which is the useful part. Showing 46 listings
 gave the paging generator 46 new green requests to copy, and re-running it took

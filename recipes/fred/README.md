@@ -2,7 +2,7 @@
 
 Emulates the FRED API (fred), for local development and tests.
 
-**11 conformance cases, 8 checked against the live API on 2026-09-01.**
+**12 conformance cases, 8 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

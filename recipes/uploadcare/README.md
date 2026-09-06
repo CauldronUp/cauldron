@@ -2,7 +2,7 @@
 
 Emulates the uploadcare API (v0.7), for local development and tests.
 
-**15 conformance cases, 3 checked against the live API on 2026-09-05.**
+**16 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The storage and expiry cases still cite documentation, since a real file needs a real upload. The credential shape needed no account at all, and checking it live found three verdicts where this Recipe had claimed one sentence.
 

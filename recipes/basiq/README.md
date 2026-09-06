@@ -2,7 +2,7 @@
 
 Emulates the Basiq API (v3), for local development and tests.
 
-**11 conformance cases, 8 checked against the live API on 2026-09-02.**
+**13 conformance cases, 8 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

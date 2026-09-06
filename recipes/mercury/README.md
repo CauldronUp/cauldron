@@ -2,7 +2,7 @@
 
 Emulates the Mercury API (v1), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.mercury.com, no account and no key. This file declared one authentication_error, "Invalid or missing API token", for every failure; the real API sends two distinct codes and sentences -- `noAuthTokenHeader` / "No Authorization header present for this request" for a missing credential, `noTokenInDB` / "No matching token found" for one nobody issued. Split below.
 

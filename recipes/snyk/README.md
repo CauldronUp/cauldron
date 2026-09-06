@@ -2,7 +2,7 @@
 
 Emulates the Snyk API (v1), for local development and tests.
 
-**11 conformance cases, 4 checked against the live API on 2026-09-05.**
+**12 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 Snyk has no sandbox, so the vulnerability and issue cases still cite documentation. What an unauthenticated request gets back needs no account, and checking it live found this Recipe's own credential case wrong.
 

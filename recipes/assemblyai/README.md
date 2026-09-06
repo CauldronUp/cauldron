@@ -2,7 +2,7 @@
 
 Emulates the AssemblyAI API (v2), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**12 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.assemblyai.com on 2026-09-05: no Authorization header at all, and the wrong-scheme Bearer-prefixed value the Recipe already modelled. Both come back byte-identical 401. This file had the message as "API token missing or invalid"; AssemblyAI actually sends "API token missing/invalid", with a slash.
 
