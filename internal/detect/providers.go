@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "zulip",
+			npm:    []string{"zulip-js"},
+		},
+		{
 			recipe: "codecov",
 			npm:    []string{"codecov"},
 		},

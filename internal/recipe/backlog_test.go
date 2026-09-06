@@ -99,7 +99,10 @@ func TestTheBacklogCountsNumericIdentifiers(t *testing.T) {
 		}
 	}
 
-	stated := regexp.MustCompile(`([A-Za-z-]+) Recipes send at least one identifier as a number`).FindStringSubmatch(string(raw))
+	// Two words, optionally: the map has spelled out "One hundred" since long
+	// before the count reached it, and a single-word capture could never match
+	// that entry. The count arriving at exactly 100 is what surfaced it.
+	stated := regexp.MustCompile(`((?:[A-Za-z-]+ )?[A-Za-z-]+) Recipes send at least one identifier as a number`).FindStringSubmatch(string(raw))
 	if stated == nil {
 		t.Fatal("the backlog no longer states how many Recipes send a numeric identifier; update this test with it")
 	}

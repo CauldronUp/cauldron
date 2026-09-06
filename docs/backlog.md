@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Ninety-nine Recipes send at least one identifier as a number now, and each
+One hundred Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6364,3 +6364,94 @@ reason is written into the `upstream:` block where a reader will find it.
 - The `http://` downgrade cannot be reproduced over loopback http. If this
   project ever serves TLS locally, that case is worth revisiting — it is the
   most serious finding here and it is currently only prose.
+
+## Zulip, and a success that names the parameters it ignored
+
+Struck live against `chat.zulip.org` on 2026-09-06. `/server_settings` needs no
+account, so six of eleven cases are live.
+
+**The path says v1 and the real version is an integer in the body.** Every
+endpoint lives under `/api/v1` and has for the life of the product. What decides
+what a client may do is `zulip_feature_level` — 509 on chat.zulip.org that day —
+a monotonically increasing integer answered only by `/server_settings`. Not
+`zulip_version` either: that is `12.0-919-gb1bd7d7d3e`, a Git reference on any
+server tracking main, so it cannot be compared. A client has to call one
+endpoint before it can know what the rest of them do, and for self-hosted Zulip
+two servers on the same `/api/v1` can be hundreds of levels apart.
+
+**`ignored_parameters_unsupported`.** Since feature level 167, a *successful*
+response may carry an array naming the parameters the endpoint did not
+understand.
+
+That is the Gitea finding from the other side, and the pair is worth having in
+one collection. Gitea silently ignores `per_page`, serves the default, and then
+echoes the ignored parameter back into the `Link` header — the response actively
+confirms a belief the server discarded. Zulip says it out loud in the success
+body. Same hazard, opposite handling, and both were committed the same day.
+
+It is not universal, which is the part worth knowing. Struck live:
+`/server_settings?notaparam=1&another=2` answered `{"result":"success","msg":""}`
+with no array at all. So absence means either "everything was understood" or
+"this endpoint does not report", and nothing distinguishes them.
+
+**Every response carries `result` and `msg`, successes included.** `msg` is the
+empty string on a success, so truthiness happens to work and testing for the key
+does not discriminate. `code` is on failures only, which makes its presence the
+reliable test — and the one a client is least likely to reach for, because
+`result` reads like the obvious discriminator and is a string to compare rather
+than a status to branch on.
+
+### Two bugs this found in the project itself
+
+**A named map type defeated a type assertion, silently.** `store.Record` is
+`map[string]any` under a name, and a type assertion to `map[string]any` does not
+match a named type. So a Recipe that used `collapse_single` and then declared
+route-level `fields` had those fields dropped, with no error anywhere.
+`/server_settings` collapses to one record and its `result`/`msg` envelope
+vanished. Fixed at the collapse: the single record is converted to a plain map.
+Any Recipe combining those two features was affected; Zulip is the first to use
+both.
+
+**The backlog's number-word check could never match one hundred.** Its regex
+captured `([A-Za-z-]+) Recipes send…`, one word — and the words map has spelled
+out `"One hundred": 100` since long before the count got there. The count
+reaching exactly 100 this commit is what surfaced it. The regex now takes an
+optional second word.
+
+### The rest
+
+- **HTTP Basic**, with `WWW-Authenticate: Basic realm="zulip"` on the 401. The
+  username is the user's email and the password is the API key, so a client
+  library built around bearer tokens has nowhere to put the email. Only the
+  password half is checked here, and Zulip is unusual in that the username half
+  varies too — a request with the right key and the wrong email is accepted here
+  and refused upstream. Stated on the Recipe.
+- **`realm_url` and `realm_uri`, same value, both sent.** `realm_uri` was
+  deprecated at feature level 257 and nothing in the response marks it.
+- **`is_incompatible`** is the server's opinion of *your client*, decided from
+  the request — a field about the caller in a response about the server.
+
+### Paging: not modelled, and why
+
+Zulip pages with `anchor` plus `num_before` and `num_after` — a position and how
+far to read outwards in each direction. Neither offset paging nor cursor paging,
+and this format has neither shape.
+
+Declaring it `style: offset` made the emulator read the anchor — a message id
+like `1904489` — as an offset, and answer an empty page for every real anchor a
+caller could hold. That is worse than not paging at all: it teaches a client its
+correct request is empty. So the route declares `style: none`, answers the whole
+fixture, and sends `found_newest` and `found_oldest` — which is exactly what
+Zulip answers when the window covers everything.
+
+The anchor's declared type is `string`, and its values are message ids (integers)
+plus the words `newest`, `oldest`, `first_unread`. A field that is a string and
+usually a number.
+
+### Still open
+
+- Bidirectional anchored paging has no shape in this format. Zulip is the first
+  provider here to need one; a second would be the signal to add it.
+- 119 paths and this covers two. Streams, topics, subscriptions, users, drafts,
+  scheduled messages, reactions and the events queue are unexamined.
+- `narrow` is a JSON-encoded array inside a query parameter and is not modelled.

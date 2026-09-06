@@ -679,8 +679,15 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			items = list[0]
 		}
 
+		// As a plain map, not a store.Record. Record is a named map type, and
+		// a type assertion to map[string]any does not match a named type --
+		// so a Recipe that collapsed a listing of one and then declared
+		// route-level fields had those fields silently dropped, because the
+		// assertion that guards them failed on the name rather than on the
+		// shape. Zulip found it: /server_settings collapses to one record and
+		// its result and msg envelope disappeared, with no error anywhere.
 		if list, ok := items.([]store.Record); ok && len(list) == 1 {
-			items = list[0]
+			items = map[string]any(list[0])
 		}
 	}
 
