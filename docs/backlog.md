@@ -4502,7 +4502,8 @@ successfully at all.
 ```
 
 A listing counts as shown when some case asks for it, by that method and a
-matching path, and expects 200. Every case touching the other 168 is checking a
+matching path, and expects a success -- any 2xx, once Heroku's 206 and Agora's
+201 turned up further down this page. Every case touching the other 168 is checking a
 failure -- a missing credential, a wrong method, an unknown path -- so the
 collection, the envelope, the page size and the cursor field beside them are a
 description with no evidence under it. The Recipe is green and has never seen the
