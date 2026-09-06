@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**68 more listings across 46 Recipes declare no paging at all**, and the
+**67 more listings across 46 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,18 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Moodle needed its own source rather than its documentation, and the two functions
+this Recipe models split cleanly. `core_course_get_courses` takes exactly one
+thing -- an options structure holding `ids`, "list of course id. **If empty return
+all courses** except front page course" -- so it does not page.
+`core_enrol_get_enrolled_users` does, and this format cannot spell it: the size is
+`limitnumber` (not `limitnum`) and the position is `limitfrom`, but `options` is a
+list of `{name, value}` pairs, so on the wire a page size is
+`options[0][name]=limitnumber&options[0][value]=5` -- the parameter's name is a
+*value* of another parameter. Both default to 0, which Moodle passes to
+`get_recordset_sql`, where zero means no limit, so the default page is the whole
+set. A note at the route says all of that instead of declaring something false.
 
 Postscript's subscriber listing takes twenty-odd filters, a sort, and exactly one
 paging parameter -- `page`, "page number of results to start from" -- with no
