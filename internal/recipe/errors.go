@@ -131,18 +131,22 @@ func (r Recipe) UnshownError() int {
 	unshown := 0
 
 	said := map[int][]string{}
+	empty := map[int]bool{}
+
 	for _, c := range r.Conformance {
 		if c.Expect.Status == 0 {
 			continue
 		}
 
 		said[c.Expect.Status] = append(said[c.Expect.Status], asserted(c)...)
+
+		if c.Expect.NoBody {
+			empty[c.Expect.Status] = true
+		}
 	}
 
-	for _, spec := range r.Errors {
-		seen := said[spec.Status]
-
-		if !showsError(seen, spec) {
+	for name, spec := range r.Errors {
+		if !showsError(said[spec.Status], empty[spec.Status], name, spec) {
 			unshown++
 		}
 	}
@@ -152,8 +156,24 @@ func (r Recipe) UnshownError() int {
 
 // showsError reports whether anything a case asserted at that status carries a
 // part of this error's wording.
-func showsError(seen []string, spec Error) bool {
+func showsError(seen []string, empty bool, name string, spec Error) bool {
 	if spec.Code != "" && carries(seen, spec.Code) {
+		return true
+	}
+
+	// An entry that declares no code of its own is commonly carried under its
+	// key: Bringg declares method_not_allowed as a bare 404 and its envelope
+	// answers {"error": "method_not_allowed"}.
+	if spec.Code == "" && carries(seen, name) {
+		return true
+	}
+
+	// And an entry with no body has no wording to quote back. Bitwarden
+	// answers 405 with a status line and nothing else, and declares it
+	// empty: true with no code and no message -- so requiring a quotation
+	// asks for evidence that cannot exist. What a case can claim is what a
+	// client actually gets: the status, and that there is nothing in it.
+	if spec.Empty && empty && spec.Code == "" && spec.Message == "" && len(spec.Headers) == 0 {
 		return true
 	}
 

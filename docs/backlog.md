@@ -5559,7 +5559,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-714 declared error(s) across 320 recipe(s) have no case asserting what
+664 declared error(s) across 307 recipe(s) have no case asserting what
 they say.
 ```
 
@@ -5980,3 +5980,25 @@ rather than a value, because a request id is the sandbox's own counter and
 asserting it exactly would pin the emulator's bookkeeping instead of the
 provider's wording. The hand-written cases in this corpus already did that; the
 generator had to be told.
+
+### An empty refusal has nothing to quote, and saying so is the claim
+
+Asking why 77 refusals with a valid trigger still would not settle found two
+more mistakes in the counter, not in the corpus.
+
+**A body-less error has no wording.** Bitwarden answers 405 with a status line
+and nothing else, and declares that `empty: true` with no code and no message.
+Demanding a quotation asked for evidence that cannot exist. What a case can
+claim is what a client actually gets -- the status, and that there is nothing in
+it -- which is what `no_body` is for and is not nothing: calling `.json()` on it
+throws.
+
+**An entry with no code of its own is carried under its key.** Bringg declares
+`method_not_allowed` as a bare 404 and its envelope answers
+`{"error": "method_not_allowed"}`, so the name *is* the code even though the
+Recipe never repeats it.
+
+714 to 671 from those two before the generator wrote anything, and 664 after it
+ran again. Every counter in this file has now been wrong at least once in the
+same direction, and every time the tell was the same: a category that could not
+reach zero, or a tool that would not converge.

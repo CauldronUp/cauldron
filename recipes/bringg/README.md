@@ -2,7 +2,7 @@
 
 Emulates the Bringg API (oauth2), for local development and tests.
 
-**9 conformance cases, 8 checked against the live API on 2026-09-01.**
+**10 conformance cases, 8 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

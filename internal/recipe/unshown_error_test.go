@@ -93,3 +93,73 @@ func TestABodyMatchesShowsAnError(t *testing.T) {
 		t.Errorf("a plain-text failure asserted by regex: counted %d unshown, want 0", n)
 	}
 }
+
+// An error with no body is shown by asserting there is no body.
+//
+// Bitwarden answers 405 with a status line and nothing else, and declares that
+// as empty: true with no code and no message. There is no wording to quote back,
+// so requiring one asked for evidence that cannot exist -- and forty-odd entries
+// across the corpus sat in the count with no way out of it.
+//
+// The claim a case can make is the one the format already has for this: status,
+// and no_body. That is exactly what a client gets, and it is not nothing --
+// calling .json() on it throws.
+func TestAnEmptyErrorIsShownByNoBody(t *testing.T) {
+	r := &Recipe{
+		Errors: map[string]Error{
+			"method_not_allowed": {Status: 405, Empty: true},
+		},
+		Conformance: []Case{{
+			Request: Request{Method: "DELETE", Path: "/v1/things"},
+			Expect:  Expectation{Status: 405},
+		}},
+	}
+
+	if n := r.UnshownError(); n != 1 {
+		t.Fatalf("a case asserting only the status: counted %d unshown, want 1", n)
+	}
+
+	r.Conformance[0].Expect.NoBody = true
+
+	if n := r.UnshownError(); n != 0 {
+		t.Errorf("a case asserting the empty body: counted %d unshown, want 0", n)
+	}
+}
+
+// An empty error with a header is shown by the header, as before.
+func TestAnEmptyErrorWithAHeaderIsShownByIt(t *testing.T) {
+	r := &Recipe{
+		Errors: map[string]Error{
+			"method_not_allowed": {Status: 405, Empty: true, Headers: map[string]string{"Allow": "GET, POST"}},
+		},
+		Conformance: []Case{{
+			Request: Request{Method: "DELETE", Path: "/v1/things"},
+			Expect:  Expectation{Status: 405, Headers: map[string]string{"Allow": "GET, POST"}},
+		}},
+	}
+
+	if n := r.UnshownError(); n != 0 {
+		t.Errorf("an empty error asserted by its Allow header: counted %d unshown, want 0", n)
+	}
+}
+
+// An entry that declares no code is often carried under its own name.
+//
+// Bringg declares method_not_allowed as a bare 404 and its envelope answers
+// {"error": "method_not_allowed"}, so the name is the code even though the
+// Recipe never repeats it.
+func TestAnErrorWithNoCodeIsShownByItsName(t *testing.T) {
+	r := &Recipe{
+		Errors: map[string]Error{"method_not_allowed": {Status: 404}},
+		Conformance: []Case{{
+			Request: Request{Method: "DELETE", Path: "/v1/things"},
+			Expect: Expectation{Status: 404, Body: map[string]any{
+				"error": "method_not_allowed",
+			}},
+		}},
+	}
+
+	if n := r.UnshownError(); n != 0 {
+		t.Errorf("an error carried under its own name: counted %d unshown, want 0", n)
+	}
+}

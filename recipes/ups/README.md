@@ -2,7 +2,7 @@
 
 Emulates the UPS API (v1), for local development and tests.
 
-**7 conformance cases, 5 checked against the live API on 2026-09-02.**
+**8 conformance cases, 5 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 
