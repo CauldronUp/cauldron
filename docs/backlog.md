@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and seven Recipes send at least one identifier as a number now, and each
+One hundred and eight Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -5562,7 +5562,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-651 declared error(s) across 311 recipe(s) have no case asserting what
+652 declared error(s) across 312 recipe(s) have no case asserting what
 they say.
 ```
 
@@ -7387,3 +7387,60 @@ mean modelling the encoder rather than the API.
   exactly as Argo CD does.
 
 Every base64 string in the fixture was decoded and checked before committing.
+
+## Cilium, where one path segment holds four identifier namespaces
+
+Written against Cilium own Swagger 2.0 document -- cilium/cilium
+api/v1/openapi.yaml, 33 paths, version v1beta1, read 2026-09-06. The agent API
+listens on a unix socket on each node, so nothing is struck live.
+
+`/endpoint/{id}` takes "a string describing an endpoint with the format
+[prefix:]id":
+
+    cilium-local:3389595
+    cilium-global:cluster1:nodeX:452343
+    cni-attachment-id:22222:eth0
+    cep-name:default:foobar-net1
+
+Three colons in the second. A colon is a legal path character so nothing needs
+escaping -- but a router splitting on it, a proxy reading it as a port
+separator, and a client joining parts will all disagree about where the
+identifier ends. **And if no prefix is sent, `cilium-local:` is assumed**, so a
+bare number silently means one namespace of the four.
+
+**The document own example contradicts the prefix it illustrates.** The bullet
+names `cep-name` and its example uses `pod-name`. One of the two is wrong and
+the document does not say which. It also says not all endpoints are addressable
+by all prefixes, so a 404 means either "no such endpoint" or "not reachable by
+the namespace you used", with nothing to tell them apart.
+
+### The entire error schema is a bare JSON string
+
+`Error: {type: string}`. A 400 answers a JSON string literal, so a client
+calling `.json()` succeeds, gets a string, and reads `body.message` as
+undefined -- reporting the reason as "undefined" rather than throwing. The 404
+and 429 declare no schema at all, so the one failure whose shape is described is
+described as a string.
+
+### No authentication, and here that is correct
+
+The document declares no securityDefinitions and no security, exactly as Argo
+CD does -- but this listens on a root-owned unix socket, so the absence is the
+design rather than an omission.
+
+Two documents identical on that point, meaning opposite things. Worth recording
+because it is the counterexample to the Argo CD entry: a scan for "APIs with no
+declared auth" produces both and needs a human at the end of it.
+
+### The rest
+
+- **DELETE on the collection**, the same shape Portainer has and reached
+  independently.
+- **Nothing in a response spells an endpoint the way its own URL does.** The
+  record id is a bare integer; the prefixed form is not a field at all. A client
+  storing what it read cannot reconstruct the URL it read it from.
+- **An endpoint always has a security identity**, and 5 is the reserved one
+  meaning not-resolved-yet -- a real number rather than a null. Policy is
+  written against the identity, so the number deciding what an endpoint may do
+  is not the number naming it.
+- **Health is four axes**, three strings and a boolean in one object.

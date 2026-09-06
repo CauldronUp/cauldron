@@ -1,0 +1,360 @@
+# Cilium Recipe for Cauldron
+#
+# Written against Cilium's own Swagger 2.0 document, published in its own
+# repository -- github.com/cilium/cilium, api/v1/openapi.yaml, 33 paths, version
+# v1beta1 -- read on 2026-09-06. The Cilium agent API listens on a unix socket
+# on each node and there is no public instance, so nothing here is verified
+# live: every claim is the provider's own document.
+#
+# **One path segment, five identifier namespaces, and colons inside it.**
+#
+# `/endpoint/{id}` takes, in the document's own words, "a string describing an
+# endpoint with the format ``[prefix:]id``":
+#
+#   cilium-local:3389595
+#   cilium-global:cluster1:nodeX:452343
+#   cni-attachment-id:22222:eth0
+#   cep-name:default:foobar-net1
+#
+# Four colons in the second one. A colon is a legal path character, so nothing
+# needs escaping -- but a router that splits on ':' , a proxy that treats a
+# colon as a port separator, or a client that builds the URL by joining parts
+# will all disagree about where the identifier ends.
+#
+# **And if you send no prefix, one is assumed.** "If no prefix is specified, a
+# prefix of ``cilium-local:`` is assumed." So `/endpoint/3389595` silently means
+# one namespace of the four, and a caller holding a CNI attachment ID that
+# happens to be all digits addresses a different endpoint than they meant.
+#
+# **The document's own example contradicts the prefix it illustrates:**
+#
+#   - cep-name: cep name for this container if K8s is enabled,
+#     e.g. pod-name:default:foobar-net1
+#
+# The bullet names the prefix `cep-name` and its example uses `pod-name`. One of
+# the two is wrong and the document does not say which.
+#
+# **Not every endpoint answers to every prefix.** "Not all endpoints will be
+# addressable by all endpoint ID prefixes with the exception of the local Cilium
+# UUID which is assigned to all endpoints." So a 404 here means either "no such
+# endpoint" or "that endpoint exists and is not reachable by the namespace you
+# used", and nothing distinguishes them.
+#
+# **The entire error schema is a bare JSON string.**
+#
+#   Error:
+#     type: string
+#
+# So a 400 answers `"Invalid endpoint ID format"` -- with the quotes, as a JSON
+# string literal, not an object. `body.message` is undefined; `body` *is* the
+# message. A client calling `.json()` succeeds and gets a string, so nothing
+# throws and code reading `body.error` reports the reason as "undefined".
+#
+# And the 404 and the 429 declare no schema at all, so the document says nothing
+# about what their bodies contain. The one failure whose shape is described is
+# described as a string.
+#
+# **There is no authentication, and here that is correct.** The document
+# declares no `securityDefinitions` and no `security`, exactly as Argo CD's does
+# -- but this API listens on a unix socket owned by root on each node, so the
+# absence is the design rather than an omission. The two documents look
+# identical on this point and mean opposite things, which is why a scan for
+# "APIs with no declared auth" needs a human at the end of it.
+#
+# **A DELETE on the collection.** `DELETE /endpoint` takes a batch request and
+# removes many endpoints -- a destructive verb at a path with no identifier in
+# it, the same shape Portainer has and reached independently.
+#
+# **Nothing in a response spells an endpoint the way its own URL does.**
+# `Endpoint.id` is "the cilium-agent-local ID of the endpoint", a bare integer.
+# The prefixed form is not a field on the record at all -- it is purely an
+# addressing scheme. So a client that stores what it read cannot reconstruct the
+# URL it read it from without knowing which of the four namespaces it used.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. The agent API is a unix
+#     socket on each node.
+#   - Endpoints, listed and fetched. 33 paths is a datapath agent: identities,
+#     policy, services, IPAM, prefilter, BGP, the map surface and the debug
+#     surface each want their own evidence.
+#   - One prefix is served. Routing all four namespaces to one store would mean
+#     inventing which endpoints are addressable by which prefix -- the thing
+#     the document explicitly says varies -- so the Recipe serves
+#     `cilium-local:` and records the rest. A caller using another prefix gets
+#     this emulator's unrouted-path 404 rather than Cilium's "Endpoint not
+#     found", which is the one place a wrong prefix is more legible here than
+#     upstream.
+#   - `Endpoint.status` is a deep tree: eleven keys, several of them their own
+#     objects. Four are modelled.
+
+recipe: cilium
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: "v1beta1"
+  docs: https://docs.cilium.io/en/stable/api/
+  spec: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+  spec_hash: 7cefd5cb193f38b533c692c10539790f912f7333f8615a73e045614f2b050a99
+  spec_seen: "2026-09-06"
+
+auth:
+  # None, and here that is the design: the agent API listens on a unix socket
+  # owned by root. Argo CD's document declares no auth either and means
+  # something entirely different by it.
+  scheme: none
+
+responses:
+  list:
+    style: bare
+  error:
+    # The whole Error schema is `type: string`. A 400 answers a JSON string
+    # literal, so a client calling .json() succeeds, gets a string, and reads
+    # body.message as undefined.
+    style: string
+
+resources:
+  endpoint:
+    id:
+      # "The cilium-agent-local ID of the endpoint" -- an integer. The prefixed
+      # form the path takes is not a field on the record at all: it is purely
+      # an addressing scheme, so there is nothing in a response that spells an
+      # endpoint the way its own URL does.
+      style: numeric
+      type: number
+    fields:
+      state:
+        type: string
+        default: ready
+      # The security identity this endpoint has been given, which is what
+      # policy is written against -- and it is a different number from the
+      # endpoint's own id.
+      identity_id:
+        type: number
+      # Four independent health axes, and one of them is a boolean while the
+      # other three are strings.
+      overall_health:
+        type: string
+        default: OK
+      bpf_health:
+        type: string
+        default: OK
+      policy_health:
+        type: string
+        default: OK
+      connected:
+        type: boolean
+        default: true
+
+routes:
+  - method: GET
+    path: /v1/endpoint
+    resource: endpoint
+    operation: list
+    pagination:
+      # None. The agent answers every endpoint on the node.
+      style: none
+
+  # The prefix is in the path itself, which is the honest way to say that this
+  # Recipe serves one of the four namespaces. cilium-global:, cni-attachment-id:
+  # and cep-name: are real and are not routed here.
+  - method: GET
+    path: /v1/endpoint/cilium-local:{id}
+    resource: endpoint
+    operation: get
+    not_found: not_found
+
+errors:
+  invalid_id:
+    status: 400
+    style: string
+    message: "Invalid endpoint ID format for specified type"
+  not_found:
+    status: 404
+    style: string
+    message: "Endpoint not found"
+  rate_limit:
+    status: 429
+    style: string
+    message: "Rate-limiting too many requests in the given time frame"
+
+fixtures:
+  empty:
+    endpoint: []
+
+  node:
+    endpoint:
+      - id: 3389595
+        state: ready
+        identity_id: 51247
+        overall_health: OK
+        bpf_health: OK
+        policy_health: OK
+        connected: true
+      - id: 1204
+        state: waiting-for-identity
+        # The reserved identity for "we do not know yet", which is a real
+        # number rather than a null -- so an endpoint always has an identity
+        # and it is sometimes the one meaning none.
+        identity_id: 5
+        overall_health: Warning
+        bpf_health: OK
+        # Three string health axes disagreeing with each other, beside a
+        # boolean that says the endpoint is still reachable.
+        policy_health: Warning
+        connected: true
+
+conformance:
+  - name: the path takes a prefixed identifier, not the record's own id
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      # [prefix:]id. The colon is a legal path character and needs no
+      # escaping, and cilium-global:cluster1:nodeX:452343 has three of them.
+      path: /v1/endpoint/cilium-local:3389595
+    expect:
+      status: 200
+      body:
+        # The value a client reads back is the agent-local integer, which is
+        # one of four possible spellings of the thing it just asked for.
+        id: 3389595
+        state: ready
+
+  - name: a different namespace is a different endpoint
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      # cni-attachment-id: is one of the four prefixes and is not routed here,
+      # which is this Recipe's limit rather than a claim about Cilium. What it
+      # does demonstrate is the shape: the prefix is part of the path segment,
+      # so two URLs differing only before the colon address different things.
+      path: /v1/endpoint/cni-attachment-id:3389595
+    expect:
+      # 404 either way, and deliberately not asserting the body: this Recipe
+      # routes one prefix, so a different one falls through to the emulator's
+      # own unrouted-path answer rather than to Cilium's "Endpoint not found".
+      # Upstream the two are the same status and a caller cannot tell them
+      # apart, which is the finding; here they differ, which is the limit.
+      status: 404
+
+  - name: a failure is a bare JSON string, not an object
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint/cilium-local:99999999
+    expect:
+      status: 404
+      # The whole Error schema is `type: string`. A client calling .json()
+      # succeeds and gets a string, so nothing throws -- and body.message is
+      # undefined, so the reason is reported as "undefined".
+      body_matches: '"Endpoint not found"'
+
+  - name: a listing answers every endpoint on the node
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+    expect:
+      status: 200
+      body:
+        # A bare array with no envelope, no paging and no total. The agent
+        # answers what is on this node, which is bounded by the node rather
+        # than by the request.
+        '[0].id': 3389595
+        '[1].id': 1204
+      absent:
+        - '[2]'
+
+  - name: no credential is needed, and that is the design
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+      headers: {}
+    expect:
+      # The document declares no securityDefinitions and no security, exactly
+      # as Argo CD's does -- and means the opposite by it, because this
+      # listens on a root-owned unix socket. Two documents identical on this
+      # point, meaning opposite things.
+      status: 200
+      body:
+        '[0].state': ready
+
+  - name: an endpoint's identity is a separate number, and none is a value
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+    expect:
+      status: 200
+      body:
+        # Policy is written against the identity, not the endpoint -- so the
+        # number that decides what an endpoint may do is not the number that
+        # names it.
+        '[0].identity_id': 51247
+        # And 5 is the reserved identity meaning "not resolved yet", which is
+        # a real number rather than a null. An endpoint always has an identity
+        # and it is sometimes the one meaning none.
+        '[1].identity_id': 5
+        '[1].state': waiting-for-identity
+
+  - name: health is four axes and one of them is a boolean
+    source: https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+    expect:
+      status: 200
+      body:
+        # overallHealth, bpf, policy -- three strings -- and connected, a
+        # boolean, in the same object. So "is this endpoint healthy" has four
+        # answers of two types, and the boolean is the one a client reaches
+        # for.
+        '[1].overall_health': Warning
+        '[1].bpf_health': OK
+        '[1].policy_health': Warning
+        '[1].connected': true
+
+  - name: "an unparseable identifier says so in these words"
+    source: "https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml"
+    arm: invalid_id
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint/cilium-local:3389595
+    expect:
+      status: 400
+      body_matches: '"Invalid endpoint ID format for specified type"'
+
+  - name: "the rate limit says so in these words"
+    source: "https://docs.cilium.io/en/stable/api/"
+    arm: rate_limit
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+    expect:
+      status: 429
+      body_matches: 'Rate-limiting too many requests'
+
+  - name: "a missing endpoint says so in these words"
+    source: "https://raw.githubusercontent.com/cilium/cilium/main/api/v1/openapi.yaml"
+    arm: not_found
+    fixture: node
+    request:
+      method: GET
+      path: /v1/endpoint
+    expect:
+      status: 404
+      # Also a bare JSON string, and the document declares no schema at all
+      # for the 404 -- so this wording comes from the response description
+      # rather than from anything machine-readable.
+      body_matches: '"Endpoint not found"'

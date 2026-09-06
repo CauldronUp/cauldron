@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "cilium",
+			gomod:  []string{"github.com/cilium/cilium/api/v1"},
+		},
+		{
 			recipe: "etcd",
 			gomod:  []string{"go.etcd.io/etcd/client/v3"},
 		},
