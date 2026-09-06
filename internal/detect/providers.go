@@ -886,6 +886,19 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// The official JavaScript SDK, which names app.loops.so 26 times.
+			recipe: "loops",
+			npm:    []string{"loops"},
+		},
+		{
+			// The same client in two ecosystems. The npm package names
+			// api.docspring.com five times and the Packagist one is its
+			// counterpart.
+			recipe:   "docspring",
+			composer: []string{"docspring/docspring"},
+			npm:      []string{"docspring"},
+		},
+		{
 			// Circle's wallets SDK, which names api.circle.com 13 times. It is
 			// a client of a different path family on the same host with the same
 			// credential, so the mapping says this project talks to Circle --

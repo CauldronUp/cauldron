@@ -183,7 +183,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Dropbox Sign~~ | Shipped, written against the OpenAPI document Dropbox Sign publishes and generates its own SDKs from. There is no status: a signature request carries is_complete, is_declined and has_error, three independent booleans, so is_complete: false is four situations wearing one face -- nobody has signed, somebody declined, something broke, or two of three are done. A dashboard rendering complete-or-pending shows a declined contract as pending for ever. Also: the person who signs need not be the one you asked (reassigned_by, reassignment_reason and reassigned_from on the signature that replaced yours); every signer carries an error of its own beside the request's; and a test request that "has no legal value" is in the listing with the contracts, which takes account_id, page, page_size and query and nothing else. The most surprising thing about this API is stated and not served: the document defines EventCallbackResponse as text/plain defaulting to "Hello API Event Received", which is the body your callback endpoint must answer with -- every other provider here reads your status code, this one reads your prose |
 | Adobe Acrobat Sign | Agreements and the signing lifecycle |
 | Ironclad | Contracts and approval workflows |
-| DocSpring | PDF generation and templates |
+| ~~DocSpring~~ | Shipped. **Every failure echoes something the caller sent**: the token id on a bad credential, the method and path on a bad URL. And the half it echoes is the right one -- a DocSpring token id is the public half of a Basic pair and the secret is the password, never repeated, which is the distinction most providers echoing a credential fail to make. `status` is the literal string "error" on every failure, so the only structured field has one value and carries nothing; there is no code, no type and no field name, so nothing here can be switched on except by matching English. `x-runtime: 0.015572` discloses the server's processing time to an unauthenticated caller. Expiry is a number with its unit in a separate field, so comparing `expire_after` across templates compares hours to days. A template still processing reports `page_count: 0` and no error |
 
 ## Tax, accounting and payroll
 
@@ -228,7 +228,7 @@ than finding out halfway through writing one.
 | ~~RingCentral~~ | Shipped. Sent is not delivered, per-group rate limits, deleted messages still in the store |
 | Aircall | Assess — calls, contacts, webhook ordering. A call's final state arrives after the call ends, so the webhook and the fetched object disagree for a while |
 | Dialpad | Assess — calls, SMS, transcripts |
-| OpenPhone | Assess — the API is young enough that shapes have moved between versions, which is worth pinning |
+| ~~OpenPhone~~ | Shipped. **A failure is JSON and a not-found is HTML** -- Express's default handler showing through -- so the one failure a client meets while getting a URL wrong is the one `.json()` throws on. `trace` is a 19-digit 64-bit integer sent as a string, which is why it is quoted and why parsing it as a number corrupts the value somebody would quote to support. `key`, the machine-readable field, is "Unauthorized" for both a missing credential and a wrong one, and for the wrong one the message is that same word, so neither field separates them. The credential carries no scheme: `Authorization: <key>` bare, which every bearer helper gets wrong by prefixing |
 | 8x8 | Assess — messaging and voice |
 
 ## Issue tracking, docs and planning
@@ -241,7 +241,7 @@ than finding out halfway through writing one.
 | ~~Smartsheet~~ | Shipped, and written entirely from live responses: no token, no account, every case dated. **Four routes disagree about what a missing credential is.** No credential on a collection is 403 `errorCode 1004`; a merely wrong token is 401 `errorCode 1002`, verified with three different garbage tokens; and `/sheets/{id}` and `/workspaces/{id}` answer a missing credential with an entirely empty 401 -- zero bytes, no Content-Type, no code -- while `/users/{id}` and every collection answer 403 with a body. Same product, same missing header, and whether you get a diagnosis depends on which noun you asked for. Also pinned: a malformed path as 404 `errorCode 1006`, and a wrong method as 405 `errorCode 1122` with the offending method named inside the message prose rather than in a field. Stated and not served: Smartsheet pretty-prints with a space before the colon and announces `application/json;charset=UTF-8` in that casing, neither reproduced byte-for-byte |
 | Wrike | Assess — tasks, folders, custom fields |
 | Height | Assess — tasks and lists |
-| Productboard | Assess — features, notes, insights |
+| ~~Productboard~~ | Shipped. **The API is two months past its own Sunset date and still answering**: every response carries `Deprecation: @1775692799` (2026-04-08) and `Sunset: Wed, 08 Jul 2026 23:59:59 GMT`, struck live on 2026-09-06 -- and the two are in different formats, the at-sign Unix syntax an early draft used beside the HTTP-date RFC 8594 requires, so one lifecycle needs two parsers. A client that honours Sunset stopped working in July against an API that works. **The 401 reads your token and reports on its payload**: nothing gets "Unauthorized", a non-token gets "Bad token; invalid JSON", and a well-formed JWT gets "No mandatory 'iss' in claims" -- a JWT-shaping oracle available with no account, with the signature check after all of it. The 404 is Kong's "no Route matched with those values", so `message` has two producers and nothing says which answered. A status is an object rather than a string |
 | ~~Canny~~ | Shipped, written against Canny's own reference. **Every read is a POST and the API key is a body field beside the filters**, so it cannot be set once as a default header -- every call site carries it -- and it lands in anything that logs request bodies. A `GET` is refused outright, so nothing in front of it caches. The paging signal is a bare `hasMore` boolean with no total and no cursor, and the default page is **ten**, small enough that a board of eight never exercises the loop until production. v1 wraps its array in `posts` and v2 wraps it in `items`, with the version in the path rather than a header |
 
 ## Banking rails and money movement
@@ -441,7 +441,7 @@ the header says so.
 | ~~Kit (ConvertKit)~~ | Shipped as `recipes/kit`. Listed twice under two spellings of one company, which the rename made easy to do; see the other row for what it found |
 | Attentive | Assess — SMS subscribers and consent state, where consent is legally load-bearing |
 | Beehiiv | Assess — publications, posts, subscribers |
-| Loops | Assess — contacts and transactional sends |
+| ~~Loops~~ | Shipped. **A 404 is invisible until something is in the Authorization header** -- anything, valid or not: with no header an unknown path is reported as "Invalid API key", so a typo in a URL sends the reader to the wrong file. **The two failures have different envelopes**: the auth one is `{success, message, error}` and the not-found is `{message}` alone, so a client testing `body.success === false` reads undefined on the 404 and treats it as fine. `message` and `error` carry the same string, and there is no code anywhere. A missing key and a wrong key are one response whose sentence describes only the second. Success has no envelope at all, so the shape depends on whether it worked |
 
 ## Social and content platforms
 
@@ -2499,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These twenty-four are left, and every one of them has now been looked for
+another. These twenty-six are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2535,6 +2535,8 @@ than a client for its API.
 | Hightouch | No official client found |
 | incident.io | No official Node or Go client found |
 | Kustomer | Community clients |
+| Productboard | No client on npm, Packagist or the Go module proxy under any obvious name, checked 2026-09-06. The API is also two months past the Sunset date it advertises on every response, which is a reason nobody would start one now |
+| OpenPhone | `@openphone/node` and `openphone` are both 404 on npm as of 2026-09-06, and nothing on Packagist or the Go module proxy calls this API |
 | imgix | The flagship package is not a client of this API. `@imgix/js-core` is official and current and names `imgix.net` 75 times and `api.imgix.com` not once: it builds URLs for the image-rendering service, a different host and a different product from the Management API the Recipe serves, and `imgix/imgix-php` and `imgix-core-js` are the same tool in other languages. Mapping it would report the wrong API for nearly every imgix user. The Stream Chat shape, and sharper, because there the sibling product was the smaller one |
 | Marqeta | A package of that name exists with no description and no repository, so it cannot be verified |
 | Mercury | No official SDK, and the name is taken by a frontend framework |
