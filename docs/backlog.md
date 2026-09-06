@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**80 more listings across 53 Recipes declare no paging at all**, and the
+**77 more listings across 50 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,14 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Fastly and Drip are both one-provider-two-listings splits where the *other*
+listing is the tempting one. Fastly documents `page` and `per_page` on
+`/service` and nothing at all on a service's versions. Drip's subscriber listing
+takes `per_page` -- "defaults to 100. Maximum 1000" -- and its accounts listing
+documents its arguments as "None." Copying the sibling's paging across is exactly
+the mistake an emulator makes when a Recipe says nothing, and with nothing
+declared both routes looked identical to this engine.
 
 EasyPost's position is a mutually exclusive pair: `before_id` is "only records
 created before the given ID will be included. **May not be used with after_id**",
