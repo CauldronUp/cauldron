@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-763 paging parameter name(s) across 288 recipe(s) are declared and sent by no
+695 paging parameter name(s) across 267 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-168 listing(s) across 134 recipe(s) have no case that answers them
+122 listing(s) across 100 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -4527,6 +4527,20 @@ One bug is worth keeping. The first version asserted `[0].id` and Axiom answered
 identifier is printed under another key. A generator that assumes `id` is called
 `id` writes cases that fail on every Recipe that renames it, and there are
 plenty.
+
+The two counts feed each other, which is the useful part. Showing 46 listings
+gave the paging generator 46 new green requests to copy, and re-running it took
+another 84 cases -- so the debt fell from 763 to 695 without reading a single new
+document. The order matters: a paging case cannot be built on a request nobody
+has ever made work.
+
+One failure that only a Go test could catch. Twilio's fixture grew a third
+message, and `TestTwilioScopesMessagesByAccount` asserted two. The generator's
+acceptance runs `verify`, which runs conformance cases and not the Go suite, so a
+fixture change is invisible to it. Worth noticing while fixing the number: every
+message in that fixture belongs to one account, so the test shows the scoped
+listing answers them and not that another account's are kept out -- it has
+nothing to exclude.
 
 ### The clone that shared an email address
 

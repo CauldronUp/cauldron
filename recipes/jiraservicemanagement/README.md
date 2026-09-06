@@ -2,7 +2,7 @@
 
 Emulates the Jira Service Management API (servicedeskapi), for local development and tests.
 
-**14 conformance cases, 4 checked against the live API.**
+**15 conformance cases, 4 checked against the live API.**
 
 Struck live 2026-09-05 against the same real Atlassian site the Jira Recipe beside this one used, confirming the same authentication sentence independently, word for word. Unlike Jira's own API root, this one grants no anonymous access at all -- every request needed a real credential. What that made checkable instead was order: a path with no route answers 404, and a real path addressed with a method it does not take answers 405, both before the credential is ever examined, and both as RFC 7807 problem+json rather than this file's usual errorMessage envelope. `auth.after_routing` is set now, which it was not before.
 

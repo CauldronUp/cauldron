@@ -2,7 +2,7 @@
 
 Emulates the LaunchDarkly API (v2), for local development and tests.
 
-**10 conformance cases, 1 checked against the live API.**
+**11 conformance cases, 1 checked against the live API.**
 
 Struck live 2026-09-05 against app.launchdarkly.com, no account and no key, on three different paths and three different bad-credential shapes. This file declared the 401 body as `{"code":"unauthorized","message":"Invalid access token"}`, and the real, consistent answer is `{"code":"unauthorized","message":"Invalid account ID header"}` -- a sentence that does not mention a token at all. Fixed below.
 

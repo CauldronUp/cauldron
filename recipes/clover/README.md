@@ -2,7 +2,7 @@
 
 Emulates the Clover API (v3), for local development and tests.
 
-**12 conformance cases, 1 checked against the live API.**
+**13 conformance cases, 1 checked against the live API.**
 
 Struck live against apisandbox.dev.clover.com on 2026-09-05, both with no Authorization header at all and with a made-up Bearer token: byte-identical 401, and this file's claim held exactly -- {"message":"401 Unauthorized"}, no code to branch on.
 

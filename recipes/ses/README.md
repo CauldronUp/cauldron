@@ -2,7 +2,7 @@
 
 Emulates the AWS SES API (v2), for local development and tests.
 
-**12 conformance cases, 2 checked against the live API.**
+**13 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs real AWS credentials. The credential check itself was verified directly against email.us-east-1.amazonaws.com, unsigned, on 2026-09-05.
 

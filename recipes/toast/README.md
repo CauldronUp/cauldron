@@ -2,7 +2,7 @@
 
 Emulates the Toast API (v2), for local development and tests.
 
-**12 conformance cases, 3 checked against the live API on 2026-09-05.**
+**13 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The order and check cases still cite documentation, since a real restaurant's data needs a real integration. The credential shape needed no restaurant at all, and checking it live found this Recipe's own message wrong.
 

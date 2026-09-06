@@ -195,8 +195,13 @@ func TestTwilioScopesMessagesByAccount(t *testing.T) {
 	var wrapped map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &wrapped)
 
-	if list, _ := wrapped["messages"].([]any); len(list) != 2 {
-		t.Fatalf("got %d messages, want 2", len(list))
+	// Three since small-account grew a message for the paging case. Worth
+	// saying while looking at it: every message in that fixture belongs to
+	// this one account, so what this asserts is that the scoped listing
+	// answers them -- not that another account's are kept out, which it has
+	// nothing to exclude.
+	if list, _ := wrapped["messages"].([]any); len(list) != 3 {
+		t.Fatalf("got %d messages, want 3", len(list))
 	}
 }
 
