@@ -5369,3 +5369,19 @@ Rippling's employees, FullStory's users and sessions, Transitland's departures.
 Every one of those has exactly one fixture, `empty`, and nothing to serve. They
 need fixture data written from the provider's documentation, which is the guess
 this line of work has spent a fortnight removing, so they stay counted.
+
+### One name was credited by a request the provider refuses
+
+`UnsentPagingParam` asked whether any case sends the parameter. It did not ask
+whether that case succeeds. Gumroad's `page_key` was sent by a case expecting a
+400, which is no evidence at all: the refusal happens before anything reads the
+paging, so the case stays green under any parameter name you like -- which is
+exactly the condition this counter exists to find.
+
+One name across the whole set, and both halves of the fix are two lines. It is
+recorded because the interesting part is not the size. Every counter in this
+file has now been wrong once in the same direction: too generous about what
+counts as evidence. `UnstatedPagination` was right and got the reasoning wrong
+in the docs; `UnshownListing` refused a 206; this one accepted a 400. A counter
+is a claim about the corpus, and it deserves the same red-green treatment as
+the code it measures.

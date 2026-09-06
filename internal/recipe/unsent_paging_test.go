@@ -152,3 +152,59 @@ func TestAPlaceholderMatchesTheValueACaseSends(t *testing.T) {
 		t.Errorf("a case against a scoped listing counted as unsent: %d", n)
 	}
 }
+
+// Sending a name in a request the provider refuses shows nothing.
+//
+// The point of this counter is that a declared parameter has a case behind it:
+// rename the parameter and something goes red. A case expecting a 400 stays
+// green under any name at all, because the refusal never reached the paging.
+// Gumroad's page_key was credited by exactly that -- a 400 case carrying the
+// parameter -- and the name was as unevidenced as the ones this counts.
+func TestAParamSentOnlyByAFailingCaseIsUnsent(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{
+			Method: "GET", Path: "/v2/things", Operation: "list",
+			Pagination: Pagination{Style: "cursor", LimitParam: "limit", CursorParam: "after"},
+		}},
+		Conformance: []Case{{
+			Name:    "a bad request is refused",
+			Request: Request{Method: "GET", Path: "/v2/things", Query: map[string]string{"limit": "1", "after": "x"}},
+			Expect:  Expectation{Status: 400},
+		}},
+	}
+
+	if n := r.UnsentPagingParam(); n != 2 {
+		t.Fatalf("two names sent only by a 400: counted %d unsent, want 2", n)
+	}
+
+	r.Conformance = append(r.Conformance, Case{
+		Name:    "the listing pages",
+		Request: Request{Method: "GET", Path: "/v2/things", Query: map[string]string{"limit": "1", "after": "x"}},
+		Expect:  Expectation{Status: 200},
+	})
+
+	if n := r.UnsentPagingParam(); n != 0 {
+		t.Errorf("two names sent by a 200: counted %d unsent, want 0", n)
+	}
+}
+
+// An arming case installs a failure on purpose, so a name sent by one is not
+// evidence either.
+func TestAParamSentOnlyByAnArmingCaseIsUnsent(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{
+			Method: "GET", Path: "/v2/things", Operation: "list",
+			Pagination: Pagination{Style: "cursor", LimitParam: "limit", CursorParam: "-"},
+		}},
+		Conformance: []Case{{
+			Name:    "the next call fails",
+			Arm:     "outage",
+			Request: Request{Method: "GET", Path: "/v2/things", Query: map[string]string{"limit": "1"}},
+			Expect:  Expectation{Status: 200},
+		}},
+	}
+
+	if n := r.UnsentPagingParam(); n != 1 {
+		t.Errorf("a name sent only by an arming case: counted %d unsent, want 1", n)
+	}
+}

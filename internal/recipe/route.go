@@ -780,6 +780,19 @@ func (r Recipe) sendsParam(route Route, name string) bool {
 			continue
 		}
 
+		// A name sent in a request the provider refuses shows nothing. The
+		// point of this counter is that renaming a parameter turns something
+		// red, and a case expecting a 400 stays green under any name at all
+		// -- the refusal happens before anything reads the paging. Gumroad's
+		// page_key was credited by exactly that.
+		if c.Arm != "" {
+			continue
+		}
+
+		if status := c.Expect.Status; status != 0 && (status < 200 || status >= 300) {
+			continue
+		}
+
 		if route.Pagination.In == "body" {
 			if bodyCarries(c.Request.JSON, name) || formCarries(c.Request.Form, name) {
 				return true
