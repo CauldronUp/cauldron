@@ -886,6 +886,24 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// firebase-auth, the name anyone would try first, is version 0.1.2
+			// from 2016 and wraps the pre-Google Firebase through
+			// firebase-token-generator. It reaches nothing this Recipe serves.
+			// The Hacker News and Wikipedia kind, with an abandoned wrapper
+			// holding the obvious name rather than a competitor's product.
+			//
+			// The five below were each checked by fetching the published
+			// archive and grepping for identitytoolkit.googleapis.com.
+			// @firebase/auth names accounts:signInWithPassword outright;
+			// firebase-auth-lite is 9KB with no dependencies and goes straight
+			// to the REST API; firebase is the meta-package apps actually
+			// declare, and depends on @firebase/auth.
+			recipe:   "firebaseauth",
+			composer: []string{"kreait/firebase-php"},
+			npm:      []string{"@firebase/auth", "firebase", "firebase-admin", "firebase-auth-lite"},
+			gomod:    []string{"firebase.google.com/go/v4"},
+		},
+		{
 			recipe: "waypoint",
 			gomod:  []string{"github.com/hashicorp/waypoint"},
 		},
