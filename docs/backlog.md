@@ -194,7 +194,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Stripe Tax | Probably a specialised extension of the Stripe Recipe |
 | FreshBooks | Invoices, clients, expenses |
 | Sage | Accounting, contacts, invoices |
-| Zoho Books | Invoices, payments, contacts |
+| ~~Zoho Books~~ | Shipped, written against Zoho's own OpenAPI document. **`page_context` is an array** -- the paging block is wrapped in a one-element list, so `page_context.has_more_page` is undefined, `page_context[0].has_more_page` is the boolean, and the loop everybody writes stops after one page of ten. **Money is a string**: `total` and `balance` are declared `"type": "string"` on an accounting API, so adding two concatenates and `"9.00"` sorts above `"100.00"`. `code: 0` means success and sits inside a 200 beside the payload, and the same key carries failures, so the discriminator is a value rather than a key. The credential prefix is `Zoho-oauthtoken`, not Bearer. There are eight data-centre hosts and an account lives on exactly one |
 | Wave | Accounting and invoicing |
 | ~~Bill.com~~ | Shipped. Failure at HTTP 200, isActive as "1"/"2", scheduled payments |
 | ~~Gusto~~ | Shipped. Processed against paid, four dates, unpayable employees |
@@ -487,6 +487,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
+| ~~REST Countries~~ | **Assessed and refused: there is no API left to model.** Probed live on 2026-09-06, no credential needed. Every path answers **HTTP 200** with `{"success": false, "data": null, "errors": [{"message": "This API version has been deprecated. Please visit .../legacy-api-deprecation to migrate to our new version (v5)."}]}` -- and `/v5/` answers it too, so the notice tells a v5 caller to migrate to v5. Every request 301s off `restcountries.com` onto `files-03.restcountries.com/countries.00/legacy.json`, a static file, which means a client that does not follow redirects gets nothing and one that pins the host gets nothing. There is no 404 anywhere: `/v5/countries` and `/rest/v2/all`, one invented and one a decade old, answer identically to `/v5/alpha/gb`, so a typo is indistinguishable from a correct call. A Recipe here would reproduce a deprecation notice rather than an API, and would be describing this week rather than this provider. What would reopen it is REST Countries serving data again |
 | ~~Firecrawl~~ | Shipped. Partial results are readable before the crawl finishes |
 | ~~Apify~~ | Shipped. Assess — actor runs, datasets, the run that succeeds with zero items |
 | ~~ScrapingBee~~ | Shipped. **The target's status survives in a header until you ask for it not to.** By default a scrape answers 200 whatever the target sent, and the real status lives only in `Spb-initial-status-code` -- so `response.status` says nothing about the page requested. Then `transparent_status_code` makes the proxy's own status *become* the target's, which destroys the one signal separating "ScrapingBee could not route you" from "the page does not exist". Its own failures are two shapes: a missing key is 400 with the field name nested three deep and repeated, a wrong key is 401 echoing the credential back. A path it never routed answers Werkzeug's HTML 404 with or without a key -- the one failure not gated behind the credential |
@@ -2498,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These twenty-two are left, and every one of them has now been looked for
+another. These twenty-three are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2521,6 +2522,7 @@ than a client for its API.
 | Attio | The npm package is a CLI for building apps on the platform rather than a client that calls the API |
 | Basecamp | No official SDK, and the name is taken by something unrelated |
 | Bill.com | No widely used client |
+| Zoho Books | The npm package `zoho-books` is "Zoho books module" with no repository and no author link, which is the same state `marqeta` is in and cannot be verified as Zoho's own. Zoho publishes SDKs for CRM under `@zohocrm/*` and nothing on either registry for Books |
 | Canny | The bare npm name `canny` is a DOM module manager published by somebody else -- "Simple dom module manager with basic view support", repository `eightyfour/canny` -- and neither `canny-node` nor `@canny/sdk` exists. Canny's own reference documents raw HTTP and names no client library, which fits an API whose credential is a POST body field: there is not much for a client to wrap |
 | Column | No official SDK |
 | Deel | No official SDK found under any obvious name |
@@ -5560,7 +5562,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-644 declared error(s) across 307 recipe(s) have no case asserting what
+645 declared error(s) across 308 recipe(s) have no case asserting what
 they say.
 ```
 
