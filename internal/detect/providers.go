@@ -886,6 +886,20 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// The PHP SDK fails the host grep the other three pass and is
+			// mapped anyway. It hardcodes no host: baseUrl is a constructor
+			// argument, which is the right design for a product meant to be
+			// self-hosted, and the only infisical.com strings in its archive
+			// are documentation links. What it does carry is this API's own
+			// paths -- /api/v1/auth/universal-auth/login and
+			// /api/v3/secrets/raw -- which answers the real question directly
+			// rather than through the host as a proxy for it.
+			recipe:   "infisical",
+			composer: []string{"infisical/php-sdk"},
+			npm:      []string{"@infisical/sdk", "infisical-node"},
+			gomod:    []string{"github.com/infisical/go-sdk"},
+		},
+		{
 			// getstream, the package named after the company, is the sharpest
 			// near-miss here and is left out. It is official and maintained --
 			// "the official low-level GetStream.io client" -- and it names
