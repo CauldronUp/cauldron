@@ -7509,3 +7509,58 @@ on an individual error but not on `responses.error`. So the Recipe repeats
 `application/problem+json` four times. One provider is not enough to grow the
 format on; if a second arrives with a Recipe-wide error content type, that is
 the signal.
+
+## Exoscale, whose document contains the word "security" zero times
+
+Written against Exoscale own OpenAPI 3.0 document, served by Exoscale at
+openapi-v2.exoscale.com/source.json -- 261 paths, version 2.0.0, read
+2026-09-06. Every endpoint needs a signed request against a real account, so
+nothing is struck live.
+
+No securitySchemes, no top-level security, no per-operation security -- not one
+occurrence of the string in a megabyte of JSON describing an API that provisions
+machines, networks and firewall rules.
+
+Exoscale does authenticate, with an EXO2-HMAC-SHA256 signature, and a request
+signature is genuinely awkward to express in OpenAPI -- which has no vocabulary
+for "sign these headers with this key".
+
+### Three documents, one absence, three meanings
+
+| provider | declares | needs | verdict |
+|---|---|---|---|
+| Argo CD | nothing | a bearer token | an omission |
+| Cilium | nothing | nothing -- a root-owned unix socket | correct |
+| Exoscale | nothing | a signature OpenAPI cannot describe | unrepresentable |
+
+All three shipped this week. A scan for "APIs with no declared authentication"
+finds all three and can rank none of them, which is the point worth keeping.
+
+### writeOnly, used exactly once, on the firewall rules
+
+One occurrence in a megabyte against 169 uses of readOnly, on
+`security-group.rules`. writeOnly means may be sent, never returned -- so a
+listing of security groups tells you the groups exist and **nothing about what
+they permit**. Auditing a firewall takes a second request per group, and the
+field sits in the schema to be read as though it did not.
+
+The exact opposite of Coolify, committed earlier today, whose document uses
+writeOnly nowhere and declares a password on a response. Both are one keyword
+away from the other problem.
+
+### The rest
+
+- **286 of 303 schemas have a hyphen in their name**, and so do their fields.
+  `body.security-groups` is a subtraction in JavaScript, and every generator
+  renames them differently.
+- **A GET returns a machine password.** `GET /instance/{id}:password` --
+  "Reveal the password used during instance creation or the latest password
+  reset." The URL is safe; the body is a credential over the method every cache
+  and proxy treats as storable by default, and the document says nothing about
+  caching it.
+- **Thirty-four paths put the verb after a colon** inside a path segment, so a
+  client encoding the whole segment asks for an id ending in `%3Ascale`. Cilium
+  uses the same character in the same position to mean the opposite thing.
+- **There is no single base URL.** The zone is in the hostname, with eight in the
+  enum and no default -- so a client must know the zone before it can make any
+  request, and there is no cross-zone listing.

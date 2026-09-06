@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "exoscale",
+			gomod:  []string{"github.com/exoscale/egoscale"},
+		},
+		{
 			recipe: "peertube",
 			npm:    []string{"@peertube/peertube-types"},
 		},
