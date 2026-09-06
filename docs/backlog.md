@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-245 paging parameter name(s) across 115 recipe(s) are declared and sent by no
+241 paging parameter name(s) across 113 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-47 listing(s) across 35 recipe(s) have no case that answers them
+37 listing(s) across 26 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -4571,7 +4571,15 @@ every one of those guesses at once. What is still being *claimed* is only that
 the parameter names belong to the provider, and that is what the rename check
 tests -- so the generator now claims one thing and observes everything else.
 
-72 cases across 36 Recipes, and the debt fell from 315 to 245. The ones that
+72 cases across 36 Recipes, and the debt fell from 315 to 245.
+
+The same treatment on the unshown listings took them from 47 to 37, and it
+exposed one more assumption that was about this tooling rather than about any
+Recipe: a green case was only accepted as a template if it sent *headers*. Several
+providers put the credential in the query string -- FRED, 511, the Guardian -- so
+eight listings sat unshown because the script insisted on a header the provider
+does not use. Carrying whatever query the green case sends fixes it, and is what
+should have been copied all along. The ones that
 still do not build are the honest remainder: a listing with fewer than two
 records served, or a response whose records carry no scalar field to point at.
 
