@@ -7961,3 +7961,66 @@ flags it assumes.
 `github.com/coder/coder/v2` resolves on the module proxy and is the module
 containing `codersdk`. The bare npm name `coder` also resolves and is left out,
 for the same reason `casdoor` was.
+
+## OpenCost, where `data` is an array of maps and `data[0]` is not a record
+
+Written against OpenCost's own OpenAPI 3.0.1 document — `opencost/opencost`
+`docs/swagger.json`, 5 paths, read 2026-09-06. Runs inside a Kubernetes cluster,
+so nothing is struck live.
+
+```yaml
+data:
+  type: array
+  items:
+    type: object
+    additionalProperties:
+      $ref: Allocation
+```
+
+`data` is a list whose elements are objects keyed by allocation name. Each
+element is one **time-step** — `step` slices the window — and each step is a map
+from the thing you aggregated by to its costs.
+
+So `data[0]` is a step, not an allocation; `data[0]["kube-system/coredns"]` is
+the allocation. `data.map(a => a.totalCost)` yields `undefined` for every
+element, `data.length` counts time-steps rather than workloads, and a client that
+flattens the array into records loses the time dimension it was flattening.
+
+The keys of those maps are whatever `aggregate` asked for, so **the shape of the
+response depends on a query parameter** and no field in the body names the
+aggregation that produced it.
+
+### A format gap, recorded rather than papered over
+
+An array whose elements are maps has no representation among this format's list
+styles: `bare` is an array of records, `map` is one object keyed by identifier,
+and this is a *list of those objects*.
+
+The route is served raw. That reproduces the shape exactly and costs the Recipe
+its fixture — seeding different records does not change what the route answers,
+which the header says. The alternative was `style: map`, which would have been
+close and wrong: it drops the time dimension entirely, and a client that learned
+from it would index `data` as a map and get `undefined` upstream.
+
+One provider is not enough to grow a list style on. If a second arrives with the
+same array-of-maps shape, that is the signal.
+
+### The rest
+
+- **One parameter, four grammars.** `window` accepts "words like `today`,
+  `lastweek`; durations like `30m`, `7d`; RFC3339 date pairs; or Unix
+  timestamps" — no discriminator, so a client assembling one from user input has
+  to know which grammar it is in before it can validate it. The response
+  normalises what the request did not.
+- **The document's own error text names a parameter it does not declare.** The
+  400 is described as "missing or invalid parameters (e.g. `window`, `step`,
+  `accumulateBy`)"; the operation declares `window`, `aggregate`, `step` and
+  `accumulate`. There is no `accumulateBy`.
+- **`code` and `status` ride in the body** beside `data` — the same shape Casdoor
+  has, from a completely unrelated project.
+- **Six numbers on a record and none typed as money**, so summing them
+  accumulates binary float error across a cluster. `pvCost: 0` is a real cost.
+- **No authentication of any kind**, and correct here for the same reason
+  Cilium's is. That makes four documents in the collection declaring none, for
+  four different reasons — Argo CD an omission, Cilium and OpenCost correct,
+  Exoscale unrepresentable.
