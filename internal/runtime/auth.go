@@ -434,12 +434,33 @@ func bodyValue(r *http.Request, name string) string {
 		return ""
 	}
 
-	if value, ok := jsonBody(r)[name]; ok {
-		if text, ok := value.(string); ok {
+	// A dotted name nests, the same way a paging parameter does: Plaid keeps
+	// count and offset under options, and Authorize.Net keeps the credential
+	// under merchantAuthentication.
+	var current any = jsonBody(r)
+
+	for _, segment := range strings.Split(name, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			current = nil
+
+			break
+		}
+
+		current, ok = object[segment]
+		if !ok {
+			current = nil
+
+			break
+		}
+	}
+
+	if current != nil {
+		if text, ok := current.(string); ok {
 			return text
 		}
 
-		return fmt.Sprint(value)
+		return fmt.Sprint(current)
 	}
 
 	if r.Body == nil {

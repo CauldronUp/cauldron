@@ -5227,6 +5227,13 @@ func providers() []provider {
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
 		{
+			// Authorize.Net's own SDKs, both published by the company:
+			// AuthorizeNet/sdk-php and AuthorizeNet/sdk-node.
+			recipe:   "authorizenet",
+			composer: []string{"authorizenet/authorizenet"},
+			npm:      []string{"authorizenet"},
+		},
+		{
 			// GoCardless's own clients. Not to be confused with the Bank
 			// Account Data product, which is a separate API and a separate
 			// Recipe: gocardlessbank.

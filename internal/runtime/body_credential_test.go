@@ -69,3 +69,38 @@ func TestReadingABodyCredentialDoesNotConsumeTheBody(t *testing.T) {
 		t.Errorf("the body was consumed by the credential check: boardID = %v", board)
 	}
 }
+
+// A body credential can be nested, and Authorize.Net's is.
+//
+// Every operation there POSTs to one URL and carries
+// merchantAuthentication: {name, transactionKey} inside the request body, so
+// the credential is two levels down. Paging already reads dotted names out of
+// a body for the same reason -- Plaid keeps count and offset under options --
+// and a credential is no different.
+func TestABodyCredentialCanBeNested(t *testing.T) {
+	auth := recipe.Auth{
+		Scheme: "body",
+		Param:  "merchantAuthentication.transactionKey",
+		Keys:   []string{"cauldron-key"},
+	}
+
+	s := &Sandbox{}
+
+	for _, tt := range []struct {
+		name string
+		body string
+		want recipe.Verdict
+	}{
+		{"nested and right", `{"merchantAuthentication": {"name": "login", "transactionKey": "cauldron-key"}}`, recipe.Accepted},
+		{"nested and wrong", `{"merchantAuthentication": {"name": "login", "transactionKey": "nope"}}`, recipe.Rejected},
+		{"the object without the key", `{"merchantAuthentication": {"name": "login"}}`, recipe.Absent},
+		{"no object at all", `{"createTransactionRequest": {}}`, recipe.Absent},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/xml/v1/request.api", strings.NewReader(tt.body))
+		r.Header.Set("Content-Type", "application/json")
+
+		if got, _ := s.credential(r, auth); got != tt.want {
+			t.Errorf("%s: verdict %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

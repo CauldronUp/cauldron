@@ -1,0 +1,260 @@
+# Authorize.Net Recipe for Cauldron
+#
+# **A rejected credential comes back 200.**
+#
+# Struck live against the public sandbox on 2026-09-06 with credentials nobody
+# issued:
+#
+#   POST https://apitest.authorize.net/xml/v1/request.api
+#   {"authenticateTestRequest":{"merchantAuthentication":
+#     {"name":"cauldron-not-a-real-login","transactionKey":"cauldronNotAKey0"}}}
+#
+#   HTTP 200
+#   {"messages":{"resultCode":"Error","message":[
+#     {"code":"E00007","text":"User authentication failed due to invalid
+#      authentication values."}]}}
+#
+# Two hundred. `response.ok` is true, `status < 400` is true, `raise_for_status`
+# does nothing, and the request was refused. Every failure here arrives that
+# way, so the only thing that distinguishes success from failure is
+# `messages.resultCode`, which is the string "Ok" or the string "Error".
+#
+# **And the body begins with a UTF-8 byte-order mark.**
+#
+# The first three bytes of that response are EF BB BF, before the `{`. Python's
+# `json.loads` on the decoded text raises "Unexpected UTF-8 BOM (decode using
+# utf-8-sig)". Go's `encoding/json` refuses it too. The fix is real and
+# unobvious -- decode as utf-8-sig, or strip the prefix -- and a client that
+# works against a fake without one throws on its first real response.
+#
+# **Stated and not served, twice.**
+#
+# `messages.resultCode` -- the "Ok" or "Error" string that is the only reliable
+# way to tell the two apart -- sits beside the message array rather than inside
+# it, and this format expresses one envelope shape, not a scalar next to an
+# array. The array is served, with its code and text; the resultCode is not.
+# The live response above has it, quoted in full, so the shape is on record.
+#
+# And this Recipe cannot emit the BOM. The response
+# writer here encodes JSON and has no way to prefix bytes, so what is served is
+# the same document without it. That is the wrong direction for a difference to
+# run in and it is the reason this paragraph is at the top of the file: the
+# evidence is above, byte for byte, so nobody has to rediscover it, and closing
+# it needs a change to the writer rather than to this Recipe.
+#
+# **One URL for every operation.**
+#
+# There is a single path -- /xml/v1/request.api -- and what you are asking for
+# is the top-level key of the body: authenticateTestRequest,
+# createTransactionRequest, and so on. So an HTTP-level view of an integration
+# shows one endpoint doing everything, per-route rate limits are meaningless,
+# and a proxy cannot tell a refund from a lookup without parsing the body.
+#
+# **The credential is inside that body, under the operation.**
+#
+# merchantAuthentication: {name, transactionKey}, nested beneath whichever
+# request you are making -- so the path to the secret is
+# createTransactionRequest.merchantAuthentication.transactionKey on one call and
+# authenticateTestRequest.merchantAuthentication.transactionKey on the next.
+#
+# There is no fixed location for it. It cannot be set once as a header, every
+# call site carries it, it lands in anything that logs request bodies, and a
+# scrubber trying to redact it has to know every operation name there is. For a
+# payment gateway that is a worse place for a secret to live than most.
+#
+# **A message code carries its severity in its first character.**
+#
+# I00001 is informational, E00007 is an error. So `code` is a string that has to
+# be parsed rather than compared, and the numeric part repeats across both
+# families. `message` is an array even when there is one message in it.
+#
+# Written against Authorize.Net's own API reference and against the live public
+# sandbox: the authentication failure below is the response recorded on the day
+# in its verified field. No account was created and no transaction was
+# attempted -- authenticateTestRequest with invalid credentials is the one call
+# that asks the gateway to do nothing at all.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - The BOM, above.
+#   - One operation. authenticateTestRequest is served because it is the one
+#     that could be observed without an account. createTransactionRequest and
+#     the rest of the gateway are a much larger surface, and every one of them
+#     wants evidence rather than a shape copied from this.
+#   - The XML half is not served. This API answers XML or JSON depending on the
+#     Content-Type, and the JSON is a transliteration of the XML -- which is why
+#     the envelope looks the way it does. Only the JSON form is modelled.
+
+recipe: authorizenet
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.authorize.net/api/reference/index.html
+
+auth:
+  # Three levels down, and the first level is the operation. There is no fixed
+  # path to the credential on this API: it lives under whichever request you
+  # are making, so a proxy or a log scrubber looking for it has to know every
+  # operation name to find it.
+  scheme: body
+  param: authenticateTestRequest.merchantAuthentication.transactionKey
+  keys:
+    - cauldronTestTransactionKey0
+  absent_error: authentication_failed
+  rejected_error: authentication_failed
+
+responses:
+  resource:
+    style: bare
+  error:
+    # {"messages": {"message": [{"code": ..., "text": ...}]}}. The dotted key
+    # nests, which is how the array lands two levels down where the real one
+    # does. resultCode sits beside it and is not servable here; see the header.
+    style: list
+    key: messages.message
+    message_field: text
+    code_field: code
+
+resources:
+  authentication:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      resultCode:
+        type: string
+
+routes:
+  - method: POST
+    path: /xml/v1/request.api
+    resource: authentication
+    operation: get
+    # The operation is the top-level key of the body, not the path.
+    id_from: body:authenticateTestRequest.merchantAuthentication.name
+
+errors:
+  # Every one of these is served with HTTP 200, which is the point.
+  authentication_failed:
+    status: 200
+    code: E00007
+    message: "User authentication failed due to invalid authentication values."
+  unknown_route:
+    status: 200
+    code: E00003
+    message: "The element is invalid."
+  method_not_allowed:
+    status: 405
+    message: "Method not allowed"
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+fixtures:
+  empty:
+    authentication: []
+
+  merchant:
+    authentication:
+      - id: cauldronLoginId
+        resultCode: Ok
+
+conformance:
+  - name: a rejected credential comes back with HTTP 200
+    source: https://apitest.authorize.net/xml/v1/request.api
+    verified: "2026-09-06"
+    fixture: merchant
+    request:
+      method: POST
+      path: /xml/v1/request.api
+      json:
+        authenticateTestRequest:
+          merchantAuthentication:
+            name: cauldron-not-a-real-login
+            transactionKey: cauldronNotAKey0
+    expect:
+      # Struck live against the public sandbox. response.ok is true and the
+      # request was refused; raise_for_status does nothing at all.
+      status: 200
+      body:
+        # resultCode sits beside this array on the real API and is not
+        # servable here; see the header. The array is.
+        "messages.message[0].code": "E00007"
+        "messages.message[0].text": "User authentication failed due to invalid authentication values."
+
+  - name: the severity lives in the first character of the code
+    source: https://apitest.authorize.net/xml/v1/request.api
+    verified: "2026-09-06"
+    fixture: merchant
+    request:
+      method: POST
+      path: /xml/v1/request.api
+      json:
+        authenticateTestRequest:
+          merchantAuthentication:
+            name: cauldron-not-a-real-login
+            transactionKey: cauldronNotAKey0
+    expect:
+      status: 200
+      matches:
+        # E for error, I for informational, then five digits. A string to be
+        # parsed rather than a number to be compared.
+        "messages.message[0].code": "^E[0-9]{5}$"
+
+  - name: the message is an array even when there is one of them
+    source: https://apitest.authorize.net/xml/v1/request.api
+    verified: "2026-09-06"
+    fixture: merchant
+    request:
+      method: POST
+      path: /xml/v1/request.api
+      json:
+        authenticateTestRequest:
+          merchantAuthentication:
+            name: cauldron-not-a-real-login
+            transactionKey: cauldronNotAKey0
+    expect:
+      status: 200
+      absent:
+        # Not an object. A client reading messages.message.text finds nothing.
+        - "messages.message.text"
+        - "messages.message[1]"
+
+  - name: the credential that works is two levels inside the body
+    source: https://developer.authorize.net/api/reference/index.html
+    fixture: merchant
+    request:
+      method: POST
+      path: /xml/v1/request.api
+      json:
+        authenticateTestRequest:
+          merchantAuthentication:
+            name: cauldronLoginId
+            # Not a header. Every call site carries it, and it lands in
+            # anything that logs request bodies.
+            transactionKey: cauldronTestTransactionKey0
+    expect:
+      status: 200
+      body:
+        resultCode: "Ok"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://developer.authorize.net/api/reference/index.html"
+    arm: rate_limit
+    fixture: merchant
+    request:
+      method: POST
+      path: "/xml/v1/request.api"
+    expect:
+      status: 429
+      body:
+        "messages.message[0].code": "rate_limit"
+        "messages.message[0].text": "Too many requests"
+

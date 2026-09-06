@@ -259,7 +259,7 @@ the header says so.
 | Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
 | ~~Marqeta~~ | Shipped. An authorization and its clearing are two transactions for different amounts; three balances and only one is spendable; the PAN never leaves. JIT funding is not modelled and the Recipe says why |
 | ~~Checkout.com~~ | Shipped. Every credential failure is 401 with zero bytes and no Content-Type |
-| Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
+| ~~Authorize.Net~~ | Shipped, and three of its cases were struck live against the public sandbox with credentials nobody issued. **A rejected credential comes back HTTP 200** -- `response.ok` is true, `raise_for_status` does nothing, and the only thing separating success from failure is `messages.resultCode`, the string "Ok" or "Error". **The body begins with a UTF-8 BOM**: the first three bytes are `EF BB BF` before the `{`, and Python's `json.loads` raises "Unexpected UTF-8 BOM" on it while Go's decoder refuses it too. One URL serves every operation -- the operation is the top-level key of the body -- so a proxy cannot tell a refund from a lookup without parsing it, and **the credential's path changes with the operation**, living under whichever request you are making, which means a log scrubber has to know every operation name to redact it. A message code carries its severity in its first character, I or E, and `message` is an array of one |
 | ~~Klarna~~ | Shipped. Its own reference tells integrators not to rely on the status field it publishes |
 | Affirm | Assess — checkout, capture, partial refunds |
 | ~~RevenueCat~~ | Shipped. Assess — mobile subscriptions and entitlements, where the entitlement is the thing an app reads and the subscription is the thing that renews, and they can disagree for a whole billing period |
@@ -5560,7 +5560,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-642 declared error(s) across 306 recipe(s) have no case asserting what
+644 declared error(s) across 307 recipe(s) have no case asserting what
 they say.
 ```
 
