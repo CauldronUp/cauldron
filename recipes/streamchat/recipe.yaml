@@ -1,0 +1,644 @@
+# Stream Chat Recipe for Cauldron
+#
+# Written against Stream's own OpenAPI 3.0.3 document, published in its
+# protocol repository -- GetStream/protocol, openapi/chat-openapi-clientside.yaml,
+# 76 paths, 348 schemas, version v237.27.1 -- and struck live against
+# chat.stream-io-api.com on 2026-09-06. Every live observation was made with no
+# credential and then with a deliberately invalid one, which is the whole of
+# what a public probe can see here.
+#
+# **The version is v237.27.1.** Major version two hundred and thirty-seven, on
+# a document whose paths are unversioned. Nothing in a URL changes when it
+# moves, so a client has no way to pin one and no way to notice it moved.
+#
+# **A request carries three credentials in three different places.**
+#
+#   security:
+#     - JWT: [] , api_key: [] , stream-auth-type: []
+#     - api_key: [] , stream-auth-type: []
+#
+# Both entries are ANDs. The first requires all three at once:
+#
+#   Authorization: <jwt>            (header)
+#   ?api_key=<key>                  (query)
+#   Stream-Auth-Type: <kind>        (header)
+#
+# The second drops the JWT, which is how anonymous access is expressed.
+#
+# And `JWT` is declared `type: apiKey` with `in: header, name: Authorization`
+# rather than `type: http, scheme: bearer`. So the token goes in the
+# Authorization header **with no `Bearer ` prefix**, and every client library's
+# built-in bearer helper produces a header this API refuses.
+#
+# `Stream-Auth-Type` is a header that says which credential you are using. It
+# is declared as a security scheme, so a generator asks for it as a third
+# secret, and it is not a secret at all -- its value is a word.
+#
+# Struck live, the api_key is checked first and alone: a request with a wrong
+# key is refused before the other two matter. Which is why this Recipe models
+# the api_key and records the rest.
+#
+# **The refusal names the internal handler, so the same failure has a
+# different sentence on every route.**
+#
+# Three routes, no credential, struck live on the same afternoon:
+#
+#   GET /app                        "GetApp failed with error: \"api_key or app_id not provided\""
+#   GET /members                    "QueryMembers failed with error: \"api_key or app_id not provided\""
+#   GET /messages/{id}/reactions    "GetReactions failed with error: \"api_key or app_id not provided\""
+#
+# Those prefixes are the document's own operationIds. So a client matching on
+# the message string has to know all 76 of them, and the sentence is a Go error
+# chain -- an outer wrap, a colon, and the inner error in escaped quotes --
+# printed onto the wire.
+#
+# Both routes here declare their own refusals for exactly that reason.
+#
+# **`StatusCode` is PascalCase and everything beside it is not.** Struck live:
+#
+#   {"StatusCode":401,"code":2,"details":[],"duration":"0",
+#    "message":"GetReactions failed with error: \"api_key not valid\"",
+#    "more_info":"https://getstream.io/chat/docs/api_errors_response"}
+#
+# code, details, duration, message, more_info -- and StatusCode. One field out
+# of six, capitalised, in the object every client parses. It is capitalised in
+# the document too, so it is the wire name and not a slip in one handler.
+#
+# **`code` is 2.** The API error code for a credential failure is the integer
+# 2, next to a StatusCode of 401. 404 answers `code: 16`. So there are two
+# numbers on every failure and neither is the other.
+#
+# **`duration` is required on every response and is the string "0" on every
+# failure.** 85 response schemas declare it, all as `type: string`, described
+# as "Duration of the request in milliseconds" -- and **not one of the 85
+# declares a format**. The document uses `format: duration` exactly once, and
+# not on any of them.
+#
+# **A wrong method is a 404.** Struck live: DELETE /app answers
+# `{"StatusCode":404,"code":16,...,"message":"Request failed with error:
+# \"Not Found\""}`, the same body an unknown path gets. So the router matches
+# the pair and reports only that the pair is unknown, and a client cannot tell
+# a typo in a URL from a verb it should not have used.
+#
+# **A query parameter carries a JSON document.** Six GET operations take a
+# parameter literally named `payload`:
+#
+#   GET /members?payload={"type":"messaging","id":"general","limit":30,...}
+#
+# It is declared with the `content:` form rather than `schema:`, which is legal
+# OpenAPI 3 and rare enough that most generators fall back to `payload: string`
+# and hand the encoding back to the caller. The filter, the sort, the limit and
+# the offset all live inside it -- so a listing's paging controls are inside a
+# URL-encoded JSON blob, which every proxy logs in full and no cache can key on
+# sensibly. /users, /search, /query_banned_users, /query_future_channel_bans
+# and /moderation/flags/message are the others.
+#
+# **`sort` is an array with `maxItems: 1`.** An array shape that promises
+# composable ordering, and a constraint that removes it. Its entries are
+# {field, direction} with direction 1 or -1 as integers.
+#
+# **The real filter grammar is in vendor extensions.** `filter_conditions` is
+# declared `type: object, additionalProperties: {}` -- which says "anything" --
+# while a sibling `x-stream-filter-fields` names each filterable field and the
+# operators it accepts, and `x-stream-sort-fields` names the sortable ones. So
+# the constraints exist, machine-readably, in keys no generator reads. Every
+# generated client accepts an object the server will reject.
+#
+# `x-stream-index` appears 2548 times, a dotted ordering string on almost every
+# field in the document.
+#
+# **One `deprecated: true` in 348 schemas, and it is not on the deprecated
+# field a caller will meet.** The single marker is on
+# UpdateUsersResponse.membership_deletion_task_id, described as "Deprecated:
+# always empty". Meanwhile ChannelMemberResponse.role -- the field a client
+# reads to find out what someone can do -- says "(DEPRECATED: use channel_role
+# instead)" in its description and carries no marker at all. The exact inverse
+# of [firebaseauth](../firebaseauth), which marks 49 and describes none.
+#
+# **20 enumerations are prose.** "One of: member, moderator, admin, owner",
+# written into the description, against 37 real `enum:` keys elsewhere in the
+# same document. So a third of this API's vocabularies are invisible to a
+# generator.
+#
+# **A channel member has no id.** ChannelMemberResponse's required list is
+# custom, created_at, updated_at, banned, shadow_banned, channel_role,
+# notifications_muted -- and there is no member identifier anywhere on it. A
+# member is the pair (channel, user), so `user_id` is the only handle, and five
+# separate fields describe bans: banned, shadow_banned, ban_expires,
+# ban_from_future_channels and future_channel_ban_expires.
+
+recipe: streamchat
+capability: chat
+version: 0.1.0
+
+upstream:
+  api: v237.27.1
+  docs: https://getstream.io/chat/docs/rest/
+  spec: https://raw.githubusercontent.com/GetStream/protocol/main/openapi/chat-openapi-clientside.yaml
+  spec_hash: c97672d66eb15ab9e56e0a0d6cd3a37e833bfb9e7cc5154502f324d68181ba7e
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: query
+  param: api_key
+  # Struck live: the api_key is checked first and on its own. A request with a
+  # wrong key is refused before the JWT or the Stream-Auth-Type header matter,
+  # which is why this is the credential the Recipe models. The other two are
+  # recorded in the README.
+  keys:
+    - cauldronstreamfixturekey0
+  # Deliberately absent: both refusals differ per route, because the message
+  # names the operation. Each route declares its own.
+
+responses:
+  list:
+    style: wrapped
+    key: members
+  success:
+    # Stamped on every successful body, the way Slack stamps ok. The document
+    # requires it on all 85 response schemas and gives none of them a format.
+    # A fixed value, because a fake that invented a plausible-looking timing
+    # would be asserting something it cannot know.
+    fields:
+      duration: "0.42ms"
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    # Struck live: 2 for a credential failure, 16 for an unknown route. An
+    # integer, and not the HTTP status beside it.
+    code_type: number
+    # The PascalCase one, in an object where everything else is lower case.
+    status_field: StatusCode
+    fields:
+      # Always present and always empty on the failures a public probe can
+      # reach.
+      details: []
+      # The same URL on every failure, pointing at one page for all of them.
+      more_info: https://getstream.io/chat/docs/api_errors_response
+      # A string, and "0" on every error struck live -- so the field the
+      # document requires everywhere carries no information on the path where
+      # a caller most wants to know how long something took.
+      duration: "0"
+
+resources:
+  reaction:
+    id:
+      # There is no reaction id. A reaction is the triple (message, user,
+      # type), and the document's required list says so: message_id, user_id,
+      # type, score, created_at, updated_at, custom.
+      field: type
+      style: opaque
+    fields:
+      message_id:
+        type: string
+        in: "-"
+      user_id:
+        type: string
+      score:
+        type: integer
+        default: 1
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      # Declared object, no properties. Every Stream record carries one.
+      custom:
+
+  member:
+    id:
+      # The only handle there is: ChannelMemberResponse declares no id of its
+      # own, so a member is addressed by the user inside it.
+      field: user_id
+      style: opaque
+    fields:
+      channel_role:
+        type: string
+        default: channel_member
+      # The one the description calls deprecated, with no marker on it. Sent
+      # anyway, because the provider sends it.
+      role:
+        type: string
+        default: member
+      banned:
+        type: boolean
+        default: false
+      shadow_banned:
+        type: boolean
+        default: false
+      notifications_muted:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      custom:
+
+routes:
+  # The listing that pages properly: limit and offset are real query
+  # parameters here, which makes it the exception rather than the rule.
+  - method: GET
+    # The placeholder is named message_id rather than the document's `id`, so
+    # the scope can bind it: this format matches a scope to a path parameter by
+    # name, and the record field it filters on is message_id. The wire path is
+    # the same either way.
+    path: /messages/{message_id}/reactions
+    resource: reaction
+    operation: list
+    scope: [message_id]
+    list:
+      key: reactions
+    pagination:
+      style: offset
+      limit: 50
+      max_limit: 300
+      limit_param: limit
+      cursor_param: offset
+    auth:
+      scheme: query
+      param: api_key
+      keys:
+        - cauldronstreamfixturekey0
+      # Both name GetReactions, which is this path's operationId. The same two
+      # failures on the route below say QueryMembers instead.
+      absent_error: reactions_no_credential
+      rejected_error: reactions_bad_key
+
+  # The listing whose paging is inside a JSON document in the query string.
+  - method: GET
+    path: /members
+    resource: member
+    operation: list
+    list:
+      key: members
+    # No pagination declared, and that is the finding rather than a gap in the
+    # research: limit and offset for this endpoint live inside the `payload`
+    # parameter's JSON, which this format matches from named query parameters
+    # only. Declaring style: page here would put the controls somewhere the
+    # real API does not read them.
+    pagination:
+      style: none
+    auth:
+      scheme: query
+      param: api_key
+      keys:
+        - cauldronstreamfixturekey0
+      absent_error: members_no_credential
+      rejected_error: members_bad_key
+
+errors:
+  # Struck live 2026-09-06 against GET /messages/abc123/reactions with no
+  # credential at all. The outer wrap is the operationId; the inner sentence is
+  # what the handler was given, in escaped quotes.
+  reactions_no_credential:
+    status: 401
+    code: "2"
+    message: 'GetReactions failed with error: "api_key or app_id not provided"'
+
+  reactions_bad_key:
+    status: 401
+    # The same status and the same code. Only the inner quoted string changes,
+    # so a client separating "I sent nothing" from "I sent the wrong thing"
+    # has to parse the sentence.
+    code: "2"
+    message: 'GetReactions failed with error: "api_key not valid"'
+
+  # The same two failures, one route away, with a different operation name in
+  # front of them. Struck live against GET /members.
+  members_no_credential:
+    status: 401
+    code: "2"
+    message: 'QueryMembers failed with error: "api_key or app_id not provided"'
+
+  members_bad_key:
+    status: 401
+    code: "2"
+    message: 'QueryMembers failed with error: "api_key not valid"'
+
+  # Struck live against an unknown path, and against DELETE on a known one.
+  # Both answer this.
+  unknown_route:
+    status: 404
+    code: "16"
+    message: 'Request failed with error: "Not Found"'
+
+fixtures:
+  empty:
+    reaction: []
+    member: []
+
+  general:
+    reaction:
+      - type: like
+        message_id: msg_7hFq2NkP
+        user_id: ada
+        score: 1
+        created_at: "2026-09-05T14:02:11.442Z"
+        updated_at: "2026-09-05T14:02:11.442Z"
+        custom: {}
+      - type: fire
+        message_id: msg_7hFq2NkP
+        user_id: grace
+        # Stream's reactions are weighted rather than counted, so a score is
+        # not a 1 and a listing of two reactions is not two people.
+        score: 5
+        created_at: "2026-09-05T14:03:50.117Z"
+        updated_at: "2026-09-05T14:07:02.900Z"
+        custom: {}
+      - type: thumbsup
+        message_id: msg_7hFq2NkP
+        user_id: katherine
+        score: 1
+        created_at: "2026-09-05T14:11:26.005Z"
+        updated_at: "2026-09-05T14:11:26.005Z"
+        custom: {}
+    member:
+      - user_id: ada
+        channel_role: channel_moderator
+        # The deprecated field and the current one disagree about the same
+        # person: moderator here, channel_moderator above. A client reading
+        # the one the document calls deprecated gets a coarser answer.
+        role: moderator
+        banned: false
+        shadow_banned: false
+        notifications_muted: false
+        created_at: "2026-08-01T09:00:00Z"
+        updated_at: "2026-08-01T09:00:00Z"
+        custom: {}
+      - user_id: grace
+        channel_role: channel_member
+        role: member
+        banned: false
+        # Shadow banned and not banned: the member sees their own messages and
+        # nobody else does. Two booleans, and only one of them is the one a
+        # moderation screen usually shows.
+        shadow_banned: true
+        notifications_muted: false
+        created_at: "2026-08-03T16:30:00Z"
+        updated_at: "2026-09-02T11:45:00Z"
+        custom: {}
+
+conformance:
+  - name: no credential names the handler that refused
+    source: https://chat.stream-io-api.com/messages/abc123/reactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query: {}
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Struck live. GetReactions is this path's operationId, printed onto
+        # the wire in front of the error it was given.
+        message: 'GetReactions failed with error: "api_key or app_id not provided"'
+        # PascalCase, beside five lower-case siblings.
+        StatusCode: 401
+        # An integer, and not the status.
+        code: 2
+
+  - name: the same failure one route away says something else
+    source: https://chat.stream-io-api.com/members
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /members
+      query: {}
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Same status, same code, different sentence -- because the sentence
+        # is the operationId. A client switching on the message needs all 76.
+        message: 'QueryMembers failed with error: "api_key or app_id not provided"'
+        code: 2
+
+  - name: a wrong credential differs only inside the quotes
+    source: https://chat.stream-io-api.com/messages/abc123/reactions?api_key=notarealkey
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query:
+        api_key: notarealkey
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Struck live. Absent and wrong share a status and a code; only the
+        # inner quoted string moves.
+        message: 'GetReactions failed with error: "api_key not valid"'
+        StatusCode: 401
+        code: 2
+
+  - name: every failure carries a duration of zero
+    source: https://chat.stream-io-api.com/messages/abc123/reactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query: {}
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # A string, and "0" on every failure struck live. 85 response schemas
+        # require this field and none of them declares a format.
+        duration: "0"
+        details: []
+        more_info: https://getstream.io/chat/docs/api_errors_response
+
+  - name: an unknown route answers a different code
+    source: https://chat.stream-io-api.com/nonexistent-route-cauldron
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /nonexistent-route-cauldron
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 404
+      body:
+        # 16 rather than 2, and struck live this is also what DELETE on a
+        # known path answers -- so a verb this API does not serve is reported
+        # as a path it does not have.
+        code: 16
+        message: 'Request failed with error: "Not Found"'
+
+  - name: a listing is wrapped and stamped with a duration
+    source: https://getstream.io/chat/docs/rest/#tag/Message/operation/GetReactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        'reactions[0].type': like
+        'reactions[0].user_id': ada
+        # On the success path too. The document requires it on all 85 response
+        # schemas, so a client that reads it never has to check whether it is
+        # there -- which is the one thing this field gets right.
+        duration: "0.42ms"
+
+  - name: a reaction is weighted rather than counted
+    source: https://getstream.io/chat/docs/rest/#tag/Message/operation/GetReactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        # Three reactions, and one of them counts for five. Summing the array
+        # length is not the same number as summing the scores.
+        'reactions[1].score': 5
+        'reactions[2].score': 1
+
+  - name: reactions page on limit and offset
+    source: https://getstream.io/chat/docs/rest/#tag/Message/operation/GetReactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query:
+        api_key: cauldronstreamfixturekey0
+        limit: "2"
+        offset: "2"
+    expect:
+      status: 200
+      body:
+        # The third record. Real named query parameters, which is what makes
+        # this endpoint the exception: the six /users-family listings put the
+        # same two controls inside a JSON document in the query string.
+        'reactions[0].type': thumbsup
+      absent:
+        # No cursor, no total, no next. The envelope is the array and the
+        # duration, so a client cannot tell a full page from the last one
+        # without asking again.
+        - next
+
+  - name: a member has no id of its own
+    source: https://getstream.io/chat/docs/rest/#tag/Channel/operation/QueryMembers
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /members
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        # user_id is the only handle. ChannelMemberResponse's required list
+        # has no identifier on it at all.
+        'members[0].user_id': ada
+      absent:
+        - 'members[0].id'
+
+  - name: the deprecated role and the current one disagree
+    source: https://getstream.io/chat/docs/rest/#tag/Channel/operation/QueryMembers
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /members
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        # channel_role is the one the document tells you to use, in prose,
+        # with no deprecated marker on the other. They are not the same
+        # vocabulary, so reading the wrong one is a quieter mistake than
+        # reading a field that is gone.
+        'members[0].channel_role': channel_moderator
+        'members[0].role': moderator
+
+  - name: shadow banned is not banned
+    source: https://getstream.io/chat/docs/rest/#tag/Channel/operation/QueryMembers
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /members
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        # Two of the five ban fields on this record, disagreeing. A moderation
+        # screen that shows only `banned` shows this member as fine.
+        'members[1].banned': false
+        'members[1].shadow_banned': true
+
+  - name: every record carries a custom object and two timestamps
+    source: https://getstream.io/chat/docs/rest/#tag/Message/operation/GetReactions
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /messages/msg_7hFq2NkP/reactions
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        # created_at and updated_at are both required and both carry
+        # format: date-time -- 319 fields in this document do, against 1026
+        # strings that declare no format at all.
+        'reactions[0].created_at': "2026-09-05T14:02:11.442Z"
+        'reactions[1].updated_at': "2026-09-05T14:07:02.900Z"
+        # An empty object rather than an absent key. `custom` is required on
+        # every Stream record and is declared `type: object` with no
+        # properties, so nothing describes what may go in it.
+        'reactions[0].custom': {}
+
+  - name: a member carries its own timestamps and a mute flag
+    source: https://getstream.io/chat/docs/rest/#tag/Channel/operation/QueryMembers
+    verified: "2026-09-06"
+    fixture: general
+    request:
+      method: GET
+      path: /members
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        'members[0].created_at': "2026-08-01T09:00:00Z"
+        # Updated a month after it was created, which is what a role change
+        # looks like from outside.
+        'members[1].updated_at': "2026-09-02T11:45:00Z"
+        # Required, and the seventh field on a record that has no id.
+        'members[0].notifications_muted': false
+        'members[1].custom': {}
+
+  - name: an empty channel answers an empty array and a duration
+    source: https://getstream.io/chat/docs/rest/#tag/Channel/operation/QueryMembers
+    verified: "2026-09-06"
+    fixture: empty
+    request:
+      method: GET
+      path: /members
+      query:
+        api_key: cauldronstreamfixturekey0
+    expect:
+      status: 200
+      body:
+        members: []
+        duration: "0.42ms"

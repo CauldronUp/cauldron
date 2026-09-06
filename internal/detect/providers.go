@@ -886,6 +886,27 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// getstream, the package named after the company, is the sharpest
+			// near-miss here and is left out. It is official and maintained --
+			// "the official low-level GetStream.io client" -- and it names
+			// api.stream-io-api.com four times and chat.stream-io-api.com not
+			// once, because it is the client for Activity Feeds: a different
+			// product of the same company on a different host. Depending on it
+			// is not calling anything this Recipe serves.
+			//
+			// stream-chat-react is left out for the ordinary reason: it names
+			// neither host and reaches this API through stream-chat.
+			//
+			// The three below each name chat.stream-io-api.com in their own
+			// published archive. A project pinned to stream-chat-go/v7 declares
+			// a different module path and is not matched, which is how Go
+			// majors work rather than anything Stream did.
+			recipe:   "streamchat",
+			composer: []string{"get-stream/stream-chat"},
+			npm:      []string{"stream-chat"},
+			gomod:    []string{"github.com/GetStream/stream-chat-go/v8"},
+		},
+		{
 			// firebase-auth, the name anyone would try first, is version 0.1.2
 			// from 2016 and wraps the pre-Google Firebase through
 			// firebase-token-generator. It reaches nothing this Recipe serves.
