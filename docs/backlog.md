@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-189 paging parameter name(s) across 90 recipe(s) are declared and sent by no
+122 paging parameter name(s) across 57 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4554,6 +4554,24 @@ whether the name was read or not -- but the position can: past the only record t
 collection is empty, and a name the runtime ignored would have answered with the
 record again. 95 more cases went in on that, each saying in its own comment which
 half it shows and which it cannot.
+
+### Two more gaps that looked like provider behaviour
+
+A diagnostic said 91 routes had a "position search that found nothing that
+moved". It had found it. The generated case name was built from the *parameter*
+-- "page moves the page on" -- so a Recipe with three listings that page the same
+way produced the same name three times, and the second and third were dropped as
+duplicates. Naming the case after the route settled 25 of them immediately.
+
+And a route may name one half and refuse the other. Basecamp's messages take a
+page number and no page size at all: `limit_param` is `"-"`. The generator
+required both names to be real and skipped the route whole, so the one name it
+does have stayed unsent. The size there is genuinely unprovable; the position is
+not, and it is now a single case saying exactly that. 53 cases across 35 Recipes
+came out of the two fixes together, and the debt fell from 189 to 122.
+
+Both were the same mistake in different clothes: treating "the generator cannot
+do this" as "there is nothing here to do".
 
 ### A correction, one commit later
 

@@ -2,7 +2,7 @@
 
 Emulates the YouTube API (v3), for local development and tests.
 
-**11 conformance cases, 3 checked against the live API on 2026-09-05.**
+**12 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The search-result and video cases still cite the discovery document. The credential shape needed no project at all, and checking it live found this Recipe's status and sentence both wrong.
 

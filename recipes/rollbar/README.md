@@ -2,7 +2,7 @@
 
 Emulates the Rollbar API (1), for local development and tests.
 
-**13 conformance cases, 5 checked against the live API.**
+**16 conformance cases, 5 checked against the live API.**
 
 Everything past the credential and routing checks still cites documentation rather than an observation, because reaching it needs a real project. Those checks were verified directly against api.rollbar.com, unauthenticated, on 2026-09-05.
 

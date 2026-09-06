@@ -2,7 +2,7 @@
 
 Emulates the Hookdeck API (2024-03-01), for local development and tests.
 
-**20 conformance cases, 3 checked against the live API on 2026-09-05.**
+**22 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource cases cite Hookdeck's own OpenAPI description rather than an observation on a real project; the refusal cases were struck live, unauthenticated, against api.hookdeck.com.
 

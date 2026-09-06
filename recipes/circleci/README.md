@@ -2,7 +2,7 @@
 
 Emulates the CircleCI API (v2), for local development and tests.
 
-**11 conformance cases, 3 checked against the live API.**
+**14 conformance cases, 3 checked against the live API.**
 
 Three were struck live against circleci.com on 2026-09-05, and the finding is a genuine trap: an absent Circle-Token answers real JSON, {"message":"You must log in first."}, mislabelled Content-Type text/plain, while a present, wrong token answers plain text with no JSON in it at all, "Invalid token provided." A client that calls .json() unconditionally survives the first case by accident and throws on the second. This file's own message, "Authentication failed.", was never a sentence CircleCI sends.
 

@@ -2,7 +2,7 @@
 
 Emulates the Squarespace API (1.0), for local development and tests.
 
-**13 conformance cases, 2 checked against the live API on 2026-09-05.**
+**14 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Most of this Recipe still cites documentation, since orders and refunds need a real site. The credential shape does not, and checking it live found this Recipe's own error claim wrong.
 
