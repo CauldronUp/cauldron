@@ -1,0 +1,475 @@
+# Unit Recipe for Cauldron
+#
+# **The balance is not the money you can spend.**
+#
+# An account carries three integers -- `balance`, `available` and `hold` -- and
+# they are cents, not currency units. `available` is what a payment can draw on;
+# `balance` includes money that is held and not yet gone. Code that shows
+# `balance` to a customer overstates what they have by exactly the amount that
+# is about to leave, and code that authorises against `balance` authorises money
+# that is already spoken for.
+#
+# All three are `"type": "integer"` in Unit's own schema, so 100000 is a
+# thousand dollars and dividing by a hundred is somebody's job.
+#
+# **Nothing is where a client first looks for it.**
+#
+# The envelope is JSON:API. A record is
+# `{"type": "depositAccount", "id": "...", "attributes": {...},
+# "relationships": {...}}`, so the balance is at `data.attributes.balance` and
+# `data.balance` is undefined. A listing is `{"data": [...], "included": [...],
+# "meta": {"pagination": {...}}}`, where `included` holds side-loaded customers
+# rather than more accounts -- so `body.data.concat(body.included)` produces a
+# list of two different kinds of thing.
+#
+# **And the content type is not application/json.**
+#
+# `application/vnd.api+json; charset=utf-8`. A client that checks
+# `contentType === "application/json"` before parsing will not parse it, and a
+# framework configured to decode only `application/json` hands the handler an
+# empty body with no error anywhere.
+#
+# **The paging parameters are bracketed.**
+#
+# `page[limit]` and `page[offset]`, a deepObject in the spec's own words, with a
+# default of a hundred and a maximum of a thousand. Not `limit`. Not `per_page`.
+# A query builder that does not escape brackets, or a proxy that normalises
+# them, silently sends nothing and receives the first hundred every time.
+#
+# **A failure carries `detail` and `details`, one letter apart.**
+#
+# The error object is `{status, title, code, detail, details, source: {pointer}}`
+# and it lives inside an array. Two fields whose names differ by an `s`, on the
+# same object, is a typo that compiles: reading `error.details` when the
+# sentence is in `error.detail` produces undefined and no complaint from
+# anything. `status` there is a *string* -- "401", not 401 -- so comparing it to
+# the HTTP status with `===` is false.
+#
+# Written against Unit's own OpenAPI document, published in its own GitHub
+# organisation: unit-finance/openapi-unit-sdk, 117 paths, read on 2026-09-06.
+# The server in that document is the sandbox, api.s.unit.sh, which is Unit's
+# own choice of default. No case here is marked verified: the document is
+# Unit's, the responses are this emulator's.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Deposit accounts only. `type` discriminates depositAccount, creditAccount
+#     and walletAccount, and each carries different attributes. Serving one and
+#     claiming the others would be describing a shape nobody sent.
+#   - `included` is not served. Side-loading is real and it is driven by an
+#     `include` parameter this Recipe does not model; an empty array would be a
+#     claim that nothing was included rather than that nothing was asked for.
+#   - `relationships` is served as declared and its targets are not: an account
+#     points at a customer this Recipe does not serve.
+#   - The three account statuses are values, not a lifecycle. Nothing here
+#     freezes an account over time.
+
+recipe: unit
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v0.4.0
+  docs: https://docs.unit.co/
+  spec: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/openapi.json
+  spec_hash: 67d79be801a8202503918440ecefffc56d78b6d79f36694204b826b7cda346c1
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.unit.sandbox.jwt.0000000000000000
+  absent_error: no_credential
+  rejected_error: authentication_error
+
+responses:
+  # JSON:API, and the content type says so.
+  content_type: "application/vnd.api+json; charset=utf-8"
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # An array of objects under errors, which is JSON:API's shape.
+    style: list
+    key: errors
+    message_field: title
+
+resources:
+  account:
+    id:
+      style: numeric
+    fields:
+      # The discriminator. A client has to switch on it before reading
+      # anything else, because the attributes differ by kind.
+      # Beside id at the top of the record, not under attributes: JSON:API
+      # keeps the discriminator out of the payload it discriminates.
+      type:
+        type: string
+      name:
+        type: string
+        in: attributes
+      # Cents. All three of them.
+      balance:
+        type: integer
+        in: attributes
+      # What can actually be spent: balance minus hold.
+      available:
+        type: integer
+        in: attributes
+      hold:
+        type: integer
+        in: attributes
+      currency:
+        type: string
+        in: attributes
+      # Open, Closed or Frozen. Frozen is neither.
+      status:
+        type: string
+        in: attributes
+      routingNumber:
+        type: string
+        in: attributes
+      accountNumber:
+        type: string
+        in: attributes
+      maskedAccountNumber:
+        type: string
+        in: attributes
+      createdAt:
+        type: datetime
+        in: attributes
+
+routes:
+  - method: GET
+    path: /accounts
+    resource: account
+    operation: list
+    pagination:
+      # Bracketed, and a hundred at a time.
+      style: offset
+      limit: 100
+      max_limit: 1000
+      limit_param: "page[limit]"
+      cursor_param: "page[offset]"
+
+  - method: GET
+    path: /accounts/{id}
+    resource: account
+    operation: get
+
+errors:
+  no_credential:
+    status: 401
+    message: "Unauthorized"
+  authentication_error:
+    status: 401
+    message: "Unauthorized"
+  resource_missing:
+    status: 404
+    message: "Resource Not Found"
+  parameter_missing:
+    status: 400
+    message: "Invalid Request"
+  unknown_route:
+    status: 404
+    message: "Resource Not Found"
+  method_not_allowed:
+    status: 405
+    message: "Method Not Allowed"
+  rate_limit:
+    status: 429
+    message: "Too Many Requests"
+
+fixtures:
+  empty:
+    account: []
+
+  small-bank:
+    account:
+      # Money on hold: the balance is a hundred dollars more than the account
+      # can actually spend.
+      - id: "10001"
+        type: depositAccount
+        name: Ada Lovelace
+        balance: 250000
+        available: 240000
+        hold: 10000
+        currency: USD
+        status: Open
+        routingNumber: "812345678"
+        accountNumber: "1000000001"
+        maskedAccountNumber: "******0001"
+        createdAt: "2026-04-02T09:15:44.000Z"
+
+      # Frozen is not closed and not open: it lists, it has money, and nothing
+      # can move.
+      - id: "10002"
+        type: depositAccount
+        name: Grace Hopper
+        balance: 90000
+        available: 90000
+        hold: 0
+        currency: USD
+        status: Frozen
+        routingNumber: "812345678"
+        accountNumber: "1000000002"
+        maskedAccountNumber: "******0002"
+        createdAt: "2026-05-19T14:41:02.000Z"
+
+      - id: "10003"
+        type: depositAccount
+        name: Katherine Johnson
+        balance: 0
+        available: 0
+        hold: 0
+        currency: USD
+        status: Closed
+        routingNumber: "812345678"
+        accountNumber: "1000000003"
+        maskedAccountNumber: "******0003"
+        createdAt: "2026-01-08T11:20:00.000Z"
+
+conformance:
+  - name: the balance is not the money that can be spent
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/account.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts/10001
+      headers:
+        Authorization: "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        # Cents, and three separate numbers. Showing balance to a customer
+        # overstates it by exactly the hold.
+        "data.attributes.balance": 250000
+        "data.attributes.available": 240000
+        "data.attributes.hold": 10000
+
+  - name: the attributes are a level down, and the top level is not the record
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/accountPaths.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts/10001
+      headers:
+        Authorization: "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        "data.type": "depositAccount"
+        "data.id": "10001"
+      absent:
+        # Every one of these is where somebody looks first.
+        - "data.balance"
+        - "data.status"
+        - "balance"
+
+  - name: the content type is not application/json
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/accountPaths.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts
+      headers:
+        Authorization: "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      headers:
+        # A framework decoding only application/json hands the handler an empty
+        # body and reports nothing.
+        Content-Type: "application/vnd.api+json"
+
+  - name: a frozen account still lists, with its money
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/account.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts/10002
+      headers:
+        Authorization: "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        # Not Closed, and not usable either.
+        "data.attributes.status": "Frozen"
+        "data.attributes.balance": 90000
+
+  - name: the account number and its mask are two different fields
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/account.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts/10001
+      headers:
+        Authorization: "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        # One of these is safe to log and one is not, and they sit beside each
+        # other with names that sort together.
+        "data.attributes.accountNumber": "1000000001"
+        "data.attributes.maskedAccountNumber": "******0001"
+
+  - name: no credential at all is refused inside an array
+    source: https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/types.json
+    fixture: small-bank
+    request:
+      method: GET
+      path: /accounts
+    expect:
+      status: 401
+      body:
+        # JSON:API puts failures in a list, so there is an index before the
+        # sentence even when there is only ever one.
+        "errors[0].title": "Unauthorized"
+
+  # The page size, asserted from what the sandbox answered rather than
+  # from what the fixture lists -- the two are not the same thing,
+  # because the store does not serve records in the order a fixture
+  # writes them. Asking for one out of 3 and receiving one can only
+  # happen if page[limit] was read.
+  - name: "page[limit] is read on accounts, and a page of one is not the whole collection"
+    source: "https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/accountPaths.json"
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/accounts"
+      query:
+        "page[limit]": "1"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        "data[0].id": "10001"
+      absent:
+        - "data[1]"
+
+  # And the position. page[offset]=1 answers a different record, which
+  # the size alone cannot produce.
+  - name: "page[offset] moves the page on for accounts"
+    source: "https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/accountPaths.json"
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/accounts"
+      query:
+        "page[limit]": "1"
+        "page[offset]": "1"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        "data[0].id": "10002"
+      absent:
+        - "data[1]"
+
+  # The names. This Recipe declares 4 field(s) on an account that no
+  # case asserted, so each of them could have been renamed to anything
+  # and every case would have stayed green. The runtime builds the
+  # response out of the declaration and the fixture, so this seeds one
+  # and asserts the 4 name(s) that came back at the paths they came back
+  # under.
+  - name: "an account carries the field names this Recipe declares"
+    source: "https://raw.githubusercontent.com/unit-finance/openapi-unit-sdk/main/schemas/account/accountPaths.json"
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/accounts"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 200
+      body:
+        "data[0].attributes.createdAt": "2026-04-02T09:15:44.000Z"
+        "data[0].attributes.currency": "USD"
+        "data[0].attributes.name": "Ada Lovelace"
+        "data[0].attributes.routingNumber": "812345678"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for method not allowed and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- using a method this route does not take -- and
+  # asserts what came back, envelope and all.
+  - name: "a method this route does not take is refused in these words"
+    source: "https://docs.unit.co/"
+    fixture: small-bank
+    request:
+      method: DELETE
+      path: "/accounts/10001"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 405
+      body:
+        "errors[0].title": "Method Not Allowed"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://docs.unit.co/"
+    arm: rate_limit
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/accounts/10001"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 429
+      body:
+        "errors[0].title": "Too Many Requests"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for resource missing and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- asking for an id nothing was seeded under -- and
+  # asserts what came back, envelope and all.
+  - name: "an id nothing was seeded under is refused in these words"
+    source: "https://docs.unit.co/"
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/accounts/cauldron-no-such-id"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 404
+      body:
+        "errors[0].title": "Resource Not Found"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for unknown route and nothing asserted
+  # any of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # asking for a path this provider does not serve -- and asserts what
+  # came back, envelope and all.
+  - name: "a path this provider does not serve is refused in these words"
+    source: "https://docs.unit.co/"
+    fixture: small-bank
+    request:
+      method: GET
+      path: "/cauldron-no-such-path"
+      headers:
+        "Authorization": "Bearer cauldron.unit.sandbox.jwt.0000000000000000"
+    expect:
+      status: 404
+      body:
+        "errors[0].title": "Resource Not Found"
+
+
+

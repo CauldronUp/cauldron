@@ -64,3 +64,33 @@ func TestAStrictDecoderRefusesTheMarkedBody(t *testing.T) {
 		t.Error("encoding/json accepted a body with a leading BOM; the Recipe would be teaching that it is harmless")
 	}
 }
+
+// Not every JSON API says application/json.
+//
+// Unit answers `application/vnd.api+json; charset=utf-8`, which is JSON:API's
+// registered type and what the whole family of those APIs sends. A client that
+// checks `contentType === "application/json"` before parsing will not parse it,
+// and a framework configured to decode only application/json hands the handler
+// an empty body and reports nothing -- so serving the wrong type would hide a
+// failure that costs an afternoon.
+func TestTheResponseContentTypeCanBeDeclared(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		declared string
+		want     string
+	}{
+		{"declared", "application/vnd.api+json; charset=utf-8", "application/vnd.api+json; charset=utf-8"},
+		{"not declared", "", "application/json"},
+	} {
+		w := httptest.NewRecorder()
+
+		s := &Sandbox{recipe: &recipe.Recipe{
+			Responses: recipe.Responses{ContentType: tt.declared},
+		}}
+		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+		if got := w.Header().Get("Content-Type"); got != tt.want {
+			t.Errorf("%s: Content-Type = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

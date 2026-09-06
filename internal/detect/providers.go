@@ -5227,6 +5227,11 @@ func providers() []provider {
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
 		{
+			// Unit's own TypeScript SDK: unit-finance/unit-node-sdk.
+			recipe: "unit",
+			npm:    []string{"@unit-finance/unit-node-sdk"},
+		},
+		{
 			// FreshBooks' own Node SDK: freshbooks/freshbooks-nodejs-sdk.
 			recipe: "freshbooks",
 			npm:    []string{"@freshbooks/api"},

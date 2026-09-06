@@ -432,7 +432,12 @@ func (s *Sandbox) writeJSON(w http.ResponseWriter, status int, body any) {
 	// finding, and forcing application/json here would have served the body
 	// faithfully under a header the provider does not send.
 	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "application/json")
+		kind := "application/json"
+		if s != nil && s.recipe != nil && s.recipe.Responses.ContentType != "" {
+			kind = s.recipe.Responses.ContentType
+		}
+
+		w.Header().Set("Content-Type", kind)
 	}
 
 	w.WriteHeader(status)

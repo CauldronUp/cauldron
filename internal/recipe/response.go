@@ -26,6 +26,18 @@ type Responses struct {
 	// because almost nobody does this and a mark nobody sends would be its own
 	// infidelity.
 	BOM bool `yaml:"bom"`
+	// ContentType overrides application/json on every response body.
+	//
+	// Not every JSON API says application/json. Unit answers
+	// application/vnd.api+json, which is JSON:API's registered type and what
+	// that whole family sends. A client checking the header before parsing
+	// will not parse it, and a framework decoding only application/json hands
+	// the handler an empty body and reports nothing -- so a fake that says
+	// application/json hides a failure worth an afternoon.
+	//
+	// A route serving a raw body sets its own; this is the default for the
+	// rest.
+	ContentType string `yaml:"content_type"`
 }
 
 // SuccessResponse describes what a provider adds to every successful body.
