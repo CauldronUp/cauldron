@@ -4426,13 +4426,40 @@ The number it produces is exactly the number this file had been tracking by
 hand, which is the useful part -- it is the same debt, counted by the tool
 rather than by a person, and it falls on its own as Recipes are checked.
 
-### Remaining
+### Remaining, now counted by the tool as well
 
-32 Recipes, 78 declarations. The method that works: find the provider's own
-machine-readable description, read the parameter names out of it, then write a
-case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
-`cursor_param` could be renamed to `cursor` with every case still passing,
-because nothing sent a token back until a second-page case did.
+That debt was tracked by hand at 32 Recipes and 78 declarations. `verify`
+counts it now, the same way it counts the other two, and the real figure is far
+larger because today's sweep added roughly two hundred declarations of its own:
+
+```
+905 paging parameter name(s) across 320 recipe(s) are declared and sent by no
+case, so renaming them would break nothing.
+```
+
+A name counts when it is declared and no conformance case sends it to that
+route -- in the query string, in the path's own query, or in the body for the
+routes that page there. `"-"` is excluded, because it is a claim about absence
+and a case cannot send a parameter that does not exist.
+
+This is the request-side twin of a rule the format already has. Validation
+refuses a *response* field name that no case asserts, on the grounds that it
+could be renamed to anything unnoticed. The request half had no such rule and is
+the half a client gets wrong: asserting the response to a listing says nothing
+about which parameter produced it.
+
+The method that works: find the provider's own machine-readable description,
+read the parameter names out of it, then write a case that *sends* them.
+Pub/Sub's `cursor_param` could be renamed to `cursor` with every case still
+passing, until a case sent a token back and a second page came out of it.
+
+Stripe is the first paid down. Its `starting_after` was declared on two routes
+and sent by nothing, so it could have been renamed to `cursor` -- the name the
+runtime reads when none is given -- and all thirteen cases would still have
+passed. Mutating it now fails two. That needed a third customer and two more
+payment intents first, because of the rule three sections up: **a paging case
+needs at least three records: one to skip, one to return, and one to prove the
+page size stopped it.**
 
 ## Neon, and a create that answers with unfinished work
 

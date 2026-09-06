@@ -134,8 +134,9 @@ func TestSeedAndReset(t *testing.T) {
 	}
 
 	list := body(t, do(t, s, http.MethodGet, "http://localhost/stripe/v1/customers", ""))
-	if data, _ := list["data"].([]any); len(data) != 2 {
-		t.Fatalf("got %d seeded customers, want 2", len(data))
+	// Three since small-shop grew a customer for Stripe's starting_after case.
+	if data, _ := list["data"].([]any); len(data) != 3 {
+		t.Fatalf("got %d seeded customers, want 3", len(data))
 	}
 
 	if rec := do(t, s, http.MethodPost, "http://localhost/_cauldron/stripe/reset", ""); rec.Code != http.StatusOK {
@@ -143,7 +144,7 @@ func TestSeedAndReset(t *testing.T) {
 	}
 
 	after := body(t, do(t, s, http.MethodGet, "http://localhost/stripe/v1/customers", ""))
-	if data, _ := after["data"].([]any); len(data) != 2 {
+	if data, _ := after["data"].([]any); len(data) != 3 {
 		t.Errorf("reset should restore the fixture, got %d records", len(data))
 	}
 }

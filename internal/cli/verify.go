@@ -40,6 +40,7 @@ func runVerify(ctx *context, args []string) int {
 		cases, passed, observed, documented int
 		guessed, guessedRecipes             int
 		unstated, unstatedRecipes           int
+		unsent, unsentRecipes               int
 		failedRecipes                       []string
 	)
 
@@ -102,6 +103,18 @@ func runVerify(ctx *context, args []string) int {
 			unstatedRecipes++
 		}
 
+		// And the third kind, which the other two cannot see: a name that is
+		// declared and that no case ever sends. The Recipe format already
+		// refuses a response field name nothing asserts, on the grounds that
+		// it could be renamed to anything unnoticed. The request half had no
+		// such rule, and it is the half a client gets wrong -- asserting the
+		// response to a listing says nothing about which parameter produced
+		// it.
+		if n := sandbox.Recipe().UnsentPagingParam(); n > 0 {
+			unsent += n
+			unsentRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -130,6 +143,11 @@ func runVerify(ctx *context, args []string) int {
 	if unstated > 0 {
 		fmt.Fprintf(ctx.stdout, "%d more across %d recipe(s) declare no paging at all, and are paged at ten reading \"limit\".\n",
 			unstated, unstatedRecipes)
+	}
+
+	if unsent > 0 {
+		fmt.Fprintf(ctx.stdout, "%d paging parameter name(s) across %d recipe(s) are declared and sent by no case, so renaming them would break nothing.\n",
+			unsent, unsentRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

@@ -593,8 +593,13 @@ func TestSeedLoadsAFixture(t *testing.T) {
 	body := decode(t, call(t, s, http.MethodGet, "/v1/customers", ""))
 
 	data, _ := body["data"].([]any)
-	if len(data) != 2 {
-		t.Fatalf("got %d seeded customers, want 2", len(data))
+	// Three, and the third is load-bearing. small-shop grew one when Stripe's
+	// starting_after needed a case that sends it: a paging case needs one
+	// record to skip, one to return, and one to prove the page size stopped
+	// it. With two, a page of one after the first customer looks the same
+	// whether or not the size was read.
+	if len(data) != 3 {
+		t.Fatalf("got %d seeded customers, want 3", len(data))
 	}
 
 	first := data[0].(map[string]any)

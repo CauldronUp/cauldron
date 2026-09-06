@@ -4,6 +4,8 @@ package recipe
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -731,6 +733,135 @@ func (r Recipe) UnstatedPagination() int {
 	}
 
 	return unstated
+}
+
+// UnsentPagingParam counts the paging parameter names no conformance case
+// sends.
+//
+// The Recipe format already refuses a *response* field name that no case
+// asserts, on the grounds that a name nothing checks could be renamed to
+// anything and nobody would notice. The request half had no such rule, and it
+// is the half that matters more: a client sends the size and the position, and
+// getting either name wrong is the failure the whole paging vocabulary exists
+// to prevent.
+//
+// The shape of the debt is specific. A Recipe can declare limit_param:
+// per_page, pass every case it has, and be describing a provider that calls it
+// something else -- because asserting the *response* to a listing says nothing
+// about which parameter produced it. Google Pub/Sub's cursor_param could have
+// been renamed to "cursor" with every case still green, until a case sent a
+// token back and a second page came out of it.
+//
+// "-" is not counted. It says the provider accepts no name, which is a claim
+// about absence, and a case cannot send a parameter that does not exist.
+func (r Recipe) UnsentPagingParam() int {
+	unsent := 0
+
+	for _, route := range r.Routes {
+		for _, name := range []string{route.Pagination.LimitParam, route.Pagination.CursorParam} {
+			if name == "" || name == "-" {
+				continue
+			}
+
+			if !r.sendsParam(route, name) {
+				unsent++
+			}
+		}
+	}
+
+	return unsent
+}
+
+// sendsParam reports whether any conformance case sends this parameter to this
+// route, in whichever place the route reads it from.
+func (r Recipe) sendsParam(route Route, name string) bool {
+	for _, c := range r.Conformance {
+		if c.Request.Method != route.Method || !samePath(c.Request.Path, route.Path) {
+			continue
+		}
+
+		if route.Pagination.In == "body" {
+			if bodyCarries(c.Request.JSON, name) || formCarries(c.Request.Form, name) {
+				return true
+			}
+
+			continue
+		}
+
+		if _, sent := c.Request.Query[name]; sent {
+			return true
+		}
+
+		// A case may put the whole query in the path rather than in a query
+		// block, which is the older spelling and still common.
+		if i := strings.Index(c.Request.Path, "?"); i >= 0 {
+			if values, err := url.ParseQuery(c.Request.Path[i+1:]); err == nil && values.Has(name) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// samePath compares a case's path to a route's, ignoring any query string on
+// the case and treating a {placeholder} as matching whatever sits in its
+// position.
+func samePath(asked, declared string) bool {
+	if i := strings.Index(asked, "?"); i >= 0 {
+		asked = asked[:i]
+	}
+
+	if asked == declared {
+		return true
+	}
+
+	a := strings.Split(strings.Trim(asked, "/"), "/")
+
+	d := strings.Split(strings.Trim(declared, "/"), "/")
+	if len(a) != len(d) {
+		return false
+	}
+
+	for i := range d {
+		if strings.HasPrefix(d[i], "{") && strings.HasSuffix(d[i], "}") {
+			continue
+		}
+
+		if a[i] != d[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// formCarries reports whether a form body holds this name. A form is flat, so
+// a dotted name is the literal key.
+func formCarries(form map[string]string, name string) bool {
+	_, sent := form[name]
+
+	return sent
+}
+
+// bodyCarries reports whether a case's JSON request body holds this name,
+// following a dotted path the way the runtime does.
+func bodyCarries(body any, name string) bool {
+	current := body
+
+	for _, segment := range strings.Split(name, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+
+		current, ok = object[segment]
+		if !ok {
+			return false
+		}
+	}
+
+	return true
 }
 
 // ChangeEmit is one conditional emission: an event, and the field whose change
