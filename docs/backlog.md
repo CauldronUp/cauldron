@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-68 paging parameter name(s) across 34 recipe(s) are declared and sent by no
+62 paging parameter name(s) across 31 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5308,3 +5308,21 @@ the sandbox actually served rather than off the fixture (Workable's jobs carry a
 `shortcode` where the generator wanted an `id`), and a generator that drops
 work silently is worse than one that fails loudly. The silent drop hid a
 one-line naming bug for three sweeps.
+
+### The request was right; the fixture it came with was not
+
+Thirteen routes reported that the sandbox served no records. For six of them the
+Recipe had a fixture full of records and the generator never seeded it, because
+the only green case for the route was written against `empty` -- the listing
+answers, the collection is empty, the case is about the envelope.
+
+The request in that case is still the right request: a credential the Recipe
+accepts, a path that resolves. Only the fixture is wrong. Seeding a fuller one
+and sending the same request settles six more names.
+
+That leaves seven routes whose Recipe genuinely holds no record of that
+resource in any fixture -- Clio's matters, Frontegg's users, Kinde's users,
+Make's scenarios, Hardcover's editions, HERE's geocode results. Those need a
+fixture written, not a generator taught, and writing provider-shaped fixture
+data from documentation is exactly the kind of guess this whole line of work has
+been removing. They stay counted.
