@@ -855,16 +855,73 @@ func samePath(asked, declared string) bool {
 	}
 
 	for i := range d {
-		if strings.HasPrefix(d[i], "{") && strings.HasSuffix(d[i], "}") {
-			continue
-		}
-
-		if a[i] != d[i] {
+		if !segmentMatches(a[i], d[i]) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// segmentMatches compares one path segment to one declared segment, where a
+// {placeholder} stands for whatever sits in its position.
+//
+// A placeholder is not always the whole segment. SEC EDGAR serves a company at
+// /submissions/CIK{id}.json and Homebrew a formula at /api/formula/{id}.json,
+// and treating a segment as a placeholder only when it began with { and ended
+// with } meant a case asking for CIK0000320193.json was not recognised as being
+// about the route that serves it. Four counters read those Recipes as having no
+// evidence they plainly have, and it surfaced as a generator sweep that would
+// not converge: the same cases written, passing, and counted by nothing.
+//
+// A placeholder does not cross a slash, because the segments were split on one
+// before this is reached.
+func segmentMatches(asked, declared string) bool {
+	if !strings.Contains(declared, "{") {
+		return asked == declared
+	}
+
+	for {
+		open := strings.Index(declared, "{")
+		if open < 0 {
+			break
+		}
+
+		close := strings.Index(declared[open:], "}")
+		if close < 0 {
+			break
+		}
+
+		close += open
+
+		// The literal text before the placeholder has to be there, exactly.
+		if !strings.HasPrefix(asked, declared[:open]) {
+			return false
+		}
+
+		asked = asked[open:]
+		declared = declared[close+1:]
+
+		// And the literal text after it fixes where the placeholder ends. An
+		// empty tail means the placeholder runs to the end of the segment.
+		next := declared
+		if at := strings.Index(next, "{"); at >= 0 {
+			next = next[:at]
+		}
+
+		if next == "" {
+			return declared == "" && asked != ""
+		}
+
+		at := strings.Index(asked, next)
+		if at <= 0 {
+			return false
+		}
+
+		asked = asked[at:]
+	}
+
+	return asked == declared
 }
 
 // formCarries reports whether a form body holds this name. A form is flat, so

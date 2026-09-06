@@ -4445,7 +4445,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-47 paging parameter name(s) across 24 recipe(s) are declared and sent by no
+44 paging parameter name(s) across 22 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4510,7 +4510,7 @@ Nothing can be added to a request that does not exist.
 question -- a listing answered, but only ever empty:
 
 ```
-11 listing(s) across 8 recipe(s) have no case that answers them
+10 listing(s) across 7 recipe(s) have no case that answers them
 successfully at all.
 19 more across 16 recipe(s) are answered only empty, so no case
 describes a record in them.
@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-794 record field name(s) across 227 recipe(s) are declared and asserted
+618 record field name(s) across 216 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5704,3 +5704,34 @@ which is how a counter earns being ignored.
 794 remain, and the wall is the one every counter on this page ends at: a
 fixture that holds no record of the resource, or holds one that sets none of
 these fields. A name declared, never served, and now visibly so.
+
+### The sweep that would not converge
+
+The field generator kept writing the same cases. They passed. The count did not
+move. Running it three times produced the same three Recipes and the same
+twenty-five names each time, which is the shape of a tool arguing with a
+measurement rather than a tool with a bug.
+
+The measurement was wrong. `samePath` decides whether a case is about a route,
+and it treated a segment as a placeholder only when the whole segment was one:
+`{id}` yes, `CIK{id}.json` no. SEC EDGAR serves a company at
+`/submissions/CIK{id}.json` and Homebrew a formula at `/api/formula/{id}.json`,
+so a case asking for `CIK0000320193.json` was not recognised as being about the
+route that serves it.
+
+Four counters read those Recipes as having no evidence they plainly have.
+Fixing one function moved three of them at once, without a single case being
+added:
+
+| | before | after |
+|---|---|---|
+| Paging names sent by no case | 47 across 24 | **44 across 22** |
+| Listings no case answers | 11 across 8 | **10 across 7** |
+| Field names nothing asserts | 794 across 227 | **618 across 216** |
+
+The same bug had already been found and fixed on the generator's side of the
+fence, a few commits earlier, where it read as "sixteen declared field names on
+a resource whose fixture sets every one of them". Finding it twice in two
+codebases that do the same job is the argument for the sweep converging being
+worth something: a generator that keeps writing the same case is telling you
+about the thing that reads it.
