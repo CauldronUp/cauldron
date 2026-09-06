@@ -528,7 +528,11 @@ func stamps(kind string) bool {
 // assertsPath reports whether a case asserts something at this nested path,
 // which is the whole chain contiguously and not merely its last name.
 func assertsPath(cases []Case, chain string) bool {
-	want := strings.Split(chain, ".")
+	// The declared nest may name an element of a list -- Ory Kratos writes
+	// in: ui.nodes[0].attributes -- and the index is not part of the name. The
+	// asserted paths have theirs stripped, so this one has to be as well or
+	// "nodes[0]" is compared against "nodes" and never matches.
+	want := splitFieldPathForMatch(chain)
 
 	for _, c := range cases {
 		paths := make([]string, 0, len(c.Expect.Body)+len(c.Expect.Matches))

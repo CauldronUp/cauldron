@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-753 record field name(s) across 239 recipe(s) are declared and asserted
+630 record field name(s) across 220 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
@@ -5842,3 +5842,20 @@ generator, taught the same, closed 92 of them by asserting at the path the
 response actually uses.
 
 **753 across 239 Recipes**, and 172 of those the emulator cannot send at all.
+
+### The index in a nest is not part of the name
+
+Asking why 666 field names were "reachable, and the response still lacks them"
+found a bug two commits old, in the fix for the previous one.
+
+Ory Kratos declares a login flow's `csrf_group` as `in: ui.nodes[0].attributes`,
+`as: group`, so the response carries `ui.nodes[0].attributes.group`. Assertion
+paths have their `[n]` stripped before comparison and the declared chain did
+not, so `nodes[0]` was compared against `nodes` and never matched. Twenty-three
+names on that one resource read as unasserted while a case asserted every one.
+
+630 now, from 753, and the generator has nothing left to add. The diagnostic
+that found it was not looking for it: it was a tally of why the remaining names
+could not be settled, and one of its categories -- reachable, served, and still
+missing -- did not make sense. A category that does not make sense is worth more
+than a category that does.

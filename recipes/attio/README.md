@@ -2,7 +2,7 @@
 
 Emulates the Attio API (2.0.0), for local development and tests.
 
-**9 conformance cases, 2 checked against the live API.**
+**10 conformance cases, 2 checked against the live API.**
 
 Struck live against api.attio.com on 2026-09-05, and it caught something worse than a wrong message: the auth block declared no keys at all, which this project's own engine reads as "accepts anything". Every request to this emulator succeeded whether or not a credential was sent, for as long as this Recipe has existed. The two live cases fixed it and, along the way, recorded Attio's own wording for the two failures: an absent Authorization header is refused with a sentence about the header itself, and a present, wrong key is refused with a sentence naming the length a real one should be.
 

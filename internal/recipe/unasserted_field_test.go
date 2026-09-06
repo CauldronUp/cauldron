@@ -214,3 +214,37 @@ func TestADeeperNestNeedsItsWholePath(t *testing.T) {
 		t.Errorf("asserted at its whole path: counted %d unasserted, want 0", n)
 	}
 }
+
+// A nest may name an element of a list, and the index is not part of the name.
+//
+// Ory Kratos declares a login flow's csrf_group as in: ui.nodes[0].attributes,
+// as: group, so the response has ui.nodes[0].attributes.group. Assertion paths
+// have their [n] stripped before comparison and the declared chain did not, so
+// "nodes[0]" was compared against "nodes" and twenty-three names on one
+// resource read as unasserted while a case asserted every one of them.
+func TestAnIndexInANestIsNotPartOfTheName(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/self-service/login/flows", Resource: "login_flow", Operation: "get"}},
+		Resources: map[string]Resource{"login_flow": {
+			Fields: map[string]Field{
+				"csrf_group": {Type: "string", In: "ui.nodes[0].attributes", As: "group"},
+			},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/self-service/login/flows"},
+			Expect: Expectation{Status: 200, Body: map[string]any{
+				"ui.nodes[0].attributes.group": "default",
+			}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a field nested through a list element: counted %d unasserted, want 0", n)
+	}
+
+	r.Conformance[0].Expect.Body = map[string]any{"ui.nodes[0].group": "default"}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Errorf("asserted at a path missing the attributes object: counted %d unasserted, want 1", n)
+	}
+}
