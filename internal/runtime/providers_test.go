@@ -92,8 +92,10 @@ func TestShopifyWrapsListsUnderThePerResourceCollection(t *testing.T) {
 		t.Fatalf("expected an orders key, got %v", keysOf(wrapped))
 	}
 
-	if len(list) != 2 {
-		t.Errorf("got %d orders, want 2", len(list))
+	// Three since small-shop grew an order for the paging case. The claim
+	// under test is the key the array nests under, not how many are in it.
+	if len(list) != 3 {
+		t.Errorf("got %d orders, want 3", len(list))
 	}
 
 	products := request(t, s, http.MethodGet, "/admin/api/2026-01/products.json", "", auth)
@@ -122,8 +124,8 @@ func TestShopifyVersionSegmentIsNotAScope(t *testing.T) {
 		var wrapped map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &wrapped)
 
-		if list, _ := wrapped["orders"].([]any); len(list) != 2 {
-			t.Errorf("version %s returned %d orders, want 2", version, len(list))
+		if list, _ := wrapped["orders"].([]any); len(list) != 3 {
+			t.Errorf("version %s returned %d orders, want 3", version, len(list))
 		}
 	}
 }

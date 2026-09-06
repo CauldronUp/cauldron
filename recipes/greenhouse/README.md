@@ -2,7 +2,7 @@
 
 Emulates the Greenhouse API (v1), for local development and tests.
 
-**15 conformance cases, 4 checked against the live API on 2026-09-05.**
+**16 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real organisation, because a test candidate would be a fictional person in a real recruiter's pipeline. The refusal cases were struck live, unauthenticated, against harvest.greenhouse.io.
 

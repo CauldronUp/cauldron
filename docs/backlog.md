@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-691 paging parameter name(s) across 265 recipe(s) are declared and sent by no
+648 paging parameter name(s) across 258 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-67 listing(s) across 53 recipe(s) have no case that answers them
+47 listing(s) across 35 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -4527,6 +4527,17 @@ One bug is worth keeping. The first version asserted `[0].id` and Axiom answered
 identifier is printed under another key. A generator that assumes `id` is called
 `id` writes cases that fail on every Recipe that renames it, and there are
 plenty.
+
+A fourth relaxation, and the sharpest of them: **the fixture is not the answer
+about a value's type.** Shopify writes its product id as the string
+`"632910392"` in the fixture and declares the resource as `{style: numeric,
+type: number}`, so the response carries a *number*. A case asserting the string
+fails with "want the string 632910392, got the number 632910392" -- a message
+that reads like the value is wrong when only its quoting is. Six of eight sampled
+failures were exactly this, across Shopify, Zendesk, Recharge, PostHog, Rollbar
+and Chargebee. The generator now renders each value the way the Recipe says the
+response will carry it, reading `id.type`, `id.style` and the field's own
+declared type rather than the shape it happens to have in YAML.
 
 Three more relaxations took the unshown count from 122 to 67, and each was a
 mistake in the generator rather than a limit of the Recipes.

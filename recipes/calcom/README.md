@@ -2,7 +2,7 @@
 
 Emulates the calcom API (v2), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**16 conformance cases, 2 checked against the live API.**
 
 Two were struck live against api.cal.com on 2026-09-05, and found the auth failure entirely wrong: this file had a 401 "Invalid API key". Cal.com actually answers 403 ForbiddenException, and names the real problem -- "no authentication provided" when nothing was sent, naming both accepted credential shapes, and "no oAuth client found for access token" when a wrong one was.
 
