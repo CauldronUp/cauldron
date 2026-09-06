@@ -2,7 +2,7 @@
 
 Emulates the Monday API (2026-01), for local development and tests.
 
-**9 conformance cases, 1 checked against the live API.**
+**10 conformance cases, 1 checked against the live API.**
 
 Struck live 2026-09-05 against api.monday.com, no account and no key -- and found this file had never declared an auth failure at all, so a real refusal fell back to the runtime's own generic placeholder. Added now: a missing credential and a wrong one both answer `{"errors":[{"message":"Not authenticated","extensions":{"code":"NOT_AUTHENTICATED"}}]}`.
 

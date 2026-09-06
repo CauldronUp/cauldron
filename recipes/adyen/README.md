@@ -2,7 +2,7 @@
 
 Emulates the Adyen API (v71), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**14 conformance cases, 2 checked against the live API.**
 
 Most cases here cite documentation rather than an observation. Two were struck live against checkout-test.adyen.com on 2026-09-05, and they corrected one: this file had asserted errorType "authentication_error" for an unauthorised call, which was its own key name leaking through as a default rather than anything Adyen sends. The live host answers errorType "security", and answers it identically whether the X-API-Key header is wrong or missing entirely.
 

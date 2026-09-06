@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-1040 record field name(s) across 302 recipe(s) are declared and asserted
+926 record field name(s) across 288 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5605,3 +5605,22 @@ What is left is mostly what has no record to observe: a Recipe whose fixtures
 hold nothing of that resource cannot show a field on it, which is the same wall
 the listing counters ran into. 1100 names across 310 Recipes, and the wall is
 the same shape.
+
+### The response to a write is a response
+
+156 declared names belonged to resources with no listing and no fetch. Groq's
+completion, NeverBounce's verification, Anvil's etch packet, Radar's user: they
+are made and returned and never read back, so the only response carrying their
+field names is the answer to the request that made them.
+
+The generator was only looking at reads. Copying the green case's body along
+with its path and credential and observing what comes back settles 114 of them.
+
+Three of the cases it wrote never ran, and the loud drop said so again. The
+cause this time was a rule the format already had: an assertion that repeats a
+value the request sent passes whatever the emulator does. SQS answers
+GetQueueAttributes with the QueueUrl it was handed, and a case asserting only
+that is a case asserting the shape of its own request. The generator now drops
+those values before writing, which is the format's own rule applied one step
+earlier -- and the reason it had never mattered before is that a read sends
+nothing to echo.
