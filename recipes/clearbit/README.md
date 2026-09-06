@@ -2,7 +2,7 @@
 
 Emulates the Clearbit API (2019-12-19), for local development and tests.
 
-**17 conformance cases, 6 checked against the live API on 2026-09-02.**
+**18 conformance cases, 6 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

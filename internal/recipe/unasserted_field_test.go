@@ -155,3 +155,62 @@ func TestAFieldAssertedOnlyByAFailingCaseIsUnasserted(t *testing.T) {
 		t.Errorf("a field asserted only by a 404: counted %d unasserted, want 1", n)
 	}
 }
+
+// A nested field is asserted at the path it actually occupies.
+//
+// Front's message carries author_id, declared in: author and as: id, so the
+// response has author.id -- and the message's own id is a different field at
+// the top level. Looking for the leaf name alone credited author_id with every
+// assertion of any id anywhere on that route, which is the collision the as:
+// field exists to make possible in the first place.
+func TestANestedFieldNeedsItsWholePath(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/v1/messages", Resource: "message", Operation: "list"}},
+		Resources: map[string]Resource{"message": {
+			Fields: map[string]Field{
+				"id":        {Type: "string"},
+				"author_id": {Type: "string", In: "author", As: "id"},
+			},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/messages"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"data[0].id": "msg_1"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Fatalf("only the top-level id asserted: counted %d unasserted, want 1", n)
+	}
+
+	r.Conformance[0].Expect.Body["data[0].author.id"] = "usr_1"
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("both asserted at their own paths: counted %d unasserted, want 0", n)
+	}
+}
+
+// A deeper nest is the same rule with more of it.
+func TestADeeperNestNeedsItsWholePath(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/v1/transfers", Resource: "transfer", Operation: "list"}},
+		Resources: map[string]Resource{"transfer": {
+			Fields: map[string]Field{
+				"destinationCardID": {Type: "string", In: "destination.card", As: "cardID"},
+			},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/transfers"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"data[0].card.cardID": "crd_1"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Fatalf("asserted at a path missing the outer object: counted %d unasserted, want 1", n)
+	}
+
+	r.Conformance[0].Expect.Body = map[string]any{"data[0].destination.card.cardID": "crd_1"}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("asserted at its whole path: counted %d unasserted, want 0", n)
+	}
+}

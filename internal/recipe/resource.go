@@ -2,6 +2,8 @@
 
 package recipe
 
+import "strings"
+
 // Resource is an object type the provider exposes.
 type Resource struct {
 	// Collection is the plural name the provider wraps lists in, e.g. "orders"
@@ -324,12 +326,7 @@ func (r Recipe) UnassertedField() int {
 				continue
 			}
 
-			wire := name
-			if field.As != "" {
-				wire = field.As
-			}
-
-			if r.assertsFieldOf(what, wire) {
+			if r.assertsFieldOf(what, wirePath(name, field)) {
 				continue
 			}
 
@@ -357,6 +354,28 @@ func (r Recipe) UnassertedField() int {
 //
 // The case has to succeed, for the same reason a paging parameter's does: a
 // refusal never reached the response, so it says nothing about its shape.
+// wirePath is where a field actually sits in the response: the object it nests
+// into, then the name it is sent under.
+//
+// The leaf alone is not enough once a field is renamed. Front's message carries
+// author_id declared in: author and as: id, so the response has author.id and
+// the message's own id is a different field at the top level. Looking for "id"
+// credited author_id with every assertion of any id on that route -- which is
+// precisely the collision that as: exists to make possible, so the field that
+// most needs telling apart was the one this could not tell apart.
+func wirePath(name string, field Field) string {
+	wire := name
+	if field.As != "" {
+		wire = field.As
+	}
+
+	if field.In != "" && field.In != "-" {
+		return field.In + "." + wire
+	}
+
+	return wire
+}
+
 func (r Recipe) assertsFieldOf(resource, wire string) bool {
 	own := false
 
@@ -378,6 +397,14 @@ func (r Recipe) assertsFieldOf(resource, wire string) bool {
 		}
 
 		if own && !r.aboutResource(c, resource) {
+			continue
+		}
+
+		if strings.Contains(wire, ".") {
+			if assertsPath([]Case{c}, wire) {
+				return true
+			}
+
 			continue
 		}
 
@@ -457,12 +484,7 @@ func (r Recipe) UnservedField() int {
 			// the field reaches a client without any fixture setting it.
 			// Counting those would be claiming the emulator cannot do
 			// something a green case shows it doing.
-			wire := name
-			if field.As != "" {
-				wire = field.As
-			}
-
-			if r.assertsFieldOf(what, wire) {
+			if r.assertsFieldOf(what, wirePath(name, field)) {
 				continue
 			}
 
@@ -501,4 +523,61 @@ func stamps(kind string) bool {
 	}
 
 	return false
+}
+
+// assertsPath reports whether a case asserts something at this nested path,
+// which is the whole chain contiguously and not merely its last name.
+func assertsPath(cases []Case, chain string) bool {
+	want := strings.Split(chain, ".")
+
+	for _, c := range cases {
+		paths := make([]string, 0, len(c.Expect.Body)+len(c.Expect.Matches))
+		for path := range c.Expect.Body {
+			paths = append(paths, path)
+		}
+
+		for path := range c.Expect.Matches {
+			paths = append(paths, path)
+		}
+
+		for _, path := range paths {
+			segments := splitFieldPathForMatch(path)
+
+			for start := 0; start+len(want) <= len(segments); start++ {
+				same := true
+
+				for i, name := range want {
+					if segments[start+i] != name {
+						same = false
+
+						break
+					}
+				}
+
+				if same {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// splitFieldPathForMatch splits an assertion path into names, dropping any
+// [n] index so items[0].author.id reads as items, author, id.
+func splitFieldPathForMatch(path string) []string {
+	var out []string
+
+	for _, segment := range strings.Split(path, ".") {
+		if at := strings.IndexByte(segment, '['); at >= 0 {
+			segment = segment[:at]
+		}
+
+		if segment != "" {
+			out = append(out, segment)
+		}
+	}
+
+	return out
 }

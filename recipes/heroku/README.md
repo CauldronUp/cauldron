@@ -2,7 +2,7 @@
 
 Emulates the heroku API (3), for local development and tests.
 
-**30 conformance cases, 4 checked against the live API on 2026-09-05.**
+**32 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against api.heroku.com.
 

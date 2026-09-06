@@ -2,7 +2,7 @@
 
 Emulates the OpenStates API (v3), for local development and tests.
 
-**16 conformance cases, 6 checked against the live API on 2026-09-02.**
+**17 conformance cases, 6 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

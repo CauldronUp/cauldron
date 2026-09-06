@@ -5555,9 +5555,9 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-604 record field name(s) across 216 recipe(s) are declared and asserted
+753 record field name(s) across 239 recipe(s) are declared and asserted
 by no case.
-162 of those across 86 recipe(s) no fixture sets, so the emulator never
+172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
 ```
 
@@ -5823,3 +5823,22 @@ Closing these needs a value in a fixture, and a value is the one thing that
 cannot be read off the file. It is the same wall, named more precisely: not
 "the fixtures are thin" but "here are 162 field names a client would find
 missing, in 86 Recipes".
+
+### A renamed field is where it sits, not what it is called
+
+Front's message carries `author_id`, declared `in: author` and `as: id`, so the
+response has `author.id` -- while the message's own `id` is a different field at
+the top level. The rule that credits a field with an assertion looked for the
+leaf name at any depth, so an assertion of *either* credited *both*.
+
+That is precisely the collision `as:` exists to make possible. Its own doc
+comment says so: two fields could not share a key under different parents until
+nesting arrived. The field that most needed telling apart was the one this could
+not tell apart, and fourteen showed up first as an oddity in another count --
+names asserted by a case and yet, by the serving rule, never sent.
+
+Requiring the whole chain contiguously took the figure from 604 to 845. The
+generator, taught the same, closed 92 of them by asserting at the path the
+response actually uses.
+
+**753 across 239 Recipes**, and 172 of those the emulator cannot send at all.
