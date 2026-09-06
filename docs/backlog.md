@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**51 more listings across 31 Recipes declare no paging at all**, and the
+**48 more listings across 28 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,19 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Toast states its page numbering by arithmetic rather than by declaration: "set the
+pageSize parameter to 10, and you set page to 2, the API returns a set of objects
+that starts with the eleventh object." Eleventh after ten means page one held the
+first ten, so `first_page: 1` is declared on that sum rather than on a sentence --
+worth doing carefully, because two providers in this survey number from zero.
+
+TalkJS carries two positions on one route -- `startingAfter`, which takes the
+previous page's last conversation id, and an `offsetTs` that offsets by sort
+order. The id one is declared because it walks a collection without depending on
+the ordering the caller chose. It is Stripe's `starting_after` with the
+underscore moved, which is the fourth spelling of that idea here after Column,
+Persona and BambooHR.
 
 Nutritionix fixes its page size in prose and gives nobody a parameter for it:
 fifteen query parameters on the search endpoint and not one controls the count,
