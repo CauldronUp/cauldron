@@ -2,7 +2,7 @@
 
 Emulates the Shopify GraphQL API (graphql), for local development and tests.
 
-**11 conformance cases, 1 checked against the live API.**
+**13 conformance cases, 1 checked against the live API.**
 
 Everything past one credential shape still cites documentation rather than an observation, because a real, running store needs an account. That one shape was checked directly against a shop subdomain Shopify has never issued, on 2026-09-05.
 

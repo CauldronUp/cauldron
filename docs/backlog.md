@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-315 paging parameter name(s) across 136 recipe(s) are declared and sent by no
+245 paging parameter name(s) across 115 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4554,6 +4554,26 @@ whether the name was read or not -- but the position can: past the only record t
 collection is empty, and a name the runtime ignored would have answered with the
 record again. 95 more cases went in on that, each saying in its own comment which
 half it shows and which it cannot.
+
+### Stop guessing at the response; ask the sandbox
+
+Every version of this generator guessed at what a listing would answer, and every
+guess was wrong somewhere. `id` is not always called `id` on the wire -- Axiom
+prints `name`. The fixture's type is not the response's type -- Shopify stores
+`"632910392"` and emits `632910392`. And finally the fixture's *order* is not the
+response's order, which is what Alpaca and Etsy were failing on: "want 902, got
+904".
+
+The sandbox knows all three. `cauldron serve --headless` mounts the Recipes,
+`POST /_cauldron/<recipe>/seed?fixture=...` loads the fixture, and the listing
+answers. Making the two requests and asserting exactly what came back removes
+every one of those guesses at once. What is still being *claimed* is only that
+the parameter names belong to the provider, and that is what the rename check
+tests -- so the generator now claims one thing and observes everything else.
+
+72 cases across 36 Recipes, and the debt fell from 315 to 245. The ones that
+still do not build are the honest remainder: a listing with fewer than two
+records served, or a response whose records carry no scalar field to point at.
 
 Then three widenings, and one guard that had to come with them.
 

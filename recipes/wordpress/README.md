@@ -2,7 +2,7 @@
 
 Emulates the WordPress API (wp/v2), for local development and tests.
 
-**16 conformance cases, 6 checked against the live API on 2026-08-23.**
+**18 conformance cases, 6 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 

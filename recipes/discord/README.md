@@ -2,7 +2,7 @@
 
 Emulates the Discord API (v10), for local development and tests.
 
-**13 conformance cases, 4 checked against the live API on 2026-09-05.**
+**15 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource shapes cite documentation rather than an observation on a real guild; the refusal cases were struck live, unauthenticated, against discord.com/api/v10.
 

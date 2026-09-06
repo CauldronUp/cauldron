@@ -2,7 +2,7 @@
 
 Emulates the ShipHero API (2020-04), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**13 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a username and a password. The credential check itself was verified directly against public-api.shiphero.com on 2026-09-05.
 
