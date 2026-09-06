@@ -8097,3 +8097,56 @@ provider in this collection that does.
 - **Custom actions hang off a colon**, the same convention as Exoscale and the
   opposite of Cilium's, which puts a namespace before the colon rather than a
   verb after it.
+
+## Waypoint, and a path parameter called application.application.application
+
+Written against Waypoint own generated Swagger 2.0 document --
+hashicorp/waypoint pkg/server/gen/server.swagger.json, 148 paths, read
+2026-09-06. Self-hosted with no public instance.
+
+One real path:
+
+    /project/{application.application.project}/application/{application.application.application}/instances
+
+The word "application" appears **five times** in one URL template: once as a
+literal segment and four times inside two parameter names. The second parameter
+is the same word three times, separated by dots.
+
+**38** of this document path parameters contain a dot, and the deepest are four
+segments long -- `deployment.sequence.application.project`,
+`pipeline.owner.project.project`, and `targetRunner.id.id`, a field called id
+inside a field called id. Argo CD has six of these from the same toolchain; this
+has 38. The paging parameters are dotted too: `pagination.page_size`, with a dot,
+in a query string.
+
+### A listing returns references, not records
+
+`ListProjectsResponse.projects` is an array of `Ref.Project`, and `Ref.Project`
+is `{project: string}` -- a one-field object wrapping a name. So
+`projects[0].name` is undefined, `projects[0].project` is the name, and listing N
+projects then reading them is N+1 requests.
+
+### The good half
+
+Two paths per resource, one per identifier -- `/by-id/{...}` and
+`/by-name/{...}`, five and three of them.
+
+Rather than one path accepting either -- which is Harbor `X-Is-Resource-Name`
+header deciding what a segment means, and Gitea number-or-slug -- Waypoint puts
+the choice in the URL. A request says which key it used, and a name made of
+digits is unambiguous. Worth recording beside the dotted parameters: the same
+document can be careless in one place and careful in another.
+
+### The rest
+
+- **Paging tokens go empty rather than null.** "The value will become empty when
+  there are no more pages", so `while (token)` terminates by accident and
+  `token !== null` never does.
+- **`total_count` is a uint64 typed as a string**, the same trade etcd makes.
+- **A project applications field is documented as possibly stale** -- "this may
+  not exactly represent the project configuration if a user has not run waypoint
+  init yet" -- so an empty list means either no applications or nobody
+  initialised it, two facts with one representation, and the document says so.
+- **The placeholders again.** `title` is a filename and `version` is "version
+  not set" -- the third document here with that exact string, after Argo CD and
+  etcd, all three grpc-gateway. No securityDefinitions either, which makes five.

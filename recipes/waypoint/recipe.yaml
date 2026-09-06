@@ -1,0 +1,406 @@
+# Waypoint Recipe for Cauldron
+#
+# Written against Waypoint's own generated Swagger 2.0 document, published in
+# its own repository -- github.com/hashicorp/waypoint,
+# pkg/server/gen/server.swagger.json, 148 paths -- read on 2026-09-06. Waypoint
+# is self-hosted and there is no public instance, so nothing here is verified
+# live: every claim is the provider's own document.
+#
+# **A path parameter called `application.application.application`.**
+#
+# One real path from this document:
+#
+#   /project/{application.application.project}/application/{application.application.application}/instances
+#
+# The word "application" appears five times in one URL template: once as a
+# literal segment and four times inside two parameter names. The second
+# parameter is the same word three times, separated by dots.
+#
+# These are protobuf field paths leaking through gRPC-gateway. 38 of this
+# document's path parameters contain a dot, and the deepest are four segments
+# long -- `deployment.sequence.application.project`,
+# `pipeline.owner.project.project`, and `targetRunner.id.id`, which is a field
+# called id inside a field called id.
+#
+# A generator turns `{application.application.application}` into a parameter of
+# that name, which is not a legal identifier in any language it targets. Every
+# generator renames it, differently, and a reader trying to match the generated
+# method back to the document has to count dots.
+#
+# The Argo CD Recipe in this collection has six such parameters from the same
+# toolchain. This one has 38.
+#
+# **A listing returns references, not records.**
+#
+#   ListProjectsResponse:
+#     projects: array of Ref.Project
+#
+#   Ref.Project:
+#     project: string
+#
+# So `projects` is an array of one-field objects wrapping a name.
+# `projects[0].name` is undefined; `projects[0].project` is the name. And a
+# client that wants anything about a project -- its applications, its data
+# source, its status -- fetches each one, so listing N projects and reading them
+# is N+1 requests.
+#
+# **Paging tokens go empty rather than null.**
+#
+# From the document's own description of both: "The value will become empty when
+# there are no more pages." So the end of a listing is `next_page_token === ""`,
+# not null and not absent. Empty is falsy, so `while (token)` works by accident
+# -- and `token !== null` never terminates.
+#
+# **The count is a string.** `total_count` is `{"type": "string", "format":
+# "uint64"}` -- protobuf's JSON mapping, the same as etcd's in this collection.
+# So `total_count === 0` is never true on an empty listing.
+#
+# **Two paths per resource, one per identifier.**
+#
+#   /add-on-definition/by-id/{add_on_definition.id}
+#   /add-on-definition/by-name/{add_on_definition.name}
+#
+# Five `by-id` paths and three `by-name` ones. This is the good half of the
+# document: rather than one path accepting either -- which is Harbor's
+# `X-Is-Resource-Name` header deciding what a segment means, and Gitea's
+# number-or-slug -- Waypoint puts the choice in the URL, so a request says which
+# key it used and a name made of digits is unambiguous.
+#
+# **And the placeholders again.** `title` is `pkg/server/proto/server.proto` --
+# a filename -- and `version` is `"version not set"`. That is the third document
+# in this collection with that exact version string, after Argo CD and etcd, all
+# three from grpc-gateway. No `securityDefinitions` either, which makes five.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. Waypoint is self-hosted and
+#     there is no public instance.
+#   - Projects, listed and fetched. 148 paths is a deployment platform:
+#     applications, deployments, releases, builds, jobs, runners, pipelines,
+#     add-ons and the whole log surface each want their own evidence.
+#   - The dotted parameters are recorded and not routed. A dotted placeholder
+#     would collide with the dotted field paths this format uses everywhere
+#     else, which is the same limit the Argo CD Recipe records.
+#   - The credential is checked as a bearer token. The document declares none,
+#     and Waypoint uses one -- the same shape as Argo CD, and stated for the
+#     same reason: serving no credential would teach a caller that anonymous
+#     requests work.
+
+recipe: waypoint
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: "v1"
+  docs: https://developer.hashicorp.com/waypoint/docs
+  spec: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+  spec_hash: a5bc7f785ef2290d03084abb7858557c4746c457a4e3751c72c8bcf7b119d73a
+  spec_seen: "2026-09-06"
+
+auth:
+  # Not in the document, which declares no securityDefinitions at all -- the
+  # fifth here to do that, after Argo CD, Cilium, Exoscale and OpenCost.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.waypoint.token
+  absent_error: unauthenticated
+
+responses:
+  list:
+    style: wrapped
+    key: projects
+    # A string, because it is a uint64 and protobuf's JSON mapping sends those
+    # as strings.
+    count_field: total_count
+    count_as_string: true
+    cursor_field: pagination.next_page_token
+    # Empty rather than absent at the end, which the document says explicitly.
+    cursor_null: false
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    code_type: number
+
+resources:
+  project:
+    id:
+      # The name, wrapped in a one-field object called Ref.Project, which is
+      # what a listing returns instead of a record.
+      style: opaque
+      field: project
+    fields:
+      remote_enabled:
+        type: boolean
+        default: false
+      # A project's applications are "the set of applications that are known
+      # about this project. Note that this may not exactly represent the
+      # project configuration if a user hasn't run `waypoint init` yet" -- so
+      # the field is a cache of a file, and the document says it may be stale.
+      applications:
+
+routes:
+  - method: GET
+    path: /project
+    resource: project
+    operation: list
+    fields:
+      pagination:
+        # Empty, because this is the last page -- and the document says the
+        # value becomes empty rather than absent when there are no more.
+        next_page_token: ""
+        previous_page_token: ""
+    pagination:
+      style: cursor
+      limit_param: pagination.page_size
+      cursor_param: pagination.next_page_token
+      limit: 100
+
+  # The good half: the identifier a request used is in the path, so a project
+  # whose name is a number is unambiguous.
+  - method: GET
+    path: /project/by-name/{id}
+    resource: project
+    operation: get
+    not_found: not_found
+
+errors:
+  unauthenticated:
+    status: 401
+    code: 16
+    message: "unauthenticated"
+  not_found:
+    status: 404
+    code: 5
+    message: "project not found"
+  invalid:
+    status: 400
+    code: 3
+    message: "project name is required"
+  rate_limit:
+    status: 429
+    code: 8
+    message: "too many requests"
+
+fixtures:
+  empty:
+    project: []
+
+  server:
+    project:
+      - project: web
+        remote_enabled: true
+        applications:
+          - name: frontend
+            project:
+              project: web
+            file_change_signal: SIGHUP
+          - name: worker
+            project:
+              project: web
+            file_change_signal: ""
+      - project: infra
+        remote_enabled: false
+        applications: []
+
+conformance:
+  - name: a listing returns references, not records
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        # Ref.Project is {project: string} -- a one-field object wrapping a
+        # name. So projects[0].name is undefined and projects[0].project is
+        # the name, and reading anything about a project takes another
+        # request: listing N and reading them is N+1.
+        'projects[0].project': web
+        'projects[1].project': infra
+      absent:
+        - 'projects[0].name'
+
+  - name: the count is a string
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        # uint64, and protobuf's JSON mapping sends those as strings so they
+        # survive JavaScript's 53-bit floats. total_count === 0 is never true
+        # on an empty listing. The same trade etcd makes, in this collection.
+        total_count: "2"
+
+  - name: the paging token goes empty rather than absent
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        # "The value will become empty when there are no more pages." Not
+        # null, not absent -- the empty string. So `while (token)` terminates
+        # by accident and `token !== null` never does.
+        'pagination.next_page_token': ""
+        'pagination.previous_page_token': ""
+
+  - name: the identifier a request used is in the path
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      # by-name, beside a by-id path for the same resource. Five by-id paths
+      # and three by-name ones in this document -- so a request says which key
+      # it used, and a name made of digits is unambiguous.
+      #
+      # The alternative is Harbor's X-Is-Resource-Name header deciding what a
+      # segment means, and Gitea's number-or-slug. This is the better half of
+      # the document.
+      path: /project/by-name/web
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        project: web
+        remote_enabled: true
+
+  - name: a project's applications are a cache the document admits may be stale
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project/by-name/web
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        # "The set of applications that are known about this project. Note
+        # that this may not exactly represent the project configuration if a
+        # user hasn't run `waypoint init` yet."
+        #
+        # So the field is a cache of a file on disk, and the document says so
+        # rather than letting a reader assume it is authoritative.
+        'applications[0].name': frontend
+        'applications[1].name': worker
+        # And each application carries its project back as another Ref.Project,
+        # so the wrapper appears at two depths in one response.
+        'applications[0].project.project': web
+
+  - name: an empty applications list is a project nobody has initialised
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project/by-name/infra
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        project: infra
+        # Empty rather than absent -- and given the description above, empty
+        # means either "no applications" or "nobody has run waypoint init",
+        # which are different facts with one representation.
+        applications: []
+        remote_enabled: false
+
+  - name: no credential is refused with a gRPC code
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers: {}
+    expect:
+      # The document declares no securityDefinitions -- the fifth here to do
+      # that. 16 is gRPC's UNAUTHENTICATED beside an HTTP 401, the same
+      # pairing Argo CD and etcd have, from the same toolchain.
+      status: 401
+      body:
+        code: 16
+        message: "unauthenticated"
+
+  - name: a missing project answers a different unrelated number
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project/by-name/nosuchproject
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 404
+      body:
+        # gRPC NOT_FOUND.
+        code: 5
+        message: "project not found"
+
+  - name: "an invalid request says so in these words"
+    source: "https://developer.hashicorp.com/waypoint/docs"
+    arm: invalid
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 400
+      body:
+        code: 3
+        message: "project name is required"
+
+  - name: "the rate limit says so in these words"
+    source: "https://developer.hashicorp.com/waypoint/docs"
+    arm: rate_limit
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 429
+      body:
+        code: 8
+        message: "too many requests"
+
+  - name: the paging parameters are dotted too
+    source: https://raw.githubusercontent.com/hashicorp/waypoint/main/pkg/server/gen/server.swagger.json
+    fixture: server
+    request:
+      method: GET
+      path: /project
+      query:
+        # gRPC-gateway flattens a nested request message into query
+        # parameters by joining the field path with dots -- so the page size
+        # is `pagination.page_size`, with a dot, in a query string. Every
+        # HTTP library will send it verbatim; every struct generator has to
+        # rename it.
+        pagination.page_size: "1"
+        pagination.next_page_token: ""
+      headers:
+        Authorization: Bearer cauldron.waypoint.token
+    expect:
+      status: 200
+      body:
+        'projects[0].project': web
+      absent:
+        - 'projects[1]'
