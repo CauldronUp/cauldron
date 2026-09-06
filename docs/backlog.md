@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-57 paging parameter name(s) across 29 recipe(s) are declared and sent by no
+51 paging parameter name(s) across 26 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5385,3 +5385,20 @@ counts as evidence. `UnstatedPagination` was right and got the reasoning wrong
 in the docs; `UnshownListing` refused a 206; this one accepted a 400. A counter
 is a claim about the corpus, and it deserves the same red-green treatment as
 the code it measures.
+
+### A collection of one is sometimes not a collection
+
+Tradier answers an array of orders when there are several and a single object
+when there is one -- which is precisely what asking for a page of one produces.
+The generator asked for one, received the object it had asked for, could not
+read it as a list and moved on. `collapse_single` is declared right there in the
+Recipe; nothing had to be guessed, only read.
+
+The assertion for a collapsed page has no index in it: `orders.order.id` rather
+than `orders.order[0].id`, with `orders.order[1]` still asserted absent. Both
+halves are needed. The absent alone would pass on the unpaged answer too.
+
+Two smaller ones alongside. The paging generator was insisting on a 200 where
+the listing generator had already been taught not to -- Agora answers 201 -- and
+a position is any identifier the served record carries, not one of the six names
+the generator knew: Workable's jobs are told apart by a `shortcode`.
