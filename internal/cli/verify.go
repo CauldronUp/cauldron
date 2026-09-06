@@ -43,6 +43,7 @@ func runVerify(ctx *context, args []string) int {
 		unsent, unsentRecipes               int
 		unshown, unshownRecipes             int
 		hollow, hollowRecipes               int
+		unnamed, unnamedRecipes             int
 		failedRecipes                       []string
 	)
 
@@ -133,6 +134,14 @@ func runVerify(ctx *context, args []string) int {
 			hollowRecipes++
 		}
 
+		// And the same question one level in, about the records rather than
+		// the listings that carry them: a declared field name no case asserts
+		// could be renamed to anything and every case would stay green.
+		if n := sandbox.Recipe().UnassertedField(); n > 0 {
+			unnamed += n
+			unnamedRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -176,6 +185,11 @@ func runVerify(ctx *context, args []string) int {
 	if hollow > 0 {
 		fmt.Fprintf(ctx.stdout, "%d more across %d recipe(s) are answered only empty, so no case describes a record in them.\n",
 			hollow, hollowRecipes)
+	}
+
+	if unnamed > 0 {
+		fmt.Fprintf(ctx.stdout, "%d record field name(s) across %d recipe(s) are declared and asserted by no case.\n",
+			unnamed, unnamedRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

@@ -282,3 +282,50 @@ func (f Field) WireName(name string) string {
 
 	return name
 }
+
+// UnassertedField counts the record field names no conformance case asserts.
+//
+// The format already refuses this for the two envelopes. responses.list.* and
+// responses.error.* have to be asserted somewhere or the Recipe does not load,
+// on the plain grounds that a name nothing checks is a name nobody would notice
+// changing -- rename it and every case stays green.
+//
+// The records inside those envelopes had no such rule, and they are the larger
+// half by an order of magnitude: the envelope has three or four names in it and
+// a resource has thirty. They are also the half a client spends its time in. A
+// Recipe can declare that a customer carries default_currency and delinquent and
+// invoice_prefix, pass every case it has, and be describing three names it made
+// up, because nothing ever looked inside the collection.
+//
+// Fields the wire never carries are not counted. in: "-" is how a Recipe says
+// the record holds the field and the response does not send it, which is a
+// statement about absence -- asking for evidence of it would be asking a case
+// to assert something the Recipe has already said cannot appear.
+//
+// The name looked for is the one on the wire, so a field stored under one name
+// and sent under another is credited by a case asserting what the response
+// actually carries.
+func (r Recipe) UnassertedField() int {
+	unasserted := 0
+
+	for _, resource := range r.Resources {
+		for name, field := range resource.Fields {
+			if field.In == "-" {
+				continue
+			}
+
+			wire := name
+			if field.As != "" {
+				wire = field.As
+			}
+
+			if assertsName(r.Conformance, wire) {
+				continue
+			}
+
+			unasserted++
+		}
+	}
+
+	return unasserted
+}

@@ -1,0 +1,76 @@
+package recipe
+
+import (
+	"testing"
+)
+
+// A field name nothing asserts could be renamed to anything.
+//
+// The format already refuses that for the two envelopes: responses.list.* and
+// responses.error.* have to be asserted somewhere or the Recipe does not load,
+// on the grounds that a name nothing checks is a name nobody would notice
+// changing. The records inside those envelopes -- the fields a client actually
+// reads -- had no such rule, and they are the larger half by an order of
+// magnitude.
+func TestAFieldNoCaseAssertsIsCounted(t *testing.T) {
+	r := &Recipe{
+		Resources: map[string]Resource{"thing": {
+			Fields: map[string]Field{
+				"name":  {Type: "string"},
+				"shape": {Type: "string"},
+			},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/things"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"data[0].name": "a thing"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Fatalf("one of two fields asserted: counted %d unasserted, want 1", n)
+	}
+
+	r.Conformance[0].Expect.Body["data[0].shape"] = "round"
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("both fields asserted: counted %d unasserted, want 0", n)
+	}
+}
+
+// A field the wire never carries cannot be asserted, and is not debt.
+//
+// in: "-" is how a Recipe says the record holds the field and the response does
+// not send it -- a partition that lives in the path, mostly. Counting those
+// would ask for evidence of something the Recipe has said does not happen.
+func TestAFieldThatNeverGoesOnTheWireIsNotCounted(t *testing.T) {
+	r := &Recipe{
+		Resources: map[string]Resource{"thing": {
+			Fields: map[string]Field{"app_name": {Type: "string", In: "-"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a field declared off the wire: counted %d unasserted, want 0", n)
+	}
+}
+
+// And the name to look for is the one on the wire.
+//
+// A field stored as title and sent as rendered is asserted by a case naming
+// rendered; looking for title would report debt against a name no response
+// carries, and the Recipe would be told to assert something that cannot appear.
+func TestTheAssertedNameIsTheWireName(t *testing.T) {
+	r := &Recipe{
+		Resources: map[string]Resource{"post": {
+			Fields: map[string]Field{"title_rendered": {Type: "string", As: "rendered"}},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/posts"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"title.rendered": "Hello"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a renamed field asserted under its wire name: counted %d unasserted, want 0", n)
+	}
+}

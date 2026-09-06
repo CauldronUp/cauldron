@@ -5534,3 +5534,37 @@ There is a smaller lesson under the obvious one. A figure this file stops
 stating is a decision, so the helper says exactly that when its sentence has
 been rewritten: update the test with the new wording. A guard that fails
 confusingly gets deleted, and then the page rots again with a test's blessing.
+
+### The same rule, one level in: 4359 field names nothing checks
+
+The format refuses an unasserted name in either envelope. `responses.list.key`
+and `responses.error.message` have to appear in some case's assertions or the
+Recipe does not load, on the plain grounds that a name nothing checks is a name
+nobody would notice changing.
+
+The records inside those envelopes had no such rule. They are the larger half by
+an order of magnitude -- an envelope has three or four names in it and a resource
+has thirty -- and they are the half a client spends its time in.
+
+```
+4359 record field name(s) across 500 recipe(s) are declared and asserted
+by no case.
+```
+
+Nine thousand six hundred and thirty-seven field names are declared across the
+corpus and fewer than half of them are asserted anywhere. A Recipe can say a
+customer carries `default_currency` and `delinquent` and `invoice_prefix`, pass
+every case it has, and be describing three names it invented, because nothing
+ever looked inside the collection.
+
+Two exclusions, both for the same reason as elsewhere. A field declared `in: "-"`
+is one the Recipe says the wire never carries, and asking for evidence of an
+absence it has already stated would be asking a case to assert something that
+cannot appear. And the name looked for is the one on the wire, so a field stored
+under one name and sent under another is credited by a case asserting what the
+response actually carries -- looking for the storage name would report debt
+against a string no response contains.
+
+This one is mechanically closable, unlike the paging remainder. The values are
+already in the file: seed a fixture, ask the route, assert the fields that come
+back. The next entries are that work.
