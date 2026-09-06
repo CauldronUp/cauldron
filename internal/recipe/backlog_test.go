@@ -366,3 +366,114 @@ func namedBy(row string, shipped []string) []string {
 
 	return found
 }
+
+// The three counters written after the paging pair, guarded the same way.
+//
+// The reason is on the page above them: a table of routes stuck for want of a
+// provider description sat there for weeks naming AssemblyAI, Mercury and
+// QuickBooks, all three long since settled, and missing six Recipes that had
+// joined the list. Nothing checked it, so nothing noticed. The two paging
+// figures beside it were guarded and stayed right.
+//
+// Each of these reads the figure out of the block quoting verify's own output,
+// so the page and the tool cannot disagree about what the tool says.
+func TestTheBacklogCountsUnsentPagingNames(t *testing.T) {
+	names, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnsentPagingParam(); n > 0 {
+			names += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) paging parameter name\(s\) across (\d+) recipe\(s\) are declared and sent by no`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != names {
+		t.Errorf("the backlog says %d paging names are sent by no case and %d are", n, names)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those names across %d Recipes and they are across %d", n, recipes)
+	}
+}
+
+func TestTheBacklogCountsUnshownListings(t *testing.T) {
+	listings, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnshownListing(); n > 0 {
+			listings += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) listing\(s\) across (\d+) recipe\(s\) have no case that answers them`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != listings {
+		t.Errorf("the backlog says %d listings are answered by nothing and %d are", n, listings)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those listings across %d Recipes and they are across %d", n, recipes)
+	}
+}
+
+func TestTheBacklogCountsHollowListings(t *testing.T) {
+	listings, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.HollowListing(); n > 0 {
+			listings += n
+			recipes++
+		}
+	}
+
+	stated := backlogFigure(t,
+		`(\d+) more across (\d+) recipe\(s\) are answered only empty`)
+
+	if n, _ := strconv.Atoi(stated[1]); n != listings {
+		t.Errorf("the backlog says %d listings are answered only empty and %d are", n, listings)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog spreads those listings across %d Recipes and they are across %d", n, recipes)
+	}
+}
+
+// backlogFigure pulls one two-number claim out of the backlog, and says so
+// plainly when the sentence it is looking for has been rewritten -- a figure
+// this file stops stating is a decision, not a failure, and the test that
+// guards it should be changed deliberately rather than deleted in a panic.
+func backlogFigure(t *testing.T, pattern string) []string {
+	t.Helper()
+
+	backlog, err := os.ReadFile(backlogPath)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+
+	found := regexp.MustCompile(pattern).FindStringSubmatch(string(backlog))
+	if found == nil {
+		t.Fatalf("the backlog no longer states the figure matching %q; update this test with the new wording", pattern)
+	}
+
+	return found
+}

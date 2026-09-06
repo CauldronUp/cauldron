@@ -4506,11 +4506,14 @@ parameter names no case sends, the largest single reason is not a small fixture
 or an awkward envelope: **218 of them are on listings no case answers at all.**
 Nothing can be added to a request that does not exist.
 
-`verify` counts that too now:
+`verify` counts that too now, and beside it the weaker half of the same
+question -- a listing answered, but only ever empty:
 
 ```
 14 listing(s) across 11 recipe(s) have no case that answers them
 successfully at all.
+19 more across 16 recipe(s) are answered only empty, so no case
+describes a record in them.
 ```
 
 A listing counts as shown when some case asks for it, by that method and a
@@ -5513,3 +5516,21 @@ The counter drops those four, which is the point: a count that can never reach
 zero teaches its reader to stop looking. Nineteen listings are answered only
 empty now, and every one of them is a Recipe with no record to serve rather
 than a route that means it.
+
+### The table that rotted was the one nothing checked
+
+The list of routes stuck for want of a provider description named AssemblyAI,
+Mercury and QuickBooks. All three were settled weeks ago. It was missing 100ms,
+AppSignal, Brex, Mailgun, Recurly and Salesforce, which had joined it since. The
+figure above the table said 15 routes across 7 Recipes; the tool said 20 across
+10.
+
+Two figures on the same page were right the whole time, and the difference is
+that a test reads them out of the file and compares them to what the counters
+return. The three counters written since -- unsent paging names, unshown
+listings, listings answered only empty -- now have the same guard.
+
+There is a smaller lesson under the obvious one. A figure this file stops
+stating is a decision, so the helper says exactly that when its sentence has
+been rewritten: update the test with the new wording. A guard that fails
+confusingly gets deleted, and then the page rots again with a test's blessing.
