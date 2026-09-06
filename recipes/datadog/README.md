@@ -2,7 +2,7 @@
 
 Emulates the Datadog API (v1), for local development and tests.
 
-**11 conformance cases, 1 checked against the live API.**
+**12 conformance cases, 1 checked against the live API.**
 
 Struck live against api.datadoghq.com/api/v1/monitor on 2026-09-05, and found the opposite of what this file claimed: "Datadog answers 403 where most providers answer 401" was backwards for this route. A bad or missing API key gets a plain 401 "Unauthorized", every time. Datadog does answer 403 to a bad credential -- but on /api/v1/validate, a different endpoint this Recipe does not model, which is exactly the kind of generalisation that does not survive being checked against the specific route it was claimed of.
 

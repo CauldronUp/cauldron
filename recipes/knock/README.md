@@ -2,7 +2,7 @@
 
 Emulates the knock API (v1), for local development and tests.
 
-**12 conformance cases, 2 checked against the live API.**
+**13 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.knock.app, no account and no key -- and the single authentication_error this file declared, code `unauthorized`, matched neither real failure. A missing API key answers `api_key_missing` / "No valid API key provided"; a wrong one answers `api_key_invalid` / "The API key you supplied is invalid" -- two different codes and sentences, both carrying a `type` field this file never modelled at all. Split and fixed below.
 

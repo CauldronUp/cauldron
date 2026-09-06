@@ -2,7 +2,7 @@
 
 Emulates the Polar API (2026-10), for local development and tests.
 
-**16 conformance cases, 4 checked against the live API.**
+**17 conformance cases, 4 checked against the live API.**
 
 Everything about grants, benefits, and pagination still cites documentation rather than an observation, because reaching it needs an organization this Recipe cannot fabricate. The credential and routing behaviour was verified directly against api.polar.sh, unauthenticated, on 2026-09-05.
 

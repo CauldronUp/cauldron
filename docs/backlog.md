@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-905 paging parameter name(s) across 320 recipe(s) are declared and sent by no
+824 paging parameter name(s) across 299 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4452,6 +4452,29 @@ The method that works: find the provider's own machine-readable description,
 read the parameter names out of it, then write a case that *sends* them.
 Pub/Sub's `cursor_param` could be renamed to `cursor` with every case still
 passing, until a case sent a token back and a second page came out of it.
+
+Then 71 more, generated and then made to earn it. A route qualifies when it
+declares both names, wraps its list, and already has a green case to copy the
+request from -- path, headers and fixture -- so the new case differs from the old
+one by exactly the two parameters. It sends a page size of one and a position
+that lands on the second record, and asserts that record came back **on its own**.
+
+The generation is not the interesting part; the acceptance is. Every candidate
+had to survive three runs: pass as written, fail with `limit_param` renamed, and
+fail with `cursor_param` renamed. 121 candidates went in and 71 came out. Thirty-
+five did not pass at all -- Zendesk, Xero, PostHog, Postmark, Typeform and thirty
+more, each for its own reason, and each now known to need a hand-written case
+rather than a copied one. Three passed and then survived a rename: Airtable, Box
+and Confluence declare a size that this fixture cannot prove is being read, which
+is the fixture-too-small trap in a fourth, fifth and sixth form.
+
+The first run of that generator found nothing at all, and the reason is worth
+recording: Recipes are `go:embed`ed, so `verify` was reading the compiled-in copy
+and every edit was invisible. It reported "clean" for cases that were never
+loaded and "the mutation survived" for mutations that were never applied. The fix
+was to batch the work into three phases with one `go build` each -- write all,
+rename all, rename all again -- which is also forty times faster than rebuilding
+per case.
 
 Stripe is the first paid down. Its `starting_after` was declared on two routes
 and sent by nothing, so it could have been renamed to `cursor` -- the name the

@@ -2,7 +2,7 @@
 
 Emulates the Linode API (v4), for local development and tests.
 
-**13 conformance cases, all of them checked against the live API on 2026-08-31.**
+**16 conformance cases, 13 checked against the live API on 2026-08-31.** The unchecked one is the paging case: it sends the two parameter names this Recipe declares, which is a claim about the provider read from its own description rather than struck against it.
 
 ## What this Recipe found
 

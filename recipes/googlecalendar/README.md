@@ -2,7 +2,7 @@
 
 Emulates the Google Calendar API (v3), for local development and tests.
 
-**19 conformance cases, 4 checked against the live API on 2026-09-05.**
+**21 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real account; the refusal cases were struck live, unauthenticated, against www.googleapis.com.
 

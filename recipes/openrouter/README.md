@@ -2,7 +2,7 @@
 
 Emulates the openrouter API (v1), for local development and tests.
 
-**13 conformance cases, 6 checked against the live API on 2026-08-23.**
+**14 conformance cases, 6 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 
