@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-197 paging parameter name(s) across 95 recipe(s) are declared and sent by no
+189 paging parameter name(s) across 90 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4554,6 +4554,22 @@ whether the name was read or not -- but the position can: past the only record t
 collection is empty, and a name the runtime ignored would have answered with the
 record again. 95 more cases went in on that, each saying in its own comment which
 half it shows and which it cannot.
+
+### A correction, one commit later
+
+The commit that added the one-record half-proof also claimed that the routes
+still unsettled were "listings whose Recipe and fixture disagree about what comes
+back". That was wrong, and it was wrong in the direction that blames the Recipes.
+
+Probing them showed the disagreement was in the tooling. A route may override the
+whole list *shape*, not only its key: Jira's field listing is `bare` where the
+Recipe is `wrapped`, SES's account listing is bare and collapsed to a single
+object, Jotform's questions are a `map`. Reading only the Recipe-wide style
+asserted paths those responses never had. Nine of those routes settled as soon as
+the override was read.
+
+Worth stating plainly because the mistake is easy to repeat: when a generated
+check disagrees with a file, the file is not automatically the one that is wrong.
 
 ### Stop guessing at the response; ask the sandbox
 
