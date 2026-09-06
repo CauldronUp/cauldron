@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**53 more listings across 32 Recipes declare no paging at all**, and the
+**51 more listings across 31 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,21 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Nutritionix fixes its page size in prose and gives nobody a parameter for it:
+fifteen query parameters on the search endpoint and not one controls the count,
+because "the results from the instant endpoint are separated into 2 arrays each
+with a maximum 20 food items". A ceiling with no way to ask for the next one is
+not a page. Its natural-language endpoint answers one record per food parsed out
+of a sentence -- "two eggs and a slice of toast" is two records -- so half that
+answer is not a page, it is a meal missing an egg.
+
+Midtrans raises a bigger question than its paging. Its Core API documents
+single-transaction lookups, `GET /v2/{order_id}/status` with no query parameters
+at all, and no listing at `/v2/transactions` appears anywhere its documentation
+index reaches -- so the route this Recipe models may not be an endpoint Midtrans
+publishes. Declaring `style: none` there would assert that an endpoint of
+unconfirmed existence serves whole collections: two claims for the price of none.
 
 Electricity Maps answers its zone list as a **keyed object**, not an array -- 350
 zones under 350 codes, struck live, with `?limit=2` ignored. A "page" of a keyed
