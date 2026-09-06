@@ -945,3 +945,118 @@ type ChangeEmit struct {
 	// transition, not off the request naming the field.
 	Field string `yaml:"field"`
 }
+
+// HollowListing counts the listings shown only empty.
+//
+// UnshownListing asks whether any case gets a successful answer out of a
+// listing. That is the right first question and it is not the last one. A case
+// that asserts the collection is empty proves the route exists, the status it
+// answers with and the envelope around it, and says nothing whatever about a
+// record -- so the collection key, the field names and the identifier style
+// beside it remain a description with nothing under it.
+//
+// Several Recipes can offer no more than that: no fixture in the file holds a
+// record of the resource, so an empty answer is the only true thing there is to
+// write down. That is worth writing down. It is not worth counting as the same
+// evidence as a listing that shows a record, which is what a single counter
+// would have done the moment those cases were added.
+func (r Recipe) HollowListing() int {
+	hollow := 0
+
+	for _, route := range r.Routes {
+		if route.Operation != "list" {
+			continue
+		}
+
+		if !r.showsListing(route) || r.describesRecord(route) {
+			continue
+		}
+
+		hollow++
+	}
+
+	return hollow
+}
+
+// describesRecord reports whether any successful case asserts something inside
+// the route's collection.
+func (r Recipe) describesRecord(route Route) bool {
+	prefix := r.collectionOf(route)
+
+	for _, c := range r.Conformance {
+		if c.Arm != "" || c.Request.Method != route.Method {
+			continue
+		}
+
+		if !samePath(c.Request.Path, route.Path) {
+			continue
+		}
+
+		if status := c.Expect.Status; status != 0 && (status < 200 || status >= 300) {
+			continue
+		}
+
+		for name := range c.Expect.Body {
+			if insideCollection(name, prefix) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// collectionOf is where a listing's records sit in its response, in the same
+// words an assertion path uses. An empty string means the response is the
+// collection.
+func (r Recipe) collectionOf(route Route) string {
+	style := r.Responses.List.Style
+	key := r.Responses.List.Key
+
+	if route.List != nil {
+		if route.List.Style != "" {
+			style = route.List.Style
+		}
+
+		if route.List.Key != "" {
+			key = route.List.Key
+		}
+	}
+
+	switch style {
+	case "bare":
+		return ""
+	case "", "envelope":
+		if route.List != nil && route.List.Key != "" {
+			return route.List.Key
+		}
+
+		return "data"
+	}
+
+	if route.List != nil && route.List.Key != "" {
+		return route.List.Key
+	}
+
+	if resource, ok := r.Resources[route.Resource]; ok && resource.Collection != "" {
+		return resource.Collection
+	}
+
+	return key
+}
+
+// insideCollection reports whether an assertion path reaches into the
+// collection rather than sitting beside it in the envelope.
+func insideCollection(name, prefix string) bool {
+	if prefix == "" {
+		return strings.HasPrefix(name, "[")
+	}
+
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+
+	rest := name[len(prefix):]
+
+	return strings.HasPrefix(rest, "[") || strings.HasPrefix(rest, ".")
+}

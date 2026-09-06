@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-48 paging parameter name(s) across 24 recipe(s) are declared and sent by no
+47 paging parameter name(s) across 24 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4497,7 +4497,7 @@ Nothing can be added to a request that does not exist.
 `verify` counts that too now:
 
 ```
-21 listing(s) across 17 recipe(s) have no case that answers them
+14 listing(s) across 11 recipe(s) have no case that answers them
 successfully at all.
 ```
 
@@ -5422,3 +5422,30 @@ the copied path serves nothing settles both names.
 Neither was a provider being difficult. Both were a request that was nearly
 right, which is the harder kind to see, because a nearly-right request comes
 back with a real answer.
+
+### An empty answer is still an answer, and it is not the same answer
+
+Seven of the listings nothing had ever answered are in Recipes with no fixture
+holding a record of that resource. Dub's links, Melio's bills, FullStory's
+sessions and four more: one fixture, `empty`, nothing to serve. The generator
+could not show a record because there is no record, and it had been treating
+that as nothing to do.
+
+There was something to do. The route answers. It answers with a status, an
+envelope and an empty collection, and *every case in those files until now was
+checking a refusal*, so none of that had ever been seen. A case that asserts the
+collection is empty rather than absent is worth writing: it is the distinction a
+client gets wrong, and it is true.
+
+But it is not the same evidence as a listing that shows a record, and a single
+counter would have called them equal the moment those cases landed. So the
+report grew a second line. `HollowListing` counts listings answered only empty
+-- shown, but with nothing asserted inside the collection, which leaves the
+collection key, the field names and the identifier style beside them still
+undescribed.
+
+It found more than the seven just written. **Thirty-two listings across
+twenty-six Recipes are answered only empty**, twenty-five of which have been
+that way all along, counted by nothing. That is the third time a new counter has
+turned up debt older than the counter. The work is not finding new problems; it
+is finding out that the old measurement had a shape, and the shape had a shadow.

@@ -42,6 +42,7 @@ func runVerify(ctx *context, args []string) int {
 		unstated, unstatedRecipes           int
 		unsent, unsentRecipes               int
 		unshown, unshownRecipes             int
+		hollow, hollowRecipes               int
 		failedRecipes                       []string
 	)
 
@@ -124,6 +125,14 @@ func runVerify(ctx *context, args []string) int {
 			unshownRecipes++
 		}
 
+		// And the weaker half of that: a listing answered, but only ever
+		// empty. The route and the envelope are evidenced; the record inside
+		// the collection is not.
+		if n := sandbox.Recipe().HollowListing(); n > 0 {
+			hollow += n
+			hollowRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -162,6 +171,11 @@ func runVerify(ctx *context, args []string) int {
 	if unshown > 0 {
 		fmt.Fprintf(ctx.stdout, "%d listing(s) across %d recipe(s) have no case that answers them successfully at all.\n",
 			unshown, unshownRecipes)
+	}
+
+	if hollow > 0 {
+		fmt.Fprintf(ctx.stdout, "%d more across %d recipe(s) are answered only empty, so no case describes a record in them.\n",
+			hollow, hollowRecipes)
 	}
 
 	if len(failedRecipes) > 0 {
