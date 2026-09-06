@@ -5873,18 +5873,25 @@ A nest is a path: `in: ui.nodes[0].attributes` splits, and its indexes come off.
 A name is a name: it is whatever the provider called it, dots and spaces
 included, and it never splits.
 
-That is the fifth path-shaped bug in a row, and the last of them. The tally that
-found it had a category that should not have existed -- "a fixture sets it and
-the observed response lacked it", 189 names. It is 0 now, and what remains
-divides cleanly:
+That is the fifth path-shaped bug in a row. The tally that found it has a
+category that should not exist -- "a fixture sets it and the response still
+lacked it" -- and the fix took that category from 189 names to 165, which is
+smaller and is not zero. Something else is in there.
+
+The remainder, counted once each and in priority order:
 
 | why a name is still unasserted | count |
 |---|---|
-| No fixture holds a record of the resource | 265 |
+| No fixture holds a record of the resource | 199 |
 | No fixture sets it, so the emulator never sends it | 172 |
-| No green case anywhere in the Recipe to build a request from | 66 |
+| **A fixture sets it and the response still lacked it** | **165** |
+| No request anywhere in the Recipe to build one from | 66 |
 | No route serves the resource at all | 14 |
+| Filled by a default or a null and still unseen | 5 |
 
-Every one of those wants a value written into a fixture, or a provider watched.
-None of them wants a cleverer generator, which is the first time in this stretch
-that has been true.
+The first two and the fourth want a value written into a fixture or a provider
+watched. The third and the sixth want an explanation: a field a fixture sets,
+on a route the generator can reach, that the response did not carry. Edamam,
+TaxJar, api.video, Fitbit and Repology have five to seven each. That is the next
+thing to look at, and it is a question about the emulator rather than about the
+evidence.
