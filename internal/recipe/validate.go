@@ -467,8 +467,12 @@ func (r *Recipe) Validate() error {
 			add("%s declares count_means: %q, which is none of page, lookahead or empty", entry.where, spec.CountMeans)
 		}
 
-		if spec.CountMeans != "" && spec.CountField == "" {
-			add("%s declares count_means: %q and no count_field, so there is nothing for it to describe", entry.where, spec.CountMeans)
+		// Either place the count can travel. It was a body field alone until
+		// Vikunja, whose count is a header -- x-pagination-result-count, "the
+		// number of items returned for this request", which is the page --
+		// and count_means is the key that says so.
+		if spec.CountMeans != "" && spec.CountField == "" && spec.CountHeader == "" {
+			add("%s declares count_means: %q and no count_field or count_header, so there is nothing for it to describe", entry.where, spec.CountMeans)
 		}
 
 		if spec.CountMeans == "lookahead" && spec.CountLookahead <= 0 {

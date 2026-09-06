@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and four Recipes send at least one identifier as a number now, and each
+One hundred and five Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -7009,3 +7009,96 @@ repository nobody has.
   description of it ("releationship", "intersetion") are the document's.
 - **A failure is an array even when there is one of them**, so `body.message` is
   undefined and a client reports the reason as nothing.
+
+## Vikunja, where PUT creates and POST updates
+
+Written against Vikunja's own generated Swagger 2.0 document —
+`go-vikunja/vikunja` `pkg/swagger/swagger.json`, 126 paths, read 2026-09-06.
+Self-hosted with no public instance, so nothing is struck live and the Recipe
+says so.
+
+```
+PUT  /labels        -> "Create a label"
+PUT  /labels/{id}   -> "Update a label"
+POST /projects/{id} -> update a project
+POST /register      -> create a user
+```
+
+PUT means create on a collection and update on an item. POST means update on
+twelve item paths and create on a handful of collections. Thirty collection
+paths take PUT to create.
+
+So a client cannot decide the verb from the operation or the operation from the
+verb — it has to know each path. And the mistake is quiet in the direction that
+matters: POSTing to a collection, which is what create means in every other API
+in this collection, creates nothing here.
+
+Served rather than described: `PUT /labels` creates, `PUT /labels/{id}` updates.
+
+### Authorization in a header, on single items only
+
+From the document's own description: "All endpoints which return a single item
+(project, task, etc.) - no array - will also return a `x-max-permission` header
+with the max permission the user has on this item as an int where `0` is `Read
+Only`, `1` is `Read & Write` and `2` is `Admin`."
+
+What a caller may do is not in the record. It is a bare integer in a header, and
+only on the fetch — a listing carries no permissions at all. A client rendering
+edit buttons from a listing has nothing to read, and one that reads only bodies
+never learns any of it. And `0` is a real level, so the falsy value means read-
+only rather than none.
+
+### The provider tells you not to trust the HTTP status, and then admits the document is lossy
+
+> All errors have an error code and a human-readable error message in addition
+> to the http status code. You should always check for the status code in the
+> response, not only the http status code.
+
+> Due to limitations in the swagger library we're using for this document, only
+> one error per http status code is documented here.
+
+Both are from the same `info.description`. So the machine-readable description
+is knowingly incomplete about exactly the thing the paragraph above it says to
+branch on: a generated client's error handling is complete with respect to the
+document and incomplete with respect to the API.
+
+`web.HTTPError` also carries `i18n_params` — "Message's dynamic values, keyed by
+the client's translation placeholder names" — so the message is a rendering and
+the values that produced it travel beside it. Good design, and it means matching
+on message text is matching on one language.
+
+### What this cost the format
+
+Vikunja's two pagination headers are `x-pagination-total-pages` ("the total
+number of available pages") and `x-pagination-result-count` ("the number of
+items returned for this request"). **Pages, and this page. Neither is the number
+of items**, and there is no third header.
+
+`count_header` shipped this morning serving `page.Total`, which is the wrong one
+of the three. So:
+
+- `count_means: page` now applies to the header exactly as it does to the body.
+  Gitea's `X-Total-Count` is the whole set; Vikunja's is this page; one key, two
+  meanings, and the Recipe says which.
+- `pages_header` is a new key, deliberately not a rename of `count_header` — a
+  provider can send both, and Vikunja does.
+- The validator's rule "count_means with no count_field describes nothing" now
+  accepts a count_header too. It predated the header by six hours.
+
+Four tests, red-greened by disabling the `count_means` branch: two fail. The
+fourth asserts that a Recipe naming no pages header sends none, and that gitea's
+count header is still the whole set.
+
+### The rest
+
+- **Two credentials in one header.** A JWT and a scoped API token both go in
+  `Authorization: Bearer`, indistinguishable on the wire — the third provider
+  today with that shape, after Chatwoot's three token kinds and Gotify's prefix
+  letter. BasicAuth is declared and "only used when requesting tasks via
+  CalDAV".
+- **`PUT /labels/{id}` documents its 200 as "The created label object."** The
+  description was copied from the create beside it, so a generated client's own
+  documentation says an update creates.
+- **`created` and `updated`, not `created_at` and `updated_at`**, so a client
+  mapping the usual spelling writes undefined into both. And the search
+  parameter is `s`.

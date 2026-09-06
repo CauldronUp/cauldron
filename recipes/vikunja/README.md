@@ -1,0 +1,59 @@
+# vikunja
+
+Emulates the Vikunja task-manager API (v1), for local development and tests.
+
+**11 conformance cases, none checked against a live API.**
+
+Written against Vikunja's own generated Swagger 2.0 document, published in its own repository — `go-vikunja/vikunja`, `pkg/swagger/swagger.json`, 126 paths — read on 2026-09-06. Vikunja is self-hosted and there is no public instance, so every claim here is the provider's own document.
+
+## What this Recipe found
+
+**The verb does not tell you the operation.**
+
+```
+PUT  /labels        -> "Create a label"
+PUT  /labels/{id}   -> "Update a label"
+POST /projects/{id} -> update a project
+POST /register      -> create a user
+```
+
+PUT means *create* on a collection and *update* on an item. POST means *update* on twelve item paths and *create* on a handful of collections. Thirty collection paths take PUT to create; twelve item paths take POST to update.
+
+So a client cannot decide the verb from the operation, or the operation from the verb — it has to know each path. And the mistake is quiet in the direction that matters: POSTing to a collection, which is what create means in every other API in this collection, is not a create here.
+
+This Recipe serves that rather than describing it: `PUT /labels` creates and `PUT /labels/{id}` updates.
+
+**Authorization arrives in a header, and only on single items.** From the document's own description:
+
+> All endpoints which return a single item (project, task, etc.) - no array - will also return a `x-max-permission` header with the max permission the user has on this item as an int where `0` is `Read Only`, `1` is `Read & Write` and `2` is `Admin`.
+
+So what a caller may do is not in the record. It is in a header, as a bare integer, and only on the fetch — a listing carries no permissions at all. A client rendering an edit button from a listing has nothing to read; one that reads only response bodies never learns any of it. And `0` is a real level, so the falsy value means Read Only rather than none.
+
+**Two pagination headers, and neither is a total.** `x-pagination-total-pages` is "the total number of available pages for this request"; `x-pagination-result-count` is "the number of items returned for this request". Pages, and this page. Nowhere does anything say how many items exist.
+
+**The provider says not to trust the HTTP status:**
+
+> All errors have an error code and a human-readable error message in addition to the http status code. You should always check for the status code in the response, not only the http status code.
+
+Two status codes, and the document names the authoritative one: the body's. `web.HTTPError.code` is finer than the HTTP status — several distinct failures share one status and differ only there.
+
+**And the document says it is incomplete:**
+
+> Due to limitations in the swagger library we're using for this document, only one error per http status code is documented here.
+
+So the machine-readable description is knowingly lossy about exactly the thing the paragraph above tells you to branch on. A generated client's error handling is complete with respect to the document and incomplete with respect to the API.
+
+**The message is a template.** `web.HTTPError` carries `i18n_params` — "Message's dynamic values, keyed by the client's translation placeholder names, so clients can localise the error". A good design, and it means a client matching on message text is matching on one language's rendering rather than on a fact.
+
+**Two credentials in one header, and a third protocol.** A JWT and a scoped API token both go in `Authorization: Bearer <token>`, indistinguishable on the wire. BasicAuth is declared and "only used when requesting tasks via CalDAV".
+
+**A documentation slip worth knowing about.** `PUT /labels/{id}` — the update — documents its 200 as "The created label object." The description was copied from the create beside it, so a generated client's own documentation says an update creates.
+
+**Timestamps are `created` and `updated`,** not `created_at` and `updated_at`, so a client mapping the usual spelling writes `undefined` into both. And the search parameter is `s` — one letter, not `q` or `search`.
+
+## Modelling limits
+
+- **Nothing here is verified against a live API.** Vikunja is self-hosted and there is no public instance.
+- **Labels, listed, fetched, created and updated.** 126 paths is a task manager: projects, tasks, buckets, teams, subscriptions, filters, webhooks, the migration surface and CalDAV each want their own evidence.
+- **`x-max-permission` is served on the fetch and not on the listing**, which is Vikunja's rule. Its value is the fixture's, not computed from the credential, because this Recipe has one caller.
+- **Only the JWT is checked.** The scoped API token is indistinguishable from it on the wire — which is the finding — and modelling scopes would mean inventing which ones exist.

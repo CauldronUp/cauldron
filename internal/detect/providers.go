@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "vikunja",
+			npm:    []string{"@vikunja/sdk"},
+		},
+		{
 			recipe: "harbor",
 			gomod:  []string{"github.com/goharbor/go-client"},
 		},

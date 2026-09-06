@@ -330,6 +330,20 @@ type ListResponse struct {
 	//
 	// A count, not a page count: the header says how many records there are.
 	CountHeader string `yaml:"count_header"`
+	// PagesHeader names the response header carrying how many pages the whole
+	// set makes, for the providers that put that in a header instead of a
+	// total.
+	//
+	// Vikunja is why. Its own description says every paginated endpoint
+	// returns two headers: `x-pagination-total-pages`, "the total number of
+	// available pages for this request", and `x-pagination-result-count`,
+	// "the number of items returned for this request". Neither is the number
+	// of items that exist. A caller can learn how many pages there are and how
+	// many it just received, and never how many there are altogether.
+	//
+	// So this is deliberately not CountHeader with a different name. They are
+	// different quantities and a Recipe can need both at once.
+	PagesHeader string `yaml:"pages_header"`
 	// PageField and LimitField name properties echoing the page number and
 	// the page size the request asked for.
 	//

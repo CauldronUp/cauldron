@@ -833,7 +833,21 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// in a header instead of the body. Set before the route's own headers so
 	// a Recipe naming the header explicitly still wins.
 	if name := list.CountHeader; name != "" {
-		w.Header().Set(name, strconv.Itoa(page.Total))
+		// count_means applies here exactly as it does in the body. Gitea's
+		// X-Total-Count is the whole set; Vikunja's x-pagination-result-count
+		// is "the number of items returned for this request", which is this
+		// page. One key, two meanings, and the Recipe says which.
+		total := page.Total
+		if list.CountMeans == "page" {
+			total = len(page.Records)
+		}
+
+		w.Header().Set(name, strconv.Itoa(total))
+	}
+
+	// And how many pages the set makes, which is a different quantity again.
+	if name := list.PagesHeader; name != "" {
+		w.Header().Set(name, strconv.Itoa(pageCount(page.Total, limit)))
 	}
 
 	// The next page as an RFC 5988 Link header, for the providers that
