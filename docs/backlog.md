@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-241 paging parameter name(s) across 113 recipe(s) are declared and sent by no
+197 paging parameter name(s) across 95 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
