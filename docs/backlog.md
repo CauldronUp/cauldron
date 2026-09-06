@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-79 paging parameter name(s) across 40 recipe(s) are declared and sent by no
+74 paging parameter name(s) across 37 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5272,3 +5272,18 @@ across cost five Recipes their paging evidence for a week.
 A cursor is also not always called `id`. Cloudflare Stream's videos carry a
 `uid`, so scanning the fixture for ids returned nothing to try and the route
 looked unpageable when it pages perfectly well.
+
+### "The sandbox serves nothing" was the wrong fixture, again
+
+Fourteen routes reported that the sandbox served no records for them. Several
+had a fixture full of records; the generator was seeding the wrong one.
+
+A route usually has more than one green case, and the first in the file is
+frequently the one that checks the empty answer -- the listing responds, the
+collection is empty, the case is about the envelope. Copying that case's request
+copies its fixture too. Trying every green case for the route, fullest fixture
+for that route's resource first, settles five more names.
+
+This is the third time the same mistake has been found in a different generator.
+The lesson is not about fixtures. It is that "the first thing in the file that
+matches" is a guess wearing the clothes of a lookup.
