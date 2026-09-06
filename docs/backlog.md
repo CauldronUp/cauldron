@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**48 more listings across 28 Recipes declare no paging at all**, and the
+**46 more listings across 26 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,12 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Avalara pages by `$top` and `$skip` -- OData's spelling, dollar signs and all:
+"to view page 3 with a page size of 100, you'd use $top=100&$skip=200". A leading
+dollar sign is the sort of thing a client library escapes by accident, and neither
+name resembles `limit` or `cursor`. The response reports `@recordsetCount` and
+`@nextLink`, at-signs this time, which this Recipe does not model.
 
 Toast states its page numbering by arithmetic rather than by declaration: "set the
 pageSize parameter to 10, and you set page to 2, the API returns a set of objects
