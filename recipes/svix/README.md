@@ -2,7 +2,7 @@
 
 Emulates the Svix API (v1), for local development and tests.
 
-**19 conformance cases, 3 checked against the live API on 2026-09-05.**
+**17 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The delivery and backoff cases still cite documentation, since Svix's test environment has the same waiting problem the real one does. The credential and routing shapes needed no environment at all, and checking them live found this Recipe had collapsed two sentences into one.
 

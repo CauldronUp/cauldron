@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-751 paging parameter name(s) across 282 recipe(s) are declared and sent by no
+763 paging parameter name(s) across 288 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4486,6 +4486,37 @@ that the new case passes is not the same as checking the Recipe is still green,
 and only the second one is the question worth asking. With that fixed, 30 more
 candidates were dropped, and the ones that fell are the Recipes whose fixtures
 carry a count somebody asserted on purpose.
+
+### The clone that shared an email address
+
+Growing a fixture by copying its last record leaves every field duplicated but
+the identifier, and most of that is fine -- two things can share a name, a
+status, a currency. A handful of fields identify the record itself, and there
+two rows sharing one is a state the provider does not have: two HubSpot contacts
+with one email, two Duffel airports with one IATA code.
+
+The first attempt at fixing it inferred which fields those were, on the rule that
+a field differing across every existing record is being treated as unique. With
+two records that is nearly every descriptive field, and the rule withdrew 29 of
+33 clones. The second attempt kept the inference and freshened the values, which
+was worse: it produced `LAX-2`, `KLAX-2` and `Los Angeles International
+Airport-2`. An invented value in the wrong shape is worse than the duplicate it
+replaces, because a duplicate is at least a thing the provider could print.
+
+What works is naming the fields rather than inferring them. An email is
+freshened, because a local part takes a suffix without changing shape. A slug, a
+URL, an airport code is not, and those nine clones were withdrawn whole along
+with the cases that needed them -- Duffel, Discourse, Svix, Twitch, Unsplash,
+CourtListener, incident.io, Papertrail and SavvyCal, each of which now waits for
+a hand-written third record instead of a generated one.
+
+One more bug worth recording, because it is the same shape as the go:embed one.
+The freshener searched the file for `        email: ...` and edited the *last*
+match, which was a conformance assertion indented by ten spaces -- an eight-space
+search string is a substring of a ten-space line. It left the duplicate in the
+fixture and rewrote the case to describe a record that no longer existed, and the
+suite went red on exactly one Recipe. Scoping the search to the fixtures block
+and anchoring it to a whole line fixed it.
 
 The first run of that generator found nothing at all, and the reason is worth
 recording: Recipes are `go:embed`ed, so `verify` was reading the compiled-in copy

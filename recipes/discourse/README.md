@@ -2,7 +2,7 @@
 
 Emulates the Discourse API (v3), for local development and tests.
 
-**9 conformance cases, 7 checked against the live API on 2026-08-23.**
+**8 conformance cases, 7 checked against the live API on 2026-08-23.**
 
 ## What this Recipe found
 
