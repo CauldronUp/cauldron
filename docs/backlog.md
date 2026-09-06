@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**82 more listings across 55 Recipes declare no paging at all**, and the
+**80 more listings across 53 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,20 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+EasyPost's position is a mutually exclusive pair: `before_id` is "only records
+created before the given ID will be included. **May not be used with after_id**",
+and `after_id` is its mirror. `before_id` is the one declared, because EasyPost
+lists newest-first and walking backwards in time is walking forwards through the
+collection -- a client reaching for `after_id` would be paging away from the
+records it has not seen. This format has one position per route and no way to say
+two parameters exclude each other, so the other half is in prose.
+
+Ashby's public job board answers all 72 postings and ignores `?limit=2`, struck
+live. A job board is meant to be embedded whole in somebody's careers page, and
+half of one is a careers page missing jobs. That Recipe's `syncToken` cursor
+belongs to Ashby's *authenticated* API: one provider, two surfaces, and only the
+private one pages.
 
 Sumo Logic is the argument for having built `may_undershoot` this morning. Its
 search-messages endpoint documents the limit parameter as: "limit the number of
