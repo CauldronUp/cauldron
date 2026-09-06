@@ -242,7 +242,7 @@ than finding out halfway through writing one.
 | Wrike | Assess — tasks, folders, custom fields |
 | Height | Assess — tasks and lists |
 | Productboard | Assess — features, notes, insights |
-| Canny | Assess — posts, votes, changelog |
+| ~~Canny~~ | Shipped, written against Canny's own reference. **Every read is a POST and the API key is a body field beside the filters**, so it cannot be set once as a default header -- every call site carries it -- and it lands in anything that logs request bodies. A `GET` is refused outright, so nothing in front of it caches. The paging signal is a bare `hasMore` boolean with no total and no cursor, and the default page is **ten**, small enough that a board of eight never exercises the loop until production. v1 wraps its array in `posts` and v2 wraps it in `items`, with the version in the path rather than a header |
 
 ## Banking rails and money movement
 
@@ -2498,7 +2498,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These twenty-one are left, and every one of them has now been looked for
+another. These twenty-two are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2521,6 +2521,7 @@ than a client for its API.
 | Attio | The npm package is a CLI for building apps on the platform rather than a client that calls the API |
 | Basecamp | No official SDK, and the name is taken by something unrelated |
 | Bill.com | No widely used client |
+| Canny | The bare npm name `canny` is a DOM module manager published by somebody else -- "Simple dom module manager with basic view support", repository `eightyfour/canny` -- and neither `canny-node` nor `@canny/sdk` exists. Canny's own reference documents raw HTTP and names no client library, which fits an API whose credential is a POST body field: there is not much for a client to wrap |
 | Column | No official SDK |
 | Deel | No official SDK found under any obvious name |
 | FastSpring | No official SDK |
@@ -5555,11 +5556,11 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-593 record field name(s) across 212 recipe(s) are declared and asserted
+594 record field name(s) across 213 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-638 declared error(s) across 305 recipe(s) have no case asserting what
+642 declared error(s) across 306 recipe(s) have no case asserting what
 they say.
 ```
 

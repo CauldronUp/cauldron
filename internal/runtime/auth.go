@@ -4,8 +4,12 @@
 package runtime
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -242,6 +246,23 @@ func (s *Sandbox) judge(r *http.Request, auth recipe.Auth) (recipe.Verdict, stri
 		if presented == "" {
 			return recipe.Absent, presented
 		}
+	case "body":
+		// The credential travels in the request body, beside the filters.
+		// Canny does this: every read is a POST and the key is a field called
+		// apiKey in the same object as boardID and limit.
+		//
+		// Reproducing it exactly matters for the same reason the query scheme
+		// exists. A body credential cannot be set once as a default header, so
+		// every call site carries it and the one that forgets is a well-formed
+		// request that is refused; and the secret lands in anything that logs
+		// request bodies, which is the logging switched on during an incident
+		// by somebody not thinking about credentials. Serving it from a header
+		// would hide both.
+		presented = bodyValue(r, auth.Param)
+
+		if presented == "" {
+			return recipe.Absent, presented
+		}
 	case "query":
 		// The credential travels in the URL. Reproducing that exactly is the
 		// point: a header-based fake would hide the fact that the secret ends
@@ -400,4 +421,42 @@ func informativeness(v recipe.Verdict) int {
 	}
 
 	return 0
+}
+
+// bodyValue reads a named field from a JSON or form-encoded request body,
+// leaving the body readable for whoever handles the request afterwards.
+//
+// Both encodings, because the APIs that put a key in the body are split
+// between them: Canny documents form parameters, and plenty of others in the
+// same shape send JSON.
+func bodyValue(r *http.Request, name string) string {
+	if name == "" {
+		return ""
+	}
+
+	if value, ok := jsonBody(r)[name]; ok {
+		if text, ok := value.(string); ok {
+			return text
+		}
+
+		return fmt.Sprint(value)
+	}
+
+	if r.Body == nil {
+		return ""
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil {
+		return ""
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+
+	values, err := url.ParseQuery(string(raw))
+	if err != nil {
+		return ""
+	}
+
+	return values.Get(name)
 }

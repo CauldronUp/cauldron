@@ -111,7 +111,13 @@ func (h RequiredHeader) Applies(method string) bool {
 
 // Auth describes how the provider authenticates callers.
 type Auth struct {
-	// Scheme is one of: bearer, basic, header, query, none.
+	// Scheme is one of: bearer, basic, header, query, body, none.
+	//
+	// A body credential is the same argument as a query one, one step further
+	// in. Canny puts its key in the POST body beside the filters, so it cannot
+	// be set once as a default header -- every call site carries it -- and it
+	// lands in anything that logs request bodies. Serving that from a header
+	// would hide both consequences.
 	//
 	// A query credential travels in the URL, which is worth reproducing
 	// precisely because it is a bad idea: URLs end up in access logs, browser
@@ -121,8 +127,8 @@ type Auth struct {
 	Scheme string `yaml:"scheme"`
 	// Header is the header carrying the credential, when scheme is header.
 	Header string `yaml:"header"`
-	// Param is the query parameter carrying the credential, when the scheme
-	// is query.
+	// Param is the parameter carrying the credential, when the scheme is
+	// query or body.
 	Param string `yaml:"param"`
 	// Prefix is stripped from the credential before comparison, e.g. "Bearer ".
 	Prefix string `yaml:"prefix"`

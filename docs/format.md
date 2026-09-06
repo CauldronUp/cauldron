@@ -80,9 +80,9 @@ A map of header name to:
 
 | key | type | meaning |
 |---|---|---|
-| `scheme` | string | One of `bearer`, `basic`, `header`, `query`, `none`. |
+| `scheme` | string | One of `bearer`, `basic`, `header`, `query`, `body`, `none`. `body` is the credential as a field in the request body, which Canny does: it cannot be set once as a default header, so every call site carries it, and it lands in anything that logs bodies. |
 | `header` | string | The header carrying the credential, when the scheme is `header`. |
-| `param` | string | The query parameter carrying it, when the scheme is `query`. |
+| `param` | string | The parameter carrying it, when the scheme is `query` or `body`. |
 | `prefix` | string | Stripped before comparison, e.g. `"Bearer "`. |
 | `credential` | string | Which half of a basic credential carries the secret: `username` (the default, Twilio's account SID) or `password` (Mailgun, whose username is the constant `api`). |
 | `keys` | list | The credentials the emulator accepts. Fixtures only. |

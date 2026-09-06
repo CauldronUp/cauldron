@@ -26,7 +26,7 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-	validSchemes    = []string{"bearer", "basic", "header", "query", "none"}
+	validSchemes    = []string{"bearer", "basic", "header", "query", "body", "none"}
 	validOperations = []string{"create", "get", "list", "update", "delete"}
 	validPagination = []string{"", "cursor", "offset", "page", "none"}
 	// The categories a Recipe may declare. Kept short on purpose: a taxonomy
@@ -201,12 +201,12 @@ func (r *Recipe) Validate() error {
 		add("auth.credential only applies to the basic scheme")
 	}
 
-	if r.Auth.Scheme == "query" && r.Auth.Param == "" {
-		add("auth.param is required when the scheme is query")
+	if (r.Auth.Scheme == "query" || r.Auth.Scheme == "body") && r.Auth.Param == "" {
+		add("auth.param is required when the scheme is %s", r.Auth.Scheme)
 	}
 
-	if r.Auth.Param != "" && r.Auth.Scheme != "query" {
-		add("auth.param only applies to the query scheme")
+	if r.Auth.Param != "" && r.Auth.Scheme != "query" && r.Auth.Scheme != "body" {
+		add("auth.param only applies to the query and body schemes")
 	}
 
 	// A verdict that names an error nobody declared would fall through to the

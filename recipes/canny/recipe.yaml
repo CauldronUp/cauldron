@@ -1,0 +1,418 @@
+# Canny Recipe for Cauldron
+#
+# **Reading is a POST, and the credential is part of the body.**
+#
+# Listing posts is `POST https://canny.io/api/v1/posts/list`, and the API key
+# is a form parameter called `apiKey` alongside the filters. Not a header, not
+# a query parameter, not basic auth. Two things follow that are worth having a
+# fake for:
+#
+#   1. A client cannot set the credential once. There is no default header to
+#      hang it on, so every call site carries the secret, and the one that
+#      forgets is a request that looks well-formed and is refused.
+#   2. The secret lands in request bodies. Anything that logs POST bodies --
+#      a proxy, an APM tool, a retry queue that serialises the request -- has
+#      the key in it, and body logging is the kind that gets switched on during
+#      an incident by somebody who is not thinking about credentials.
+#
+# It also means a GET is refused. Every read here is a write-shaped request, so
+# an HTTP cache in front of it caches nothing and a `curl` that omits `-X POST`
+# gets a refusal that says nothing about the key being right.
+#
+# **The paging signal is a boolean and there is no total.**
+#
+# A listing answers `{"hasMore": true, "posts": [...]}`. No count, no next
+# cursor, no link header. The client pages with `skip` and stops when `hasMore`
+# is false, and the default `limit` is **ten** -- small enough that code tested
+# against a board with eight posts never pages at all and meets the second page
+# for the first time in production.
+#
+# **Two versions disagree about the envelope key.**
+#
+# v1 wraps its array in `posts`. v2 wraps its array in `items`. Same vendor,
+# same kind of answer, different key, and the version is a path segment rather
+# than a header, so a client that follows a v2 example while calling a v1 path
+# reads `undefined` off a response that arrived perfectly well. Only v1 is
+# served here; the v2 key is recorded because the disagreement is the point.
+#
+# Written against Canny's own API reference -- developers.canny.io/api-reference,
+# read on 2026-09-06. No case here is marked verified, because none was struck
+# against a live account.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - **The failure shape is Canny's gap, not a decision this Recipe made.**
+#     The reference documents `{"error": "..."}` as the failure envelope and
+#     does not state the status code for a bad or missing key. This Recipe
+#     serves 401 with that envelope. If Canny answers 200 with an error inside
+#     it -- which some POST-only APIs do -- then this is wrong, and it is
+#     written here so that whoever finds out has somewhere to correct.
+#   - Posts only. Boards, comments, votes, users and companies are real
+#     resources with their own shapes; each wants its own evidence.
+#   - `author`, `board`, `category` and `owner` are documented as embedded
+#     objects that can be null. They are served as maps, and their contents are
+#     not modelled: an embedded board here is not a board this Recipe serves.
+#   - v2 is not served. Its `items` key is recorded above and nothing here
+#     answers a v2 path.
+
+recipe: canny
+capability: issues
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.canny.io/api-reference
+
+auth:
+  # In the body, with the filters. Not a header.
+  scheme: body
+  param: apiKey
+  keys:
+    - cauldron_canny_key_0000000000000000
+  absent_error: no_credential
+  rejected_error: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    key: posts
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+
+resources:
+  post:
+    id:
+      style: opaque
+    fields:
+      title:
+        type: string
+      details:
+        type: string
+      status:
+        type: string
+      # Canny's own ranking number, not a vote count.
+      score:
+        type: number
+      commentCount:
+        type: integer
+      url:
+        type: string
+      created:
+        type: datetime
+      # Moves whenever the status does, which is what a changelog is built on.
+      statusChangedAt:
+        type: datetime
+        null_when_unset: true
+      # Documented as an embedded object that may be null, so a client reading
+      # author.name has to check the object first.
+      author:
+        type: map
+        null_when_unset: true
+      board:
+        type: map
+      # Planned date, absent far more often than not.
+      eta:
+        type: string
+        null_when_unset: true
+      tags:
+        type: list
+      imageURLs:
+        type: list
+
+routes:
+  - method: POST
+    path: /api/v1/posts/list
+    resource: post
+    operation: list
+    pagination:
+      # skip and limit, both in the body with everything else, and a default
+      # page of ten.
+      style: offset
+      limit: 10
+      limit_param: limit
+      cursor_param: skip
+      in: body
+
+  - method: POST
+    path: /api/v1/posts/retrieve
+    resource: post
+    operation: get
+    id_from: body:id
+
+errors:
+  no_credential:
+    # Canny does not document the status for this. See the header.
+    status: 401
+    message: "invalid api key"
+  authentication_error:
+    status: 401
+    message: "invalid api key"
+  resource_missing:
+    status: 404
+    message: "post not found"
+  parameter_missing:
+    status: 400
+    message: "missing parameter {detail}"
+  unknown_route:
+    status: 404
+    message: "not found"
+  method_not_allowed:
+    # A GET on a read endpoint. Every read here is a POST.
+    status: 405
+    message: "method not allowed"
+  rate_limit:
+    status: 429
+    message: "rate limit exceeded"
+
+fixtures:
+  empty:
+    post: []
+
+  small-board:
+    post:
+      - id: cauldron00000000000001
+        title: Dark mode for the dashboard
+        details: The dashboard is unusable at night.
+        status: planned
+        score: 42
+        commentCount: 7
+        url: "https://cauldron.canny.io/feature-requests/p/dark-mode-for-the-dashboard"
+        created: "2026-03-14T09:12:44.000Z"
+        statusChangedAt: "2026-08-02T15:31:07.000Z"
+        author:
+          id: cauldronuser000000001
+          name: Ada Lovelace
+        board:
+          id: cauldronboard0000001
+          name: Feature Requests
+        eta: "2026-11-01"
+        tags:
+          - ui
+        imageURLs: []
+
+      # No author: Canny documents author as nullable, and a post created
+      # through the API on somebody's behalf can arrive without one.
+      - id: cauldron00000000000002
+        title: Export to CSV
+        details: We need the report as a file.
+        status: open
+        score: 18
+        commentCount: 0
+        url: "https://cauldron.canny.io/feature-requests/p/export-to-csv"
+        created: "2026-07-21T11:02:19.000Z"
+        statusChangedAt: null
+        author: null
+        board:
+          id: cauldronboard0000001
+          name: Feature Requests
+        eta: null
+        tags: []
+        imageURLs: []
+
+      - id: cauldron00000000000003
+        title: Single sign-on
+        details: SAML, ideally.
+        status: complete
+        score: 96
+        commentCount: 23
+        url: "https://cauldron.canny.io/feature-requests/p/single-sign-on"
+        created: "2025-11-04T08:40:00.000Z"
+        statusChangedAt: "2026-06-18T10:15:52.000Z"
+        author:
+          id: cauldronuser000000002
+          name: Grace Hopper
+        board:
+          id: cauldronboard0000001
+          name: Feature Requests
+        eta: null
+        tags:
+          - security
+          - enterprise
+        imageURLs: []
+
+conformance:
+  - name: reading a list is a POST, with the key in the body
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/list
+      json:
+        # Alongside the filters, not in a header. Every call site carries it.
+        apiKey: cauldron_canny_key_0000000000000000
+    expect:
+      status: 200
+      body:
+        "posts[0].title": "Dark mode for the dashboard"
+
+  - name: the paging signal is a boolean, with no total beside it
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/list
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+    expect:
+      status: 200
+      absent:
+        # No count, no next cursor, no link. The client pages on hasMore
+        # alone, which is why a board smaller than the default page never
+        # exercises the loop.
+        - count
+        - total
+        - next
+        - nextCursor
+
+  - name: a post can arrive with no author at all
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/retrieve
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+        id: cauldron00000000000002
+    expect:
+      status: 200
+      body:
+        title: "Export to CSV"
+        # Present and null rather than absent, so author.name throws rather
+        # than reading undefined.
+        author: null
+        # And a post whose status has never moved has no statusChangedAt.
+        statusChangedAt: null
+
+  - name: an embedded board is an object, not an id
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/retrieve
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+        id: cauldron00000000000001
+    expect:
+      status: 200
+      body:
+        # Unlike GoCardless's links, which carry ids, Canny embeds the record.
+        "board.name": "Feature Requests"
+        "author.name": "Ada Lovelace"
+
+  - name: score is a ranking, not a count of votes
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/retrieve
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+        id: cauldron00000000000003
+      # A completed post still carries a score and a comment count, which is
+      # what a changelog reads.
+    expect:
+      status: 200
+      body:
+        status: "complete"
+        score: 96
+        commentCount: 23
+
+  - name: a request with no key is refused
+    source: https://developers.canny.io/api-reference
+    fixture: small-board
+    request:
+      method: POST
+      path: /api/v1/posts/list
+      json: {}
+    expect:
+      # Canny does not document the status for this; see the Recipe header.
+      status: 401
+      body:
+        error: "invalid api key"
+
+  # The page size, asserted from what the sandbox answered rather than
+  # from what the fixture lists -- the two are not the same thing,
+  # because the store does not serve records in the order a fixture
+  # writes them. Asking for one out of 3 and receiving one can only
+  # happen if limit was read.
+  - name: "limit is read on api v1 posts list, and a page of one is not the whole collection"
+    source: "https://developers.canny.io/api-reference"
+    fixture: small-board
+    request:
+      method: POST
+      path: "/api/v1/posts/list"
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+        limit: 1
+    expect:
+      status: 200
+      body:
+        "posts[0].id": "cauldron00000000000001"
+      absent:
+        - "posts[1]"
+
+  # And the position. skip=1 answers a different record, which the size
+  # alone cannot produce.
+  - name: "skip moves the page on for api v1 posts list"
+    source: "https://developers.canny.io/api-reference"
+    fixture: small-board
+    request:
+      method: POST
+      path: "/api/v1/posts/list"
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+        limit: 1
+        skip: 1
+    expect:
+      status: 200
+      body:
+        "posts[0].id": "cauldron00000000000002"
+      absent:
+        - "posts[1]"
+
+  # The names. This Recipe declares 6 field(s) on a post that no case
+  # asserted, so each of them could have been renamed to anything and
+  # every case would have stayed green. The runtime builds the response
+  # out of the declaration and the fixture, so this seeds one and
+  # asserts the 5 name(s) that came back at the paths they came back
+  # under.
+  - name: "a post carries the field names this Recipe declares"
+    source: "https://developers.canny.io/api-reference"
+    fixture: small-board
+    request:
+      method: POST
+      path: "/api/v1/posts/list"
+      json:
+        apiKey: cauldron_canny_key_0000000000000000
+    expect:
+      status: 200
+      body:
+        "posts[0].created": "2026-03-14T09:12:44.000Z"
+        "posts[0].details": "The dashboard is unusable at night."
+        "posts[0].eta": "2026-11-01"
+        "posts[0].tags[0]": "ui"
+        "posts[0].url": "https://cauldron.canny.io/feature-requests/p/dark-mode-for-the-dashboard"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://developers.canny.io/api-reference"
+    arm: rate_limit
+    fixture: small-board
+    request:
+      method: POST
+      path: "/api/v1/posts/list"
+    expect:
+      status: 429
+      body:
+        "error": "rate limit exceeded"
+
+
+

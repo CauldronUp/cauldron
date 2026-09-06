@@ -721,6 +721,7 @@ func TestEveryValidAuthSchemeActuallyChecksSomething(t *testing.T) {
 		"basic":  {Scheme: "basic", Credential: "password", Keys: []string{"right"}},
 		"header": {Scheme: "header", Header: "X-Api-Key", Keys: []string{"right"}},
 		"query":  {Scheme: "query", Param: "api_key", Keys: []string{"right"}},
+		"body":   {Scheme: "body", Param: "apiKey", Keys: []string{"right"}},
 	}
 
 	// none is the one scheme that is meant to accept anything, and it is
@@ -807,6 +808,15 @@ func sandboxWithAuth(t *testing.T, auth recipe.Auth) *Sandbox {
 func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
 	req := httptest.NewRequest(http.MethodGet, "/v1/customers", nil)
 
+	if auth.Scheme == "body" {
+		// A body credential needs a body, and needs the request to be one
+		// that carries one. Canny reads every listing as a POST for exactly
+		// this reason.
+		req = httptest.NewRequest(http.MethodPost, "/v1/customers",
+			strings.NewReader(`{"`+auth.Param+`": "`+credential+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+	}
+
 	switch auth.Scheme {
 	case "bearer":
 		req.Header.Set("Authorization", auth.Prefix+credential)
@@ -818,6 +828,8 @@ func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
 		q := req.URL.Query()
 		q.Set(auth.Param, credential)
 		req.URL.RawQuery = q.Encode()
+	case "body":
+		// Already carried, above.
 	default:
 		req.Header.Set("Authorization", credential)
 	}
