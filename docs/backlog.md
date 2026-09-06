@@ -24,7 +24,7 @@ Two rules apply to everything here:
 |---|---|
 | AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
 | ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
-| AWS SNS | Topics, subscriptions, delivery failures |
+| ~~AWS SNS~~ | Shipped, with its refusal struck live and no account needed. **It answers XML**, and it is the only AWS Recipe here that does: SQS, DynamoDB and Secrets Manager speak the newer JSON protocol with `X-Amz-Target`, while SNS is the older Query protocol -- `Action=ListTopics` in the query string and `text/xml` back -- so a client written against the SQS Recipe next door calls `.json()` on XML and throws. **A missing credential is 403, not 401**, with no `WWW-Authenticate`, so nothing catches it in a retry-with-credentials path and 403 sends people hunting through IAM for a key that was never sent. Every failure carries `Type`, Sender or Receiver, which is the retry signal and is not the code. A malformed signature comes back as `IncompleteSignature` whose message ends with a base64 digest of the caller's own Authorization header -- a hash rather than the secret, but a credential-derived value landing in a log line. And a listing returns ARNs and nothing else, so a hundred topics is a hundred and one requests |
 | ~~Justworks~~ | **Assessed and refused: there is nothing to model that is not Cloudflare.** Every path on every Justworks subdomain -- `www`, `api`, `help` -- sits behind an active managed bot challenge (`Cf-Mitigated: challenge`, the "Just a moment..." page) that stops any non-browser client before it reaches Justworks' own servers. Not a connectivity problem: `status.justworks.com` resolves and answers normally from the same place. There are no public developer docs, no OpenAPI document, no repositories under the company's GitHub organisation, and no third-party client on any registry. A Recipe here would describe a bot wall, and this project does not work around those -- see `SECURITY` on why not. What would reopen this is Justworks publishing an API, not somebody trying harder |
 | ~~Substack~~ | **Assessed and refused: there is no API to model.** Probed live with no account. `substack.com/api/v1/*` is real and answers, and it is the web client's own internals -- four incompatible failure envelopes across five endpoints (`403` plain text, a `401` JSON body with an HTML `<a>` tag inside the message meant for React to render, a full single-page-application shell for both a real path and an invented one, and a `404` with an empty body and no `Content-Type` at all), authenticated by session cookie, with no key any integration could hold. The one thing Substack calls a Developer API is approval-gated behind a seven-to-ten-day wait, publishes no technical reference of any kind -- no paths, no auth header name, no example JSON, only a legal document naming categories of data -- and returns a public subscriber **count** on a creator profile, never a subscriber record. The question its group was written to ask, whether a subscriber is a person or a subscription, has no vendor surface to answer it against |
 | ~~AWS SES~~ | Shipped. Accepted-not-delivered, the invisible suppression list |
@@ -5558,11 +5558,11 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-595 record field name(s) across 214 recipe(s) are declared and asserted
+596 record field name(s) across 215 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-647 declared error(s) across 310 recipe(s) have no case asserting what
+651 declared error(s) across 311 recipe(s) have no case asserting what
 they say.
 ```
 

@@ -1,0 +1,261 @@
+# AWS SNS Recipe for Cauldron
+#
+# **It answers XML, and it is the only AWS Recipe here that does.**
+#
+# SQS, DynamoDB and Secrets Manager all speak the newer JSON protocol -- a POST
+# to `/` with `X-Amz-Target` naming the operation and a JSON body. SNS is the
+# older Query protocol: parameters in the query string, `Action=ListTopics`, and
+# `text/xml` coming back. A client written against the SQS Recipe and pointed at
+# SNS calls `.json()` on an XML document and throws.
+#
+# Struck live against sns.us-east-1.amazonaws.com on 2026-09-06, with no
+# account and no credential:
+#
+#   GET /?Action=ListTopics&Version=2010-03-31
+#   HTTP 403  text/xml
+#   <ErrorResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+#     <Error>
+#       <Type>Sender</Type>
+#       <Code>MissingAuthenticationToken</Code>
+#       <Message>Request is missing Authentication Token</Message>
+#     </Error>
+#     <RequestId>5ba6480b-2695-5107-b1c6-2b1c4235b89a</RequestId>
+#   </ErrorResponse>
+#
+# **A missing credential is 403, not 401.**
+#
+# There is no WWW-Authenticate, no 401, and nothing for an HTTP client's
+# built-in "retry with credentials" path to catch. Code that branches on 401 to
+# refresh a token never refreshes; code that treats 403 as "this key lacks
+# permission" goes looking for an IAM policy when the problem is that no key was
+# sent at all.
+#
+# **`Type` is the retry signal, and it is not the code.**
+#
+# Every SNS failure carries `Type`, which is `Sender` or `Receiver`. Sender
+# means the request was wrong and sending it again will fail again; Receiver
+# means AWS broke and retrying is correct. That distinction is the one a backoff
+# loop needs, and it sits beside the code rather than in it.
+#
+# **A malformed signature is answered with a hash of your own header.**
+#
+# Also struck live, sending an Authorization header with no date:
+#
+#   HTTP 400  IncompleteSignature
+#   "Authorization header requires existence of either a 'X-Amz-Date' or a
+#    'Date' header. (Hashed with SHA-256 and encoded with Base64)
+#    Authorization=y6ryXS/RhT3/69GgeQOKwb+lkSz/foW3fACGahjN+Ig="
+#
+# The message ends with a base64 digest derived from the credential header the
+# caller sent. It is a hash rather than the secret, so this is not a leak of the
+# key -- but it is a derived value from a credential arriving in an error string
+# that goes straight into logs, and it is worth knowing before somebody pastes
+# one into a ticket.
+#
+# **Listing topics gives you ARNs and nothing else.**
+#
+# `Topics.member.N` is an array of Topic objects, and a Topic is one field: the
+# ARN. No name, no display name, no subscription count, no attributes. Anything
+# a user interface wants to show needs a second call per topic, and there is no
+# batch form of it -- so a hundred topics is a hundred and one requests.
+#
+# The listing returns up to a hundred and a `NextToken` when there are more.
+#
+# Written against Amazon's own reference -- docs.aws.amazon.com/sns/latest/api,
+# ListTopics and CommonErrors -- and against the live endpoint for the two
+# refusals, which needed no account because being refused is the thing being
+# recorded.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - **The success bodies are recorded XML, not generated.** The Query
+#     protocol's `Topics.member.1.TopicArn` flattening is a shape this format
+#     builds no records into, so the listing here is a fixed document rather
+#     than a fixture-driven one. Seeding a different fixture does not change it.
+#   - Topics only, and only listing them. Publish, subscribe, the confirmation
+#     handshake and the delivery-failure behaviour are the interesting parts of
+#     SNS and each wants evidence of its own.
+#   - The signature is not verified, and this Recipe accepts any credential that
+#     is present. Reproducing SigV4 is not what this project is for; what is
+#     reproduced is the difference between sending nothing and sending
+#     something malformed, which is where the two live cases came from.
+
+recipe: sns
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: "2010-03-31"
+  docs: https://docs.aws.amazon.com/sns/latest/api/
+
+auth:
+  scheme: header
+  header: Authorization
+  keys:
+    - "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260906/us-east-1/sns/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  absent_error: missing_authentication_token
+
+responses:
+  error:
+    style: flat
+    message_field: Message
+
+resources:
+  topic:
+    id:
+      style: opaque
+      field: TopicArn
+    fields:
+      # Declared and not routed. A route that sends recorded XML can only send
+      # bytes, so nothing here builds a topic record -- the shape is written
+      # down because the ARN is the whole of what a listing returns, and that
+      # is the finding.
+      TopicArn:
+        type: string
+
+routes:
+  - method: GET
+    path: /
+    raw:
+      # text/xml, which is what the live endpoint sends. Not
+      # application/xml, and emphatically not application/json.
+      content_type: text/xml
+      text: |
+        <ListTopicsResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+          <ListTopicsResult>
+            <Topics>
+              <member>
+                <TopicArn>arn:aws:sns:us-east-1:000000000000:cauldron-orders</TopicArn>
+              </member>
+              <member>
+                <TopicArn>arn:aws:sns:us-east-1:000000000000:cauldron-alerts</TopicArn>
+              </member>
+            </Topics>
+          </ListTopicsResult>
+          <ResponseMetadata>
+            <RequestId>00000000-0000-5000-0000-000000000000</RequestId>
+          </ResponseMetadata>
+        </ListTopicsResponse>
+
+errors:
+  # 403 with no WWW-Authenticate, which is not what an HTTP client expects.
+  missing_authentication_token:
+    status: 403
+    code: MissingAuthenticationToken
+    message: "Request is missing Authentication Token"
+  incomplete_signature:
+    status: 400
+    code: IncompleteSignature
+    message: "Authorization header requires existence of either a 'X-Amz-Date' or a 'Date' header."
+  authorization_error:
+    status: 403
+    code: AuthorizationError
+    message: "Indicates that the user has been denied access to the requested resource."
+  invalid_parameter:
+    status: 400
+    code: InvalidParameter
+    message: "Indicates that a request parameter does not comply with the associated constraints."
+  internal_error:
+    # The one whose Type is Receiver rather than Sender, and the only one worth
+    # retrying.
+    status: 500
+    code: InternalError
+    message: "Indicates an internal service error."
+  rate_limit:
+    status: 400
+    code: Throttling
+    message: "Rate exceeded"
+
+fixtures:
+  empty:
+    topic: []
+
+  small-account:
+    topic:
+      - TopicArn: arn:aws:sns:us-east-1:000000000000:cauldron-orders
+      - TopicArn: arn:aws:sns:us-east-1:000000000000:cauldron-alerts
+
+conformance:
+  - name: no credential at all is a 403, not a 401
+    source: https://sns.us-east-1.amazonaws.com/?Action=ListTopics&Version=2010-03-31
+    verified: "2026-09-06"
+    fixture: small-account
+    request:
+      method: GET
+      path: /?Action=ListTopics&Version=2010-03-31
+    expect:
+      # Struck live with no account. Nothing for a client's retry-with-
+      # credentials path to catch, and no WWW-Authenticate to point at.
+      status: 403
+      body:
+        Message: "Request is missing Authentication Token"
+
+  - name: the listing answers XML, not JSON
+    source: https://docs.aws.amazon.com/sns/latest/api/API_ListTopics.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /?Action=ListTopics&Version=2010-03-31
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260906/us-east-1/sns/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      headers:
+        # A client that calls .json() on this throws, and the SQS Recipe next
+        # door would have let it.
+        Content-Type: "text/xml"
+      body_matches: "<TopicArn>arn:aws:sns:us-east-1:000000000000:cauldron-orders</TopicArn>"
+
+  - name: a topic in the listing is an ARN and nothing else
+    source: https://docs.aws.amazon.com/sns/latest/api/API_ListTopics.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /?Action=ListTopics&Version=2010-03-31
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260906/us-east-1/sns/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      # No name, no display name, no subscription count. Anything a user
+      # interface wants needs a second call per topic, and there is no batch
+      # form of it.
+      body_matches: "<Topics>[^!]*</Topics>"
+
+  - name: the records are nested through member, not a plain array
+    source: https://docs.aws.amazon.com/sns/latest/api/API_ListTopics.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /?Action=ListTopics&Version=2010-03-31
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260906/us-east-1/sns/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      # Topics.member.N in the reference's own notation. An XML-to-JSON
+      # converter turns a single member into an object and two into an array,
+      # which is the bug this shape is famous for.
+      body_matches: "<Topics>\\s*<member>"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://docs.aws.amazon.com/sns/latest/api/"
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: "/"
+      query:
+        "Action": "ListTopics"
+        "Version": "2010-03-31"
+      headers:
+        "Authorization": "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260906/us-east-1/sns/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 400
+      body:
+        "Message": "Rate exceeded"
+

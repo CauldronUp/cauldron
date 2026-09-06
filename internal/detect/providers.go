@@ -4774,6 +4774,11 @@ func providers() []provider {
 			gomod:  []string{"github.com/aws/aws-sdk-go-v2/service/sqs"},
 		},
 		{
+			recipe: "sns",
+			npm:    []string{"@aws-sdk/client-sns"},
+			gomod:  []string{"github.com/aws/aws-sdk-go-v2/service/sns"},
+		},
+		{
 			recipe:   "square",
 			npm:      []string{"square"},
 			composer: []string{"square/square"},
