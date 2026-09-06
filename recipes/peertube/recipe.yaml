@@ -1,0 +1,545 @@
+# PeerTube Recipe for Cauldron
+#
+# Written against PeerTube's own OpenAPI 3.0 document -- github.com/Chocobozzz/
+# PeerTube, support/doc/api/openapi.yaml, 249 paths, version 8.1.0 -- and struck
+# live against peertube2.cpy.re on 2026-09-06. That host is named in the
+# document's own `servers` list as a live test server, and the video surface is
+# public, so most of this Recipe is verified rather than read.
+#
+# **Three identifiers per video, and the embed URL uses the third.**
+#
+# Struck live:
+#
+#   id         951957
+#   uuid       "c40f992b-4ba3-4158-8e38-7c710db01707"
+#   shortUUID  "qdcVhVSdcZMtpqeqnfVsJk"
+#   embedPath  "/videos/embed/qdcVhVSdcZMtpqeqnfVsJk"
+#
+# All three address the same video. `/videos/{id}` accepts any of them. The
+# integer is local to the instance and meaningless anywhere else; the uuid is
+# global; the shortUUID is the uuid re-encoded shorter, and it is the one the
+# embed path uses -- so a client that stores `id` cannot build an embed URL, and
+# one that stores `uuid` has to convert.
+#
+# **`{id, label}` on four fields, with three different types of id.**
+#
+# Struck live, on one video:
+#
+#   privacy   {"id": 1,      "label": "Public"}
+#   licence   {"id": 6,      "label": "Attribution - Non Commercial - No Derivatives"}
+#   language  {"id": "fr",   "label": "French"}
+#   category  {"id": null,   "label": "Unknown"}
+#
+# The same shape four times, and the id inside it is a number, a number, a
+# string and a null. So `video.privacy === "Public"` is false, `video.language.id`
+# needs a string comparison where `video.licence.id` needs a numeric one, and
+# `video.category` is truthy on a video with no category -- because "no
+# category" is an object whose id is null and whose label is the word "Unknown".
+#
+# A client filtering out uncategorised videos with `if (!video.category)` filters
+# out none of them.
+#
+# `licence` is spelled the British way. `privacy`, `category` and `language` are
+# not spelled any way that helps.
+#
+# **Errors are RFC 7807, and the content type says so.**
+#
+# Struck live: `Content-Type: application/problem+json; charset=utf-8`. Not
+# `application/json`. A client that checks the content type before parsing --
+# or a framework configured to decode only `application/json` -- skips the body
+# on exactly the responses that explain themselves.
+#
+# **And the problem documents are not the same shape as each other.**
+#
+# Struck live, one after the other:
+#
+#   404  {"type":"about:blank","title":"Not Found","detail":"Video not found",
+#         "status":404,
+#         "docs":"https://docs.joinpeertube.org/api-rest-reference.html#operation/getVideo"}
+#
+#   401  {"type":"https://docs.joinpeertube.org/api-rest-reference.html#section/Errors/unauthorized_request",
+#         "detail":"Token is invalid","status":401,"code":"unauthorized_request"}
+#
+# The 404 has `title` and `docs` and no `code`. The 401 has `code` and no
+# `title` and no `docs`, and its `type` is a real URL where the 404's is
+# `about:blank`. Two RFC 7807 responses from one host, sharing two members out
+# of five. A client that reads `problem.title` gets undefined on the 401; one
+# that reads `problem.code` gets undefined on the 404.
+#
+# **A 400 carries a hyphenated key.** Struck live:
+#
+#   {"type":"about:blank","title":"Bad Request",
+#    "detail":"Incorrect request parameters: count",
+#    "instance":"/api/v1/videos?count=999","status":400,
+#    "invalid-params":{"count":{"type":"field","value":"999","msg":"..."}}}
+#
+# `invalid-params`, with a hyphen. RFC 7807 allows extension members and does
+# not constrain their names, so this is legal -- and `problem.invalid-params` is
+# a subtraction in JavaScript, not a property access. It has to be
+# `problem["invalid-params"]`, and in a language that generates structs from a
+# schema it becomes whatever the generator does with a hyphen.
+#
+# It also carries `instance`, which the 404 and the 401 do not.
+#
+# **Three fields for one question about adult content.** `nsfw` is a boolean,
+# `nsfwFlags` is an integer bitfield -- struck live as `0` -- and `nsfwSummary`
+# is a nullable string. The bitfield's "nothing set" value is falsy and so is
+# the boolean's false, so two of the three are indistinguishable from absent.
+#
+# **Rate-limit headers on an unauthenticated request.** Struck live:
+# `X-RateLimit-Limit: 500` and `X-RateLimit-Remaining: 499`, on a public
+# listing with no credential. Most providers modelled here send nothing.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Videos, listed and fetched. 249 paths is a federated video platform:
+#     accounts, channels, playlists, comments, live streams, subscriptions,
+#     abuse reports, the ActivityPub surface and the upload flow each want
+#     their own evidence.
+#   - The three identifiers are served on the record; the fetch route takes the
+#     uuid alone. Accepting all three would mean routing one path three ways,
+#     and what the finding needs is that all three are in the response.
+#   - `state` is served as null. It is non-null only while a video is being
+#     transcoded, which a fixture cannot represent honestly.
+
+recipe: peertube
+capability: media
+version: 0.1.0
+
+upstream:
+  api: "8.1.0"
+  docs: https://docs.joinpeertube.org/api-rest-reference.html
+  spec: https://raw.githubusercontent.com/Chocobozzz/PeerTube/develop/support/doc/api/openapi.yaml
+  spec_hash: 61c1d73012d82d7585d0463fe77ed4ebbb652c6fc987a3b3d928e81912c78faf
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_peertube_token
+  # No absent_error: the video surface is public, which is how every live case
+  # here was struck.
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: total
+  error:
+    # RFC 7807. The per-error fields below carry the members that differ.
+    style: flat
+    message_field: detail
+    # No Recipe-wide code_field: the 404 has no `code` member and the 401 does,
+    # which is half the finding. The 401 carries its own below.
+    fields:
+      status: 400
+
+resources:
+  video:
+    id:
+      style: uuid
+      field: uuid
+    fields:
+      # The instance-local integer, meaningless on any other instance. Named
+      # numeric_id here and emitted as `id`, because the record's identifier
+      # for routing purposes is the uuid.
+      numeric_id:
+        type: number
+        as: id
+      # The uuid re-encoded shorter, and the one the embed path uses.
+      shortUUID:
+        type: string
+      name:
+        type: string
+        required: true
+      # {id, label} where id is a number.
+      privacy:
+      # {id, label} where id is a number, spelled the British way.
+      licence:
+      # {id, label} where id is a STRING.
+      language:
+      # {id, label} where id is NULL and label is "Unknown" -- so an absent
+      # category is a truthy object.
+      category:
+      isLive:
+        type: boolean
+        default: false
+      isLocal:
+        type: boolean
+        default: true
+      # Three fields for one question, two of whose "nothing" values are falsy.
+      nsfw:
+        type: boolean
+        default: false
+      nsfwFlags:
+        type: number
+        default: 0
+      nsfwSummary:
+        type: string
+      duration:
+        type: number
+        default: 0
+      views:
+        type: number
+        default: 0
+      aspectRatio:
+        type: number
+        default: 1.7778
+      embedPath:
+        type: string
+      publishedAt:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v1/videos
+    resource: video
+    operation: list
+    # Struck live with no credential.
+    public: true
+    pagination:
+      style: offset
+      limit_param: count
+      cursor_param: start
+      limit: 15
+      max_limit: 100
+      # Struck live: count=999 is refused with a 400 rather than trimmed.
+      over_limit: invalid_count
+
+  - method: GET
+    path: /api/v1/videos/{id}
+    resource: video
+    operation: get
+    public: true
+    not_found: video_not_found
+
+errors:
+  # Struck live. type is about:blank, and there is a docs member and no code.
+  video_not_found:
+    headers:
+      # Not application/json, on every failure this API has.
+      Content-Type: application/problem+json; charset=utf-8
+    status: 404
+    message: "Video not found"
+    fields:
+      type: "about:blank"
+      title: "Not Found"
+      status: 404
+      docs: "https://docs.joinpeertube.org/api-rest-reference.html#operation/getVideo"
+  # Struck live. A code and no title and no docs, and type is a real URL.
+  unauthorized:
+    headers:
+      # Not application/json, on every failure this API has.
+      Content-Type: application/problem+json; charset=utf-8
+    status: 401
+    message: "Token is invalid"
+    fields:
+      type: "https://docs.joinpeertube.org/api-rest-reference.html#section/Errors/unauthorized_request"
+      status: 401
+      # On this failure and not on the 404, which is the shape difference.
+      code: unauthorized_request
+  # Struck live, with the hyphenated extension member.
+  invalid_count:
+    headers:
+      # Not application/json, on every failure this API has.
+      Content-Type: application/problem+json; charset=utf-8
+    status: 400
+    message: "Incorrect request parameters: count"
+    fields:
+      type: "about:blank"
+      title: "Bad Request"
+      status: 400
+      instance: "/api/v1/videos?count=999"
+      invalid-params:
+        count:
+          type: field
+          value: "999"
+          msg: "Should have a number count"
+  rate_limit:
+    headers:
+      # Not application/json, on every failure this API has.
+      Content-Type: application/problem+json; charset=utf-8
+    status: 429
+    message: "Too many requests"
+    fields:
+      type: "about:blank"
+      title: "Too Many Requests"
+      status: 429
+
+fixtures:
+  empty:
+    video: []
+
+  instance:
+    video:
+      - uuid: c40f992b-4ba3-4158-8e38-7c710db01707
+        numeric_id: 951957
+        shortUUID: qdcVhVSdcZMtpqeqnfVsJk
+        name: "A video with every identifier"
+        privacy:
+          id: 1
+          label: Public
+        licence:
+          id: 6
+          label: "Attribution - Non Commercial - No Derivatives"
+        language:
+          # A string, where privacy's and licence's are numbers.
+          id: fr
+          label: French
+        category:
+          # Null, inside an object whose label is the word Unknown.
+          id: null
+          label: Unknown
+        isLive: false
+        isLocal: true
+        nsfw: false
+        nsfwFlags: 0
+        nsfwSummary: null
+        duration: 754
+        views: 1204
+        aspectRatio: 1.7778
+        embedPath: /videos/embed/qdcVhVSdcZMtpqeqnfVsJk
+        publishedAt: "2026-08-21T14:02:00.000Z"
+      - uuid: 7f3e1d9c-2b4a-4c6d-8e0f-1a2b3c4d5e6f
+        numeric_id: 951958
+        shortUUID: rBmXkTvHqNfLdWzYpQsAJc
+        name: "A live stream, still running"
+        privacy:
+          id: 2
+          label: Unlisted
+        licence:
+          id: 1
+          label: "Attribution"
+        language:
+          id: en
+          label: English
+        category:
+          id: 15
+          label: Science & Technology
+        isLive: true
+        isLocal: false
+        nsfw: false
+        nsfwFlags: 0
+        nsfwSummary: null
+        # Zero on a live stream that has not finished, which is not the same
+        # as a zero-length video.
+        duration: 0
+        views: 42
+        aspectRatio: 1.7778
+        embedPath: /videos/embed/rBmXkTvHqNfLdWzYpQsAJc
+        publishedAt: "2026-09-06T08:00:00.000Z"
+
+conformance:
+  - name: a video carries three identifiers and the embed uses the third
+    source: https://peertube2.cpy.re/api/v1/videos
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+      query:
+        count: "2"
+    expect:
+      status: 200
+      body:
+        # Struck live: id 951957, uuid c40f992b-…, shortUUID qdcVhVSdcZMtpqeqnfVsJk,
+        # and embedPath built from the shortUUID. A client that stores id
+        # cannot build an embed URL; one that stores uuid has to convert.
+        'data[0].id': 951957
+        'data[0].uuid': c40f992b-4ba3-4158-8e38-7c710db01707
+        'data[0].shortUUID': qdcVhVSdcZMtpqeqnfVsJk
+        'data[0].embedPath': /videos/embed/qdcVhVSdcZMtpqeqnfVsJk
+
+  - name: four fields share a shape and disagree about the type inside it
+    source: https://peertube2.cpy.re/api/v1/videos
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+    expect:
+      status: 200
+      body:
+        # Struck live on one video. Same {id, label} four times; the id is a
+        # number, a number, a string and a null.
+        'data[0].privacy.id': 1
+        'data[0].licence.id': 6
+        'data[0].language.id': fr
+        'data[0].category.id': null
+        # And the label on the one with the null id is the word Unknown, so
+        # the object is truthy and `if (!video.category)` filters nothing.
+        'data[0].category.label': Unknown
+
+  - name: a listing counts the whole set, not the page
+    source: https://peertube2.cpy.re/api/v1/videos
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+      query:
+        count: "1"
+    expect:
+      status: 200
+      body:
+        # Struck live: total was 104864 against a page of 2. The name is
+        # `total` and the records are under `data`.
+        total: 2
+        'data[0].id': 951957
+      absent:
+        - 'data[1]'
+
+  - name: the page size parameter is count, and the offset is start
+    source: https://peertube2.cpy.re/api/v1/videos
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+      query:
+        # Not limit, not per_page. And the offset is `start`, not `offset`.
+        count: "1"
+        start: "1"
+    expect:
+      status: 200
+      body:
+        'data[0].id': 951958
+      absent:
+        - 'data[1]'
+
+  - name: an oversized page is refused rather than trimmed
+    source: https://peertube2.cpy.re/api/v1/videos?count=999
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+      query:
+        count: "999"
+    expect:
+      # Struck live. Most providers here clamp silently; this one refuses,
+      # which is the louder and better half of that choice.
+      status: 400
+      headers:
+        Content-Type: application/problem+json; charset=utf-8
+      body:
+        type: "about:blank"
+        title: "Bad Request"
+        detail: "Incorrect request parameters: count"
+        status: 400
+        # A hyphenated extension member. problem.invalid-params is a
+        # subtraction in JavaScript; it has to be problem["invalid-params"].
+        'invalid-params.count.value': "999"
+        'invalid-params.count.type': field
+        # And an instance member the 404 and 401 do not carry.
+        instance: "/api/v1/videos?count=999"
+
+  - name: a missing video is a problem document with a title and no code
+    source: https://peertube2.cpy.re/api/v1/videos/00000000-0000-4000-8000-000000000000
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos/00000000-0000-4000-8000-000000000000
+    expect:
+      status: 404
+      headers:
+        # Not application/json.
+        Content-Type: application/problem+json; charset=utf-8
+      body:
+        # Struck live, every member.
+        type: "about:blank"
+        title: "Not Found"
+        detail: "Video not found"
+        status: 404
+        docs: "https://docs.joinpeertube.org/api-rest-reference.html#operation/getVideo"
+      absent:
+        # Which the 401 has.
+        - code
+
+  - name: a rejected credential is a problem document with a code and no title
+    source: https://peertube2.cpy.re/api/v1/users/me
+    verified: "2026-09-06"
+    arm: unauthorized
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+    expect:
+      status: 401
+      body:
+        # Struck live. type is a real URL here where the 404's is about:blank,
+        # there is a code, and there is no title and no docs. Two RFC 7807
+        # responses from one host sharing two members out of five.
+        type: "https://docs.joinpeertube.org/api-rest-reference.html#section/Errors/unauthorized_request"
+        detail: "Token is invalid"
+        code: unauthorized_request
+        status: 401
+      absent:
+        - title
+        - docs
+
+  - name: three fields answer one question about adult content
+    source: https://peertube2.cpy.re/api/v1/videos
+    verified: "2026-09-06"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+    expect:
+      status: 200
+      body:
+        # A boolean, an integer bitfield and a nullable string. Two of the
+        # three "nothing" values are falsy, so they are indistinguishable from
+        # absent, and a client reading only `nsfw` misses whatever the flags
+        # encode.
+        'data[0].nsfw': false
+        'data[0].nsfwFlags': 0
+        'data[0].nsfwSummary': null
+
+  - name: a live stream has a duration of zero
+    source: https://raw.githubusercontent.com/Chocobozzz/PeerTube/develop/support/doc/api/openapi.yaml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos/7f3e1d9c-2b4a-4c6d-8e0f-1a2b3c4d5e6f
+    expect:
+      status: 200
+      body:
+        isLive: true
+        # Zero because it has not finished, which is not the same as a
+        # zero-length video -- and isLive is the only field that says which.
+        duration: 0
+        # And this one is from another instance, which is what federation
+        # means here: a listing mixes local and remote records and only this
+        # flag separates them.
+        isLocal: false
+        privacy:
+          id: 2
+          label: Unlisted
+        # The title, and the licence spelled the British way -- so a client
+        # mapping `license` reads undefined on every video.
+        name: "A live stream, still running"
+        'licence.label': "Attribution"
+        # A rounded float rather than a ratio, so 16:9 is 1.7778 and cannot be
+        # compared for equality against 16/9.
+        aspectRatio: 1.7778
+        views: 42
+        publishedAt: "2026-09-06T08:00:00.000Z"
+
+  - name: "the rate limit says so in these words"
+    source: "https://docs.joinpeertube.org/api-rest-reference.html"
+    arm: rate_limit
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/videos
+    expect:
+      status: 429
+      body:
+        type: "about:blank"
+        title: "Too Many Requests"
+        detail: "Too many requests"
+        status: 429

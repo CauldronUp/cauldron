@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "peertube",
+			npm:    []string{"@peertube/peertube-types"},
+		},
+		{
 			recipe: "cilium",
 			gomod:  []string{"github.com/cilium/cilium/api/v1"},
 		},

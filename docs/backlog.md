@@ -7444,3 +7444,68 @@ declared auth" produces both and needs a human at the end of it.
   written against the identity, so the number deciding what an endpoint may do
   is not the number naming it.
 - **Health is four axes**, three strings and a boolean in one object.
+
+## PeerTube, where one shape carries four different types of identifier
+
+Struck live against `peertube2.cpy.re` on 2026-09-06 -- a host named in
+PeerTube own `servers` list as a live test server -- with no credential, because
+the video surface is public. Eight of ten cases are live.
+
+**Three identifiers per video, and the embed URL uses the third:** `id` 951957,
+`uuid` c40f992b-..., `shortUUID` qdcVhVSdcZMtpqeqnfVsJk, and `embedPath` built
+from the shortUUID. All three address the same video. A client that stores `id`
+cannot build an embed URL; one that stores `uuid` has to convert.
+
+**Four fields share the {id, label} shape and the id inside it is a number, a
+number, a string and a null:**
+
+| field | value |
+|---|---|
+| `privacy` | `{"id": 1, "label": "Public"}` |
+| `licence` | `{"id": 6, "label": "Attribution - Non Commercial - No Derivatives"}` |
+| `language` | `{"id": "fr", "label": "French"}` |
+| `category` | `{"id": null, "label": "Unknown"}` |
+
+So `privacy === "Public"` is false, `language.id` needs a string comparison
+where `licence.id` needs a numeric one, and **`video.category` is truthy on a
+video with no category** -- because "no category" is an object whose id is null
+and whose label is the word Unknown. Filtering uncategorised videos with
+`if (!video.category)` filters out none of them. `licence` is spelled the
+British way.
+
+### Two RFC 7807 documents that share two members out of five
+
+Errors carry `Content-Type: application/problem+json`, not `application/json`, so
+a client checking the content type before parsing skips the body on exactly the
+responses that explain themselves.
+
+And the shapes differ. The 404 has `title` and `docs` and no `code`; the 401 has
+`code` and no `title` and no `docs`, and its `type` is a real URL where the
+404 is `about:blank`. `problem.title` is undefined on one, `problem.code` on the
+other.
+
+The 400 adds a hyphenated extension member, `invalid-params` -- a subtraction in
+JavaScript rather than a property access -- and an `instance` member the other
+two lack. It also **refuses** an oversized page rather than trimming it, which is
+the louder and better half of that choice.
+
+### The rest
+
+- **Three fields answer one question about adult content** -- `nsfw` boolean,
+  `nsfwFlags` bitfield, `nsfwSummary` nullable string -- and two of their
+  "nothing" values are falsy.
+- **Rate-limit headers on an unauthenticated request**, which most providers
+  here send on nothing at all.
+- **A live stream has duration zero**, and `isLive` is the only field
+  distinguishing that from a zero-length video.
+- **A listing mixes local and federated records**, with `isLocal` the only
+  separator.
+- **Paging is `count` and `start`**, not limit and offset.
+
+### A format gap noted, not yet grown
+
+Every failure here carries the same non-JSON content type, and `headers` exists
+on an individual error but not on `responses.error`. So the Recipe repeats
+`application/problem+json` four times. One provider is not enough to grow the
+format on; if a second arrives with a Recipe-wide error content type, that is
+the signal.
