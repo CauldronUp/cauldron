@@ -6,7 +6,7 @@ Emulates the Radarr API (v3), for local development and tests.
 
 Written against Radarr's own generated OpenAPI document, published in its own repository — `Radarr/Radarr`, `src/Radarr.Api.V3/openapi.json`, 164 paths, `info.version` 3.0.0 — read on 2026-09-06. Radarr is self-hosted, so there is no public instance to strike.
 
-**This Recipe exists in a pair with [sonarr](../sonarr), and the pair is the point.**
+**This Recipe is one of five siblings** — [sonarr](../sonarr), [radarr](../radarr), [prowlarr](../prowlarr), [lidarr](../lidarr), [readarr](../readarr) — and the three added later show the same enum diverging five ways rather than two. It exists in a pair with [sonarr](../sonarr), and the pair is the point.**
 
 ## What this Recipe found
 

@@ -886,12 +886,25 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			recipe: "prowlarr",
+			gomod:  []string{"golift.io/starr/prowlarr"},
+		},
+		{
+			recipe: "lidarr",
+			gomod:  []string{"golift.io/starr/lidarr"},
+		},
+		{
+			recipe: "readarr",
+			gomod:  []string{"golift.io/starr/readarr"},
+		},
+		{
 			recipe: "sonarr",
 			npm:    []string{"sonarr-api"},
+			gomod:  []string{"golift.io/starr/sonarr"},
 		},
 		{
 			recipe: "radarr",
-			npm:    []string{"radarr-api"},
+			gomod:  []string{"golift.io/starr/radarr"},
 		},
 		{
 			recipe: "zulip",

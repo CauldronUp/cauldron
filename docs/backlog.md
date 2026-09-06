@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and eight Recipes send at least one identifier as a number now, and each
+One hundred and eleven Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -7611,3 +7611,70 @@ default-domain link under the key `null`.
 - **Errors are RFC 7807 with real type URIs** rather than about:blank, so unlike
   PeerTube the `type` is actually a discriminator -- and `invalidElements` is
   spelled without a hyphen, so it is a property access.
+
+## The *arr pair was a family of five, and one of my mappings was invented
+
+The Sonarr/Radarr pair shipped earlier with one finding: the same `eventType`
+integer meaning different things on two forks. There are **five** forks —
+Sonarr, Radarr, Prowlarr, Lidarr, Readarr — and the table is worse than the pair
+suggested.
+
+| pos | sonarr | radarr | prowlarr | lidarr | readarr |
+|---|---|---|---|---|---|
+| 0 | `unknown` | `unknown` | `unknown` | `unknown` | `unknown` |
+| 1 | `grabbed` | `grabbed` | **`releaseGrabbed`** | `grabbed` | `grabbed` |
+| 2 | `seriesFolderImported` | `downloadFolderImported` | `indexerQuery` | `artistFolderImported` | `bookFileImported` |
+| 3 | `downloadFolderImported` | `downloadFailed` | `indexerRss` | `trackFileImported` | `downloadFailed` |
+| 4 | `downloadFailed` | `movieFileDeleted` | `indexerAuth` | `downloadFailed` | `bookFileDeleted` |
+| 5 | `episodeFileDeleted` | `movieFolderImported` | `indexerInfo` | `trackFileDeleted` | `bookFileRenamed` |
+| 6 | `episodeFileRenamed` | `movieFileRenamed` | — | `trackFileRenamed` | `bookImportIncomplete` |
+| 7 | `downloadIgnored` | `downloadIgnored` | — | `albumImportIncomplete` | `downloadImported` |
+| 8 | — | — | — | `downloadImported` | `bookFileRetagged` |
+| 9 | — | — | — | `trackFileRetagged` | `downloadIgnored` |
+| 10 | — | — | — | `downloadIgnored` | — |
+
+**Only position 0 agrees across all five.** `?eventType=3` asks for a successful
+import on Sonarr and Lidarr, a failed download on Radarr and Readarr, and an RSS
+poll on Prowlarr. There is no integer that means "download failed" across the
+family: it is 4, 3, absent, 4 and 3.
+
+### Each fork's own finding
+
+- **Prowlarr is not a download manager.** It logs indexer queries, RSS polls and
+  authentications. No `sourceTitle`, no `quality`, no `qualityCutoffNotMet`; it
+  carries `indexerId` and a boolean `successful` no sibling has. And it renames
+  the one event all five share — `releaseGrabbed` where the others say `grabbed`.
+- **Lidarr has the longest enum and three scope identifiers**, because an artist
+  has albums and an album has tracks. `downloadIgnored`, position 7 on Sonarr and
+  Radarr, is position 10 here.
+- **Readarr is the only one with no plural scope filter.** The other four offer
+  `seriesIds`, `movieIds`, `indexerIds`, `artistIds`; Readarr takes `bookId`
+  singular and nothing for the author — so the fork whose top-level entity you
+  are most likely to have is the one you cannot filter by.
+
+### Two corrections the family forced
+
+**The prefix is not shared.** The first two Recipes claimed all five sit under
+one path prefix. They do not: Sonarr and Radarr serve `/api/v3`, the other three
+`/api/v1`, and the number bears no relation to `info.version` — "3.0.0" for the
+two on v3, "1.0.0" for the three on v1. Fixed in the headers and now checked.
+
+**A detection mapping I invented.** When Radarr shipped I mapped it to an npm
+package called `radarr-api`. It does not exist; I made it up. Checked all five
+against the registry — only `sonarr-api` is real — and replaced the fabrication
+with `golift.io/starr`, a Go library that genuinely has a package per fork.
+
+A mapping pointing at a package nobody publishes is a claim that is not true, and
+**nothing in the suite would have caught it**: the detection tests check that
+every Recipe is either mapped or listed as unmapped, never that the thing it maps
+to exists. A check that resolves each declared dependency is network work and
+does not belong in the unit suite — so for now it is a discipline: verify the
+package before writing the mapping.
+
+### The pair test is now a family test
+
+Across all five: what must stay the same (credential header, envelope keys, both
+paths under each fork's own prefix), what must stay different (each fork's scope
+fields, and no sibling carrying another's), that only `appName` separates them,
+and that the event names collide where they should and diverge where they should.
+Red-greened by renaming Lidarr's `artistId` to Sonarr's `seriesId`.
