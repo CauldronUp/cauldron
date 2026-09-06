@@ -6778,3 +6778,92 @@ by the document at all.
   meaning the comparison has not run. A dashboard treating falsy as "no data"
   and `OutOfSync` as "a problem" shows the third as neither. Health is a
   separate six-valued axis where `Missing` is not `Unknown`.
+
+## Immich, whose schema announces a null it has not sent yet
+
+Written against Immich's own generated OpenAPI 3.0.0 document —
+`immich-app/immich` `open-api/immich-openapi-specs.json`, 191 paths, version
+3.2.0-rc.0, read 2026-09-06. Self-hosted with no public instance, so nothing is
+struck live and the Recipe says so.
+
+Immich ships a vendor extension, `x-immich-history`, giving **141 fields** a
+per-version lifecycle. On an album's `description`:
+
+```json
+[{"version": "v1", "state": "Added"},
+ {"version": "v3", "state": "Updated",
+  "description": "An empty string is returned instead of null for
+                  backwards compatibility; null will be returned in v4."}]
+```
+
+Today `description` is `""` where it means absent; in v4 it will be `null`. Both
+are falsy, so `if (album.description)` survives the change and
+`album.description.length` does not. The warning is machine-readable, sits in the
+shipped document, and **no standard OpenAPI tool reads it** — `x-` extensions are
+ignored by specification.
+
+### 128 deprecated fields, four of them invisibly
+
+124 carry OpenAPI's own `deprecated: true` beside `x-immich-state: Deprecated`,
+so a generator warns. Four do not:
+
+| field | deprecated at |
+|---|---|
+| `ApiKeyCreateResponseDto.apiKey` | v3.2.0 |
+| `AssetResponseDto.libraryId` | v1 — the version it was added in |
+| `AssetResponseDto.resized` | v1.113.0 |
+| `SearchAssetResponseDto.total` | v3.0.0 |
+
+The first has a mechanical excuse: it is a `$ref` with siblings, and OpenAPI 3.0
+ignores keys beside a `$ref`, so `deprecated` there would have done nothing
+either. The other three are inline schemas that simply lack it. All four are
+invisible to every tool reading the standard keyword — and the first is the
+field carrying a **newly created API key**.
+
+`libraryId` was added and deprecated in the same version. `total` has a
+`Deprecated` entry and no `Added` entry, so the document does not say when the
+total on a search response began existing, only that it should not be used.
+
+### An array whose index is the data
+
+`albumUsers`, in the document's own words: "First entry is always the album
+owner. Second entry is the auth user, if it differs from the owner. The rest are
+ordered alphabetically."
+
+Position 0 is the owner. Position 1 is *you* — unless you own the album, in
+which case position 1 is the alphabetically first of everyone else. The ordering
+carries information that exists nowhere else in the response and **changes with
+the caller**. A client that sorts, filters, or renders these through a `Set`
+destroys it, with no field to recover it from.
+
+The Recipe serves the documented order for the fixture's own viewer and says
+plainly that it cannot vary by caller — which is the finding restated rather
+than a gap.
+
+### The rest
+
+- **A cookie is a first-class documented credential.** `immich_access_token`,
+  `in: cookie`, listed beside bearer and `x-api-key` on every authenticated
+  operation, with no CSRF token mentioned anywhere in 191 paths. Recorded and
+  not served: accepting an ambient cookie in local development would teach
+  exactly the habit the finding warns about.
+- **A photo count bounded by JavaScript.** `assetCount` and the search `total`
+  declare `maximum: 9007199254740991` — `Number.MAX_SAFE_INTEGER`, the ceiling
+  of the language the server is written in, published as a property of the data.
+- **A listing of albums takes no parameter that would bound it.** No limit, no
+  page, no cursor, no total. Five thousand albums answer five thousand albums.
+- **A missing album is a 400, and so is one you may not read** — one status and
+  one message covering both, so a permission problem and a typo are
+  indistinguishable.
+- **A thumbnail is not implied by a non-zero count.**
+  `albumThumbnailAssetId` is nullable and required.
+- **The one public endpoint answers under a key called `res`.** `GET
+  /server/ping` is the only operation in 191 paths with no `security` at all.
+
+### Worth noticing across today's Recipes
+
+Immich is the fourth provider this week whose own machine-readable document
+carries a warning no tool reads: Codecov's is invalid OpenAPI, Argo CD's
+declares no authentication, Sonarr and Radarr's enums disagree at the same
+integer, and Immich's deprecations live half in a vendor extension. The document
+being published is not the same as the document being read.

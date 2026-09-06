@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "immich",
+			npm:    []string{"@immich/sdk"},
+		},
+		{
 			recipe: "argocd",
 			gomod:  []string{"github.com/argoproj/argo-cd"},
 		},
