@@ -2,7 +2,7 @@
 
 Emulates the Gmail API (v1), for local development and tests.
 
-**21 conformance cases, 4 checked against the live API on 2026-09-05.**
+**22 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real mailbox, because `messages.delete` is permanent; the refusal cases were struck live, unauthenticated, against gmail.googleapis.com.
 

@@ -2,7 +2,7 @@
 
 Emulates the Netlify API (v1), for local development and tests.
 
-**13 conformance cases, 1 checked against the live API.**
+**14 conformance cases, 1 checked against the live API.**
 
 Struck live 2026-09-05 against api.netlify.com, no account and no key -- a missing credential and a wrong one both answer the identical body. This file declared an invented sentence and no `code`; the real answer is `{"code":401,"message":"Access Denied"}`. Fixed below.
 

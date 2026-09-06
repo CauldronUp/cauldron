@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-824 paging parameter name(s) across 299 recipe(s) are declared and sent by no
+751 paging parameter name(s) across 282 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4467,6 +4467,25 @@ more, each for its own reason, and each now known to need a hand-written case
 rather than a copied one. Three passed and then survived a rename: Airtable, Box
 and Confluence declare a size that this fixture cannot prove is being read, which
 is the fixture-too-small trap in a fourth, fifth and sixth form.
+
+A second pass took 91 more, by widening the generator twice. Bare lists index
+from the top -- `"[0].symbol"` rather than `"data[0].symbol"` -- which is 57
+routes it had been skipping for no reason. And a fixture holding exactly two
+records now grows a third: a copy of the second under a fresh identifier, with a
+comment saying that is all it is. Two records had already established the
+collection holds more than one, so a third claims nothing new about the provider,
+which is the line that keeps this honest. A fixture holding *one* is not grown --
+it may be holding one because the provider only ever has one, and inventing a
+second is a claim about cardinality nobody checked.
+
+That widening exposed a hole in the acceptance itself. Growing a fixture adds a
+record every other case in the file can see, and a case asserting "these are the
+two dashboards" is now wrong about a collection of three -- so the first run of
+the second pass left thirty Recipes red while every new case passed. Checking
+that the new case passes is not the same as checking the Recipe is still green,
+and only the second one is the question worth asking. With that fixed, 30 more
+candidates were dropped, and the ones that fell are the Recipes whose fixtures
+carry a count somebody asserted on purpose.
 
 The first run of that generator found nothing at all, and the reason is worth
 recording: Recipes are `go:embed`ed, so `verify` was reading the compiled-in copy

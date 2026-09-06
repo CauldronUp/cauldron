@@ -2,7 +2,7 @@
 
 Emulates the Intercom API (2.11), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**13 conformance cases, 2 checked against the live API.**
 
 Struck live against api.intercom.io on 2026-09-05, no account and no key. The auth failure this file declared was wrong: it named a bad token's error as `token_unauthorized` / "Not authorized to access resource", and the case meant to prove it sent no Authorization header at all, so nothing here had ever actually asked Intercom what either failure looks like. Both are fixed now -- a missing credential answers `missing_authorization` / "No authorization was provided", a present-and-wrong one answers `unauthorized` / "Access Token Invalid" -- and split under `auth.absent_error` / `auth.rejected_error` because they are genuinely two different sentences.
 

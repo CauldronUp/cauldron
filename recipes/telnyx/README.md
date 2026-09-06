@@ -2,7 +2,7 @@
 
 Emulates the Telnyx API (v2), for local development and tests.
 
-**14 conformance cases, 3 checked against the live API on 2026-09-05.**
+**15 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Telnyx has no sandbox, so the message and number cases still cite documentation. The credential shape needed no key at all, and checking it live found this Recipe's own message wrong.
 

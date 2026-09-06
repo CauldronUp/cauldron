@@ -2,7 +2,7 @@
 
 Emulates the Notion API (2022-06-28), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**12 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.notion.com, no account and no key. This file's declared "API token is invalid." matched a well-formed wrong token exactly -- but no Authorization header at all gets a different sentence, "Authorization header must use the format \"Bearer <token>\".", which this file had never distinguished. Split below.
 
