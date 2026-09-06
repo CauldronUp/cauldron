@@ -2,7 +2,7 @@
 
 Emulates the alpaca API (v2), for local development and tests.
 
-**22 conformance cases, 2 checked against the live API.**
+**24 conformance cases, 2 checked against the live API.**
 
 Two were struck live against paper-api.alpaca.markets on 2026-09-05, with no headers at all and with a made-up key id and secret -- byte-identical 401 either way. The message had been "request is not authorized"; the live host sends "unauthorized.", lowercase, with the period.
 

@@ -2,7 +2,7 @@
 
 Emulates the Stripe API (2026-06-30), for local development and tests.
 
-**15 conformance cases, 4 checked against the live API on 2026-09-05.**
+**17 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The customer and payment intent behaviour still cites documentation, since a real charge needs a real account. The credential and routing shapes do not, and checking them live found two sentences this Recipe had merged into one.
 

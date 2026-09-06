@@ -1048,8 +1048,12 @@ func (r Recipe) collectionOf(route Route) string {
 // insideCollection reports whether an assertion path reaches into the
 // collection rather than sitting beside it in the envelope.
 func insideCollection(name, prefix string) bool {
+	// A bare listing is the collection: there is no envelope to sit beside, so
+	// anything asserted is asserted on a record. Alpaca's account and SES's are
+	// bare and collapse_single, where the one record *is* the response and the
+	// only way to name a field on it is at the top level.
 	if prefix == "" {
-		return strings.HasPrefix(name, "[")
+		return true
 	}
 
 	if !strings.HasPrefix(name, prefix) {

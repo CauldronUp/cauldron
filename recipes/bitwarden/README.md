@@ -2,7 +2,7 @@
 
 Emulates the Bitwarden API (1), for local development and tests.
 
-**11 conformance cases, 10 checked against the live API on 2026-09-03.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**12 conformance cases, 10 checked against the live API on 2026-09-03.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

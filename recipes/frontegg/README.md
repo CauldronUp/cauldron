@@ -2,7 +2,7 @@
 
 Emulates the Frontegg API (1.0), for local development and tests.
 
-**7 conformance cases, 6 checked against the live API on 2026-09-01.**
+**9 conformance cases, 6 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

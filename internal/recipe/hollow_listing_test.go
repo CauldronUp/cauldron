@@ -79,3 +79,32 @@ func TestAnEnvelopeAssertionIsNotARecord(t *testing.T) {
 		t.Errorf("a listing asserting only its envelope: counted %d hollow, want 1", n)
 	}
 }
+
+// A bare listing has no envelope, so anything asserted is in the collection.
+//
+// Alpaca's account and SES's account are bare and collapse_single: with one
+// record the response *is* the record, and the only way to assert a field on it
+// is at the top level. Requiring an index there asked for a shape those
+// responses never have.
+func TestABareListingHasNothingOutsideTheCollection(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{
+			Method: "GET", Path: "/v2/account", Resource: "account", Operation: "list",
+			List: &ListResponse{Style: "bare", CollapseSingle: true},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v2/account"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"id": "acct_1"}},
+		}},
+	}
+
+	if n := r.HollowListing(); n != 0 {
+		t.Errorf("a collapsed bare listing asserting a field: counted %d hollow, want 0", n)
+	}
+
+	r.Conformance[0].Expect.Body = nil
+
+	if n := r.HollowListing(); n != 1 {
+		t.Errorf("a bare listing asserting nothing: counted %d hollow, want 1", n)
+	}
+}

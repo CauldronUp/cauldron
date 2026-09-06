@@ -2,7 +2,7 @@
 
 Emulates the Tally API (1.0.0), for local development and tests.
 
-**12 conformance cases, 8 checked against the live API on 2026-09-03.**
+**13 conformance cases, 8 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

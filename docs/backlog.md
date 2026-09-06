@@ -5449,3 +5449,29 @@ twenty-six Recipes are answered only empty**, twenty-five of which have been
 that way all along, counted by nothing. That is the third time a new counter has
 turned up debt older than the counter. The work is not finding new problems; it
 is finding out that the old measurement had a shape, and the shape had a shadow.
+
+### Twelve of the thirty-two had a record all along
+
+The generator that shows a listing had been aimed at the wrong question. It
+looked for listings with no successful case at all, which is `UnshownListing`'s
+question, and a listing answered only empty already has one. So the twenty-five
+hollow listings the new counter surfaced were invisible to the tool built to
+fill exactly that gap.
+
+Aiming it at `HollowListing`'s question instead -- does any successful case
+assert something *inside* the collection -- found twelve of them answerable
+straight away. Stripe's customers and payment intents among them: three records
+in the fixture, a listing every case in the file answers, and nothing anywhere
+asserting a single field on a customer.
+
+Two shapes needed teaching. A bare listing has no envelope, so anything asserted
+on it is asserted on a record -- the counter was requiring an index that Alpaca's
+account and SES's, both `collapse_single`, never have. And the generator needed
+the same collapse handling the paging one had already grown: with one record the
+response *is* the record.
+
+Of the twenty-one still hollow, two are meant to be. iNaturalist's
+`/v1/observations/999999999999` and OpenAIRE's `publications-no-match` are
+routes whose whole purpose is the empty answer, and there is no record to
+describe because a match would defeat the point. The rest have no fixture
+holding a record of the resource.
