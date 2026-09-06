@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Ninety-eight Recipes send at least one identifier as a number now, and each
+Ninety-nine Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6159,3 +6159,82 @@ parses the empty string as zero and concludes the account is empty.
   orgs, admin, packages and Actions each want their own evidence.
 - The `Link` echo is recorded in words rather than served. Reproducing it would
   mean handing clients a URL this emulator knows to be misleading.
+
+## Chatwoot, and two 401s from one endpoint one second apart
+
+Struck live against `app.chatwoot.com` on 2026-09-06, with no account:
+
+```
+GET /api/v1/accounts/1/contacts               (no credential)
+HTTP 401  {"errors":["You need to sign in or sign up before continuing."]}
+
+GET /api/v1/accounts/1/contacts               (api_access_token: bogus)
+HTTP 401  {"error":"Invalid Access Token"}
+```
+
+Plural `errors` holding an array of strings when nothing was sent. Singular
+`error` holding one string when something was sent and rejected. Same status,
+same endpoint, same second.
+
+A client with one error reader gets `undefined` for one of the two — and it
+reports the reason as "undefined" precisely when the credential is *wrong*,
+which is the case it most needs to name. The spec documents a third shape for
+failures, `{"description": ..., "errors": [ ... ]}` with objects rather than
+strings, and neither 401 uses it. Neither carries `WWW-Authenticate`.
+
+The format already had `absent_error` and `rejected_error`, and per-error
+`style` and `key` overrides, so this is expressible as it stands — which is
+worth noting, because the npm registry drove those keys in and this is the first
+provider since to need all of them at once.
+
+### Two listings, two envelope depths, one API version
+
+Contacts: `{"meta": {...}, "payload": [ ... ]}`.
+Conversations: `{"data": {"meta": {...}, "payload": [ ... ]}}`.
+
+Adjacent paths under the same `/api/v1/accounts/{account_id}` prefix, from the
+same generated document. `body.payload` reads a list of contacts and undefined
+for conversations, and a shared unwrapper returns undefined rather than throwing.
+
+And `meta` is not the same thing on the two sides. On contacts it is pagination
+(`count`, `current_page`). On conversations it is assignment tallies —
+`mine_count`, `unassigned_count`, `assigned_count`, `all_count` — with **no
+pagination at all**: no total, no page number, and `page` as the only parameter.
+The only way to learn you have reached the end is to receive a short page.
+
+`all_count` is the trap inside the trap: it is a plausible-looking total that
+counts the account and ignores every filter the request just sent.
+
+`current_page` is typed in the spec as `["string", "integer"]`. One field,
+either type, per response — so `meta.current_page + 1` is `2` or `"11"`.
+
+### Modelling notes
+
+Getting the two envelopes served needed the route-level `list:` override, and
+the first attempt reached for `style: envelope`, which is the Stripe shape —
+fixed `data` key, `has_more`, `object: "list"` — and quietly ignored the `key`.
+`wrapped` is the style whose `key` names the wrapper, and it takes a dotted path,
+so `data.payload` nests correctly. Worth remembering: **`envelope` is a specific
+provider's shape, not the generic word.**
+
+### The rest
+
+- **One header name, three kinds of credential.** `userApiKey`, `agentBotApiKey`
+  and `platformAppApiKey` are all `in: header` and all named `api_access_token`.
+  Nothing in the request says which was sent, so holding the wrong kind is
+  refused per endpoint rather than at the door, and reads as a permission
+  problem rather than a credential one.
+- **`message_type` is an integer enum, 0–3**, and the wire carries the digit.
+- **Two timestamps with one description.** `created_at` and `timestamp` on a
+  conversation are both documented as "The time at which conversation was
+  created", so the spec cannot say which is safe to sort by.
+- **`resolved`, not `closed`.** Zendesk, Front and Help Scout all say closed for
+  that state. A shared status mapper needs a Chatwoot branch.
+
+### Still open
+
+- 92 paths and this covers two listings. Messages, inboxes, agents, teams,
+  labels, canned responses, automation rules and the whole public per-inbox API
+  are unexamined.
+- The three credential kinds are not told apart, and doing it properly would
+  mean inventing which endpoints each may reach.
