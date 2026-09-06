@@ -2525,6 +2525,7 @@ than a client for its API.
 | Zoho Books | The npm package `zoho-books` is "Zoho books module" with no repository and no author link, which is the same state `marqeta` is in and cannot be verified as Zoho's own. Zoho publishes SDKs for CRM under `@zohocrm/*` and nothing on either registry for Books |
 | Canny | The bare npm name `canny` is a DOM module manager published by somebody else -- "Simple dom module manager with basic view support", repository `eightyfour/canny` -- and neither `canny-node` nor `@canny/sdk` exists. Canny's own reference documents raw HTTP and names no client library, which fits an API whose credential is a POST body field: there is not much for a client to wrap |
 | Column | No official SDK |
+| Overseerr | Checked `@jellyseerr/overseerr-api`, `overseerr-api`, `overseerr` and `@overseerr/api` against the registry on 2026-09-06; all four are 404. Overseerr's own documentation shows raw HTTP and names no client library |
 | Deel | No official SDK found under any obvious name |
 | FastSpring | No official SDK |
 | Fivetran | No official Node or Go client found |
@@ -2691,7 +2692,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and eleven Recipes send at least one identifier as a number now, and each
+One hundred and twelve Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -7678,3 +7679,69 @@ paths under each fork's own prefix), what must stay different (each fork's scope
 fields, and no sibling carrying another's), that only `appName` separates them,
 and that the event names collide where they should and diverge where they should.
 Red-greened by renaming Lidarr's `artistId` to Sonarr's `seriesId`.
+
+## Overseerr, where two fields called status overlap and mean different things
+
+Written against Overseerr's own OpenAPI 3.0.2 document — `sct/overseerr`
+`overseerr-api.yml`, 134 paths, read 2026-09-06. Self-hosted with no public
+instance, so nothing is struck live.
+
+A request carries one `status` and the media it points at carries another:
+
+| field | values |
+|---|---|
+| `MediaRequest.status` | 1 = PENDING APPROVAL, 2 = APPROVED, 3 = DECLINED |
+| `MediaInfo.status` | 1 = UNKNOWN, 2 = PENDING, 3 = PROCESSING, 4 = PARTIALLY_AVAILABLE, 5 = AVAILABLE, 6 = DELETED |
+
+The second is nested **inside** the first, at `request.media.status`. So a
+request with `status: 2` — approved — routinely contains `media.status: 2`,
+which is pending. Same name, same type, same small integers, one inside the
+other, and a client reading the wrong one gets a plausible answer rather than an
+error. `status: 3` is DECLINED on the request and PROCESSING on the media: a
+refusal and work in progress at the same number.
+
+### Both examples are a value neither documents
+
+`MediaRequest.status` is declared `example: 0` against a description listing 1, 2
+and 3. `MediaInfo.status` is declared `example: 0` against a description listing
+1 through 6. **Zero is in neither set.**
+
+So the examples in the published document — the values a mock server, a
+documentation page or a generated fixture will use — put every record in a state
+that does not exist. And zero is falsy, so `if (request.status)` reads the
+example as "no status" rather than as "impossible".
+
+Recorded and not served: serving a state the provider documents as impossible
+would be inventing behaviour. The fixtures hold values from the documented sets.
+
+### A third vocabulary for the filter
+
+`GET /request` takes `filter`: all, approved, available, pending, processing,
+unavailable, failed, deleted, completed.
+
+`pending` is in both integer sets meaning different things. `failed`, `completed`
+and `unavailable` are in neither — three of the words you can filter by name
+nothing the records can hold.
+
+### The rest
+
+- **`body.results` is the array and `body.pageInfo.results` is the count of it**
+  — one word, two meanings, four characters apart in the same response.
+- **Paging is `take` and `skip`**, TypeORM's names straight through to the wire,
+  both declared nullable — so the document says `null` is a legal page size.
+- **A 4K request is a separate record, not a flag**, so keying requests by
+  `tmdbId` collapses two rows into one.
+- **`serverId: 0` is the first configured server**, not none.
+- **A session cookie is a documented API credential** beside `X-Api-Key` — the
+  second here after Immich, with no CSRF token mentioned across 134 paths.
+
+### The mapping discipline, applied
+
+Overseerr ships with **no** detection mapping. `@jellyseerr/overseerr-api`,
+`overseerr-api`, `overseerr` and `@overseerr/api` were all checked against the
+registry on 2026-09-06 and all four are 404, so it went on the unmapped list with
+the names and the date rather than into `providers.go`.
+
+That is the discipline the `radarr-api` fabrication earned one commit earlier,
+applied the first time it came up — and it came up immediately, which suggests
+the failure mode is not rare.
