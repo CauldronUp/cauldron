@@ -7335,3 +7335,55 @@ has twelve members and one of those is also `unknown`.
   and `=== null` is the only correct end-of-listing test.
 - **`favourited` carries the British spelling**, field and query parameter both,
   so an American-spelled client filters nothing and reads undefined.
+
+## etcd, where the field called key holds base64 and every integer is a string
+
+Written against etcd own generated Swagger 2.0 document -- etcd-io/etcd,
+Documentation/dev-guide/apispec/swagger/rpc.swagger.json, 44 paths, read
+2026-09-06. Runs on the operator own machines, so nothing is struck live.
+
+`mvccpbKeyValue.key` is `{"type": "string", "format": "byte"}`, and in OpenAPI
+`format: byte` means base64. So the field named `key` does not hold the key -- it
+holds the base64 of the key -- and the same is true of `value`, and of the `key`
+and `range_end` a caller sends.
+
+`kv.key === "config/timeout"` never matches. And a client that sends a plain key
+gets a **successful, empty range**: a lookup for a key spelled in base64 that
+nobody has, answered 200 with nothing in it rather than an error. The oldest trap
+in the etcd v3 HTTP API, stated in the document in two words.
+
+### Every 64-bit integer is a string
+
+`create_revision`, `mod_revision`, `version`, `lease`, `count`, and the four
+fields on every response header. protobuf JSON mapping, and it exists for a good
+reason -- an int64 does not survive JavaScript 53-bit floats. The cost is that
+`version + 1` is `"41"` and `count === 0` is never true.
+
+`header.revision` is the number a caller needs for a compare-and-swap, so **the
+one value that must be compared exactly is the one that cannot be compared as a
+number.**
+
+### Nothing is required, and protobuf omits zero values
+
+Not one schema declares a `required` list. Combined with protobuf JSON mapping,
+an empty range is expected to answer the header and nothing else: no `kvs`, no
+`count`, no `more`.
+
+Marked in the Recipe as reasoning from the encoding rather than as an
+observation -- what is checkable in the document is that every one of those
+fields is optional. Not served either: reproducing protobuf omission rules would
+mean modelling the encoder rather than the API.
+
+### The rest
+
+- **44 paths, 44 POSTs**, including every read. Second all-POST API here after
+  Outline, arriving from the opposite direction: Outline chose RPC method names,
+  etcd inherited gRPC.
+- **The credential is an apiKey in `Authorization` with no scheme token**, so
+  the header carries a bare value where RFC 7235 wants scheme and credentials.
+- **Failures carry gRPC codes beside unrelated HTTP statuses** -- 16 with a 401,
+  7 with a 403 -- the same pairing as Argo CD, from the same toolchain.
+- **The document ships `"version not set"` with a filename as its title**,
+  exactly as Argo CD does.
+
+Every base64 string in the fixture was decoded and checked before committing.

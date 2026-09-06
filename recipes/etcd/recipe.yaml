@@ -1,0 +1,380 @@
+# etcd Recipe for Cauldron
+#
+# Written against etcd's own generated Swagger 2.0 document, published in its
+# own repository -- github.com/etcd-io/etcd,
+# Documentation/dev-guide/apispec/swagger/rpc.swagger.json, 44 paths -- read on
+# 2026-09-06. etcd runs on the operator's own machines and there is no public
+# instance, so nothing here is verified live: every claim is the provider's own
+# document.
+#
+# **Keys and values are base64, and the fields are still called key and value.**
+#
+# `mvccpbKeyValue.key` is `{"type": "string", "format": "byte"}`. In OpenAPI,
+# `format: byte` means base64. So the field named `key` does not hold the key --
+# it holds the base64 of the key -- and the same is true of `value`, and of the
+# `key` and `range_end` a caller sends.
+#
+# `kv.key === "config/timeout"` never matches. `Buffer.from(kv.key, "base64")`
+# does. And a client that sends a plain key gets a successful, empty range for a
+# key spelled in base64 that nobody has -- a 200 with nothing in it, not an
+# error.
+#
+# This is the etcd v3 HTTP API's oldest trap and the document states it in two
+# words that most readers slide past.
+#
+# **Every 64-bit integer is a string.**
+#
+#   create_revision  {"type": "string", "format": "int64"}
+#   mod_revision     {"type": "string", "format": "int64"}
+#   version          {"type": "string", "format": "int64"}
+#   lease            {"type": "string", "format": "int64"}
+#   count            {"type": "string", "format": "int64"}
+#   revision         {"type": "string", "format": "int64"}   (on the header)
+#   cluster_id       {"type": "string", "format": "uint64"}
+#   member_id        {"type": "string", "format": "uint64"}
+#   raft_term        {"type": "string", "format": "uint64"}
+#
+# This is protobuf's own JSON mapping, and it exists for a good reason -- a
+# 64-bit integer does not survive JavaScript's 53-bit floats. The cost is that
+# every number in the API is a string. `kv.version + 1` is `"31"`.
+# `response.count === 0` is never true, because the value is `"0"`. Comparisons
+# with `<` and `>` coerce and happen to work; equality does not, and neither
+# does arithmetic.
+#
+# **Nothing in the document is required, and protobuf omits zero values.**
+#
+# Not one schema in this document declares a `required` list. Combined with
+# protobuf's JSON mapping -- which drops fields holding their type's zero value
+# unless the server is configured otherwise -- an empty range is expected to
+# answer with the header and nothing else: no `kvs`, because an empty array is a
+# zero value; no `count`, because "0" is; no `more`, because false is.
+#
+# So the response to "there are no keys here" and the response to "something
+# went wrong reading the body" look the same to a client that checks
+# `body.kvs.length`. Marked as reasoning from the encoding rather than as an
+# observation: what is checkable in the document is that every one of those
+# fields is optional.
+#
+# **Every endpoint is a POST, including every read.**
+#
+# 44 paths, 44 POSTs. `/v3/kv/range` -- the read -- is a POST, as are
+# `/v3/auth/role/list`, `/v3/cluster/member/list` and `/v3/maintenance/status`.
+# Nothing is cacheable, nothing is idempotent by method, and a caller cannot
+# tell a read from a write by looking at the request line.
+#
+# This is the second all-POST API in this collection, after Outline, and they
+# arrive at it from opposite directions: Outline chose RPC method names, etcd
+# inherited gRPC.
+#
+# **The credential goes in Authorization with no scheme.**
+#
+# The document declares `{"type": "apiKey", "name": "Authorization", "in":
+# "header"}` -- an apiKey, in the Authorization header, with no prefix. So the
+# header carries a bare token where RFC 7235 wants `<scheme> <credentials>`. Any
+# proxy, gateway or library that parses Authorization into a scheme and a value
+# sees a scheme with no credentials.
+#
+# **The document ships the generator's placeholder version**, `"version not
+# set"`, and its title is a filename: `api/etcdserverpb/rpc.proto`. Argo CD's
+# document in this collection has the same version string from the same
+# toolchain.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. etcd runs on the operator's
+#     own machines.
+#   - The range read and the cluster status. 44 paths is a coordination store:
+#     put, delete, txn, compact, watch, lease, the auth surface and the
+#     maintenance surface each want their own evidence -- and watch is a
+#     bidirectional stream that this format cannot describe at all.
+#   - Base64 is served, not decoded. A fixture holding `Y29uZmlnL3RpbWVvdXQ=`
+#     is holding what etcd sends, and a client that reads it as a key is making
+#     the mistake this Recipe exists to surface.
+#   - The zero-value omission is not served. This emulator sends the fields it
+#     is told to; reproducing protobuf's omission rules would mean modelling
+#     the encoder rather than the API, and the finding is recorded in words.
+
+recipe: etcd
+capability: database
+version: 0.1.0
+
+upstream:
+  api: "v3"
+  docs: https://etcd.io/docs/latest/dev-guide/api_grpc_gateway/
+  spec: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+  spec_hash: 8543945dbfa4b52a6c26b99724494bf1370576827d8966eee9ba6d1a6e435cf6
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: header
+  # Not "Bearer ". An apiKey in the Authorization header with no scheme token,
+  # which is not the shape RFC 7235 describes.
+  header: Authorization
+  keys:
+    - cauldron.etcd.token
+  absent_error: unauthenticated
+
+responses:
+  list:
+    style: wrapped
+    key: kvs
+    # A string, because it is an int64 and protobuf's JSON mapping sends those
+    # as strings.
+    count_field: count
+    count_as_string: true
+    has_more_field: more
+    fields:
+      header:
+        cluster_id: "14841639068965178418"
+        member_id: "10276657743932975437"
+        revision: "42"
+        raft_term: "2"
+  error:
+    style: flat
+    message_field: error
+    code_field: code
+    code_type: number
+
+resources:
+  kv:
+    id:
+      # The base64 of the key, because that is what the field holds.
+      style: opaque
+      field: key
+    fields:
+      # Also base64. A client that renders this is showing the reader base64.
+      value:
+        type: string
+      # Every one of these is an int64 and therefore a string on the wire.
+      create_revision:
+        type: string
+      mod_revision:
+        type: string
+      version:
+        type: string
+      lease:
+        type: string
+        default: "0"
+
+routes:
+  - method: POST
+    path: /v3/kv/range
+    resource: kv
+    operation: list
+    # The read, as a POST, with the key in the body -- base64-encoded.
+    pagination:
+      style: none
+
+
+errors:
+  unauthenticated:
+    status: 401
+    code: 16
+    message: "etcdserver: user name is empty"
+  permission_denied:
+    status: 403
+    code: 7
+    message: "etcdserver: permission denied"
+  invalid:
+    status: 400
+    code: 3
+    message: "etcdserver: key is not provided"
+  rate_limit:
+    status: 429
+    code: 8
+    message: "etcdserver: too many requests"
+
+fixtures:
+  empty:
+    kv: []
+
+  store:
+    kv:
+      # Y29uZmlnL3RpbWVvdXQ= is base64 for "config/timeout", and the field is
+      # called key.
+      - key: Y29uZmlnL3RpbWVvdXQ=
+        # MzAw is base64 for "300".
+        value: MzAw
+        create_revision: "12"
+        mod_revision: "37"
+        version: "4"
+        lease: "0"
+      - key: Y29uZmlnL3JldHJpZXM=
+        value: NQ==
+        create_revision: "12"
+        mod_revision: "12"
+        version: "1"
+        # A key held by a lease, so it disappears when the lease expires --
+        # and the identifier is a string because it is an int64.
+        lease: "7587822333175867161"
+
+conformance:
+  - name: the field called key holds base64, not the key
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        # The request side too: this is base64 for "config/", and sending the
+        # plain string is a successful empty range rather than an error.
+        key: Y29uZmlnLw==
+    expect:
+      status: 200
+      body:
+        # Y29uZmlnL3RpbWVvdXQ= decodes to config/timeout. A client comparing
+        # this to "config/timeout" never matches, and one that renders it
+        # shows the reader base64.
+        'kvs[0].key': Y29uZmlnL3RpbWVvdXQ=
+        # And MzAw decodes to 300.
+        'kvs[0].value': MzAw
+
+  - name: every 64-bit integer is a string
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 200
+      body:
+        # protobuf's JSON mapping sends int64 as a string so it survives
+        # JavaScript's 53-bit floats. The cost: version + 1 is "41", and
+        # version === 4 is never true.
+        'kvs[0].version': "4"
+        'kvs[0].create_revision': "12"
+        'kvs[0].mod_revision': "37"
+        # Including the lease identifier, which is nineteen digits and could
+        # not be a JSON number safely.
+        'kvs[1].lease': "7587822333175867161"
+
+  - name: the count of matching keys is a string too
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 200
+      body:
+        # count === 0 is never true on an empty range, because the value is
+        # "0". Comparisons with < and > coerce and happen to work; equality
+        # does not.
+        count: "2"
+        more: false
+
+  - name: the response header carries the store's revision, also as a string
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 200
+      body:
+        # Every response in this API carries a header with four uint64s in it,
+        # all strings. revision is the store's, and it is the number a caller
+        # needs for a compare-and-swap -- so the one value that must be
+        # compared exactly is the one that cannot be compared as a number.
+        'header.revision': "42"
+        'header.raft_term': "2"
+        'header.cluster_id': "14841639068965178418"
+
+  - name: the read is a POST, like every other endpoint
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      # 44 paths, 44 POSTs. Nothing is cacheable, nothing is idempotent by
+      # method, and a caller cannot tell a read from a write by the request
+      # line.
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnL3RpbWVvdXQ=
+    expect:
+      status: 200
+      body:
+        'kvs[0].key': Y29uZmlnL3RpbWVvdXQ=
+
+  - name: no credential is refused with a gRPC code
+    source: https://raw.githubusercontent.com/etcd-io/etcd/main/Documentation/dev-guide/apispec/swagger/rpc.swagger.json
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers: {}
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 401
+      body:
+        # 16 is gRPC's UNAUTHENTICATED, beside an HTTP 401. Two numbering
+        # systems for one event, as in the Argo CD Recipe -- same toolchain.
+        code: 16
+        error: "etcdserver: user name is empty"
+
+  - name: "a permission failure carries a different unrelated number"
+    source: "https://etcd.io/docs/latest/dev-guide/api_grpc_gateway/"
+    arm: permission_denied
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 403
+      body:
+        code: 7
+        error: "etcdserver: permission denied"
+
+  - name: "a missing key in the request says so in these words"
+    source: "https://etcd.io/docs/latest/dev-guide/api_grpc_gateway/"
+    arm: invalid
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json: {}
+    expect:
+      status: 400
+      body:
+        code: 3
+        error: "etcdserver: key is not provided"
+
+  - name: "the rate limit says so in these words"
+    source: "https://etcd.io/docs/latest/dev-guide/api_grpc_gateway/"
+    arm: rate_limit
+    fixture: store
+    request:
+      method: POST
+      path: /v3/kv/range
+      headers:
+        Authorization: cauldron.etcd.token
+      json:
+        key: Y29uZmlnLw==
+    expect:
+      status: 429
+      body:
+        code: 8
+        error: "etcdserver: too many requests"

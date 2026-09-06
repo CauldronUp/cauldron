@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "etcd",
+			gomod:  []string{"go.etcd.io/etcd/client/v3"},
+		},
+		{
 			recipe: "karakeep",
 			npm:    []string{"@karakeep/sdk"},
 		},
