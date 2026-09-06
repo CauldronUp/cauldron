@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**43 more listings across 23 Recipes declare no paging at all**, and the
+**41 more listings across 21 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,28 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+**Every listing that still declares no paging now says what was tried.** That is
+the line this sweep was heading for. 41 listings across 21 Recipes remain
+unstated, and there are no silent ones left in the collection: each carries a
+dated record naming the addresses that 404'd, the references that render from
+JavaScript, the sites that answer 403 to anything that is not a browser, the
+endpoints that answered 429, and in three cases a finding larger than the paging
+-- Basiq's cited spec not containing its own route, Midtrans's listing not
+appearing in its provider's documentation at all, DHL confirming it paginates
+without saying how.
+
+The distinction that matters is between *unstated* and *unexamined*. Silence used
+to mean both. It now means only the first, and the second has been eliminated:
+every one of the original 344 listings has either a declaration or a paragraph
+explaining why there is not one. Heroku is the only one where the obstacle is
+this format rather than the provider -- it pages by `Range` and `Next-Range`
+headers, and `pagination.in` accepts `query` and `body`.
+
+Xendit and New Relic close the un-noted list. Xendit's `after_id` is the fifth
+spelling of "the last record you saw" in this collection, after Stripe's
+`starting_after`, Persona's and BambooHR's `page[after]`, and TalkJS's
+`startingAfter`.
 
 Kustomer says only one thing about its page numbering and it is enough: `page` is
 typed with a **minimum of 1**. A type constraint settles what no sentence on the
