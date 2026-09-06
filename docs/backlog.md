@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-109 paging parameter name(s) across 50 recipe(s) are declared and sent by no
+98 paging parameter name(s) across 45 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5240,3 +5240,19 @@ of one found nothing to assert. One step further in finds the id.
 Both are the same lesson as the sandbox rewrite. The generator was not wrong
 about the provider; it was wrong about the file, and the file was right there
 to read.
+
+### The first field in a record is not always a distinguishing one
+
+Every Shippo transaction in the fixture carries the same `object_created`, and
+the generator asserted it. The case passed. It also passed with `cursor_param`
+renamed to something no client sends -- the page had moved, and the assertion
+could not tell -- so the mutation check dropped the pair.
+
+That was the right outcome for a case proving nothing, but the case did not have
+to be that weak. Some other field on the same record does tell the two pages
+apart, and asking for one that differs from the record on the first page rather
+than the first scalar that appears settles eleven more names, Shippo's three
+among them.
+
+A generated case that survives its own mutation is not evidence. Choosing what
+to assert is part of writing the evidence, not a detail after it.
