@@ -6019,3 +6019,21 @@ afternoon and which nothing in the file had ever seen.
 no natural trigger, which can only be armed, and arming a payment decline on a
 GET of a customer list would be true of the emulator and nonsense about the
 provider.
+
+### The repository carries 769MB it does not need, on purpose now
+
+Thirty-three copies of the Cauldron binary were committed in one go earlier
+today -- `alt.exe`, `dns.exe`, `srch.exe`, `orch.exe` and thirty more, all the
+same program built here under different names for probing, all swept in by
+`git add -A`.
+
+The ignore file already named `/cauldron.exe` and `/w.exe`, so the intent was
+never in doubt. It listed binaries one at a time, which is precisely how
+thirty-two more got past it. It ignores `*.exe` now, and the tracked copies are
+gone from `HEAD`.
+
+The blobs stay in history. Recovering the space would mean rewriting ninety-odd
+published commits and force-pushing, which costs everyone with a clone more than
+the space is worth, so the decision was to leave history alone. A clone is
+larger than it should be and that is a known, chosen cost rather than an
+oversight -- which is the only reason this entry exists.
