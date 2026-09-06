@@ -594,22 +594,34 @@ what comes back.
 
 ### What is left, and why it is stuck
 
-`verify` reports the remainder on every run: **15 routes across 7 Recipes page
-by a parameter nobody named**. The rule is a declared page size with neither a
-style nor a parameter name beside it, which is what `GuessedPagination`
-counts.
+`verify` reports the remainder on every run: **20 routes across 10 Recipes page
+by a parameter nobody named**. The rule is a declared page size with either
+name left blank, which is what `GuessedPagination` counts -- a blank name is one
+the runtime supplies, "limit" for the size and the style's own word for the
+position, and neither is the provider's word.
 
 They are:
 
 | Recipe | Routes |
 |---|---|
-| AssemblyAI | `GET /v2/transcript` |
+| 100ms | `GET /v2/room-codes/room/{room_id}` |
+| AppSignal | `GET /api/{app_id}/samples.json` |
 | Bill.com | `POST /api/v2/List/Vendor.json`, `POST /api/v2/List/Invoice.json` |
+| Brex | `GET /v2/transactions/card/primary`, `GET /v2/cards`, `GET /v1/expenses` |
 | Deel | `GET /rest/v2/contracts`, `GET /rest/v2/invoice-adjustments` |
-| Mercury | `GET /api/v1/accounts`, `GET /api/v1/account/{accountId}/transactions` |
-| QuickBooks | `GET /v3/company/{realm}/query`, `/invoices`, `/accounts` |
+| Mailgun | `GET /v3/{domain}/events`, `GET /v3/{domain}/bounces` |
+| Recurly | `GET /subscriptions`, `GET /accounts`, `GET /invoices` |
+| Salesforce | `GET /services/data/v60.0/query`, `.../Account/{AccountId}/Opportunities` |
 | Segment | `GET /v1beta/workspaces/{workspace}/sources`, `/destinations`, `/tracking-plans` |
-| Vonage | `GET /account/numbers`, `GET /search/message` |
+| Vonage | `GET /search/message` |
+
+The list has turned over since it was first written. AssemblyAI, Mercury and
+QuickBooks came off it; 100ms, AppSignal, Brex, Mailgun, Recurly and Salesforce
+went on, each with a dated note in its own Recipe saying what was tried on the
+day it was tried. Salesforce is the interesting one: it takes no paging
+parameters at all, because the size lives inside the SOQL statement and the
+position comes back as a whole `nextRecordsUrl` to follow -- so its blank name
+is not a gap in the reading but a shape the vocabulary does not have a word for.
 
 The blocker is obtaining the descriptions rather than declaring the names. The
 method above wants a provider's own OpenAPI document to read the parameters
