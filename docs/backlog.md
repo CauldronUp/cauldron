@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**77 more listings across 50 Recipes declare no paging at all**, and the
+**73 more listings across 48 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,20 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Brave Search is the third provider to document `may_undershoot` -- "the actual
+number of results returned may be less than count" -- after Onfleet and Sumo
+Logic, and the three of them were written by different companies for different
+purposes. It also bounds the walk rather than the page, like TomTom: `offset` has
+a **maximum of 9**, so the entire reachable collection is ten pages of twenty.
+
+Alpaca carries two position mechanisms on one route -- `after`/`until`
+timestamps with a `direction` defaulting to desc, and a separate
+`before_order_id`/`after_order_id` cursor pair. The timestamp one is declared
+because it is the documented default shape, and the existence of the other is
+stated rather than hidden. Its positions listing takes no parameters at all: a
+client that receives ten of forty open positions is looking at the wrong
+portfolio, not a smaller one.
 
 Fastly and Drip are both one-provider-two-listings splits where the *other*
 listing is the tempting one. Fastly documents `page` and `per_page` on
