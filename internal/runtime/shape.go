@@ -618,7 +618,21 @@ func asObject(value any) (map[string]any, bool) {
 
 // listBody shapes a page according to the declared list style, which is the
 // Recipe's unless the route overrode it.
-func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int, resource, path, nextURL string) any {
+// prevValue is the address of the previous page, or an explicit null on the
+// first one.
+//
+// Null rather than absent, because a client reading Django REST Framework's
+// page shape tests whether it is at the start by looking at previous, and a
+// key that vanishes on page one is a different test from a key that is null.
+func prevValue(prevURL string) any {
+	if prevURL == "" {
+		return nil
+	}
+
+	return prevURL
+}
+
+func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int, resource, path, nextURL, prevURL string) any {
 	page.Records = s.presentAll(resource, page.Records)
 
 	// Chargebee wraps every item under the resource's own name, so a client
@@ -788,6 +802,12 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			setPath(body, spec.CursorField, nil)
 		}
 
+		// And where the caller came from. Null on the first page rather than
+		// absent, because the key's presence is what a client tests.
+		if spec.PrevField != "" {
+			setPath(body, spec.PrevField, prevValue(prevURL))
+		}
+
 		// Salesforce's done is has_more with the sense reversed, and false is
 		// its interesting value: a query that matched more rows than it
 		// returned says done: false and expects the caller to follow
@@ -840,6 +860,12 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			setPath(body, spec.CursorField, cursorValue(spec, page.NextCursor, nextURL))
 		} else if spec.CursorField != "" && spec.CursorNull {
 			setPath(body, spec.CursorField, nil)
+		}
+
+		// And where the caller came from. Null on the first page rather than
+		// absent, because the key's presence is what a client tests.
+		if spec.PrevField != "" {
+			setPath(body, spec.PrevField, prevValue(prevURL))
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)

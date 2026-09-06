@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "codecov",
+			npm:    []string{"codecov"},
+		},
+		{
 			recipe: "chatwoot",
 			npm:    []string{"@chatwoot/sdk", "chatwoot"},
 		},

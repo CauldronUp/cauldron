@@ -182,6 +182,26 @@ type ListResponse struct {
 	// Link header already renders, so a Recipe saying so gets the same value
 	// in its body.
 	CursorURL string `yaml:"cursor_url"`
+	// PrevField names the body field carrying the address of the PREVIOUS
+	// page, for the providers that send one beside the next.
+	//
+	// Django REST Framework's default page shape is
+	// {"count", "next", "previous", "results"}, and `previous` is not
+	// optional in it: it is null on the first page and a URL after that. Two
+	// Recipes wrote the same paragraph rather than serve it -- RAWG's says
+	// "there is no second field for previous, so RAWG's own here is where you
+	// came from is real, documented, and not expressible in this format
+	// today", and Codecov's listing has the same four keys.
+	//
+	// The absence is not cosmetic. A client testing `if ("previous" in body)`
+	// to decide whether it is on the first page takes the wrong branch every
+	// time against an emulator that omits the key, and takes it silently.
+	//
+	// Always written when named, null on the first page, so that the key's
+	// presence is constant and only its value moves. That is what the
+	// providers do, and a key that appears and disappears is the thing a
+	// client cannot test for.
+	PrevField string `yaml:"prev_field"`
 	// CountField names a property carrying how many records matched in total,
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.

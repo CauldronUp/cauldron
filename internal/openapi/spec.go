@@ -386,11 +386,11 @@ func Parse(raw []byte) (*Document, error) {
 		// error rather than a confusing JSON one.
 		converted, jsonErr := viaJSON(raw)
 		if jsonErr != nil {
-			return nil, fmt.Errorf("not a readable OpenAPI description: %w", err)
+			return nil, malformed(raw, err)
 		}
 
 		if err := yaml.Unmarshal(converted, &doc); err != nil {
-			return nil, fmt.Errorf("not a readable OpenAPI description: %w", err)
+			return nil, malformed(raw, err)
 		}
 	}
 
@@ -758,4 +758,41 @@ func looksHTML(raw []byte) bool {
 	return strings.HasPrefix(lower, "<!doctype html") ||
 		strings.HasPrefix(lower, "<html") ||
 		strings.HasPrefix(lower, "<?xml") && strings.Contains(lower, "<html")
+}
+
+// malformed tells a file this could not read from a description that read
+// fine and is not a valid one.
+//
+// The difference decides which column a scheduled scan puts the Recipe in, and
+// the two columns mean opposite things. Unreachable is "try again tomorrow": a
+// docs host answering 503, a proxy serving an error page, a login redirect.
+// Unsupported is "this will be the same tomorrow": a fact about what the
+// provider publishes.
+//
+// Codecov found it. api.codecov.io/api/v2/schema/ is well-formed YAML that
+// declares, on the repositories listing, a parameter whose schema reads
+//
+//	type: array
+//	items: string
+//
+// where OpenAPI requires items to be a schema object -- items: {type: string}.
+// One node in 34 paths, on the endpoint a client is most likely to generate
+// first. The document arrives intact every time and no amount of waiting fixes
+// it, so reporting it as a network problem puts a permanent fact in the column
+// people learn to skip.
+//
+// So: if the bytes decode as YAML or JSON at all, the file was fine and the
+// description is not. Anything that fails even that is a file this could not
+// read, and stays unreachable.
+func malformed(raw []byte, err error) error {
+	var anything any
+
+	if yaml.Unmarshal(raw, &anything) != nil {
+		return fmt.Errorf("not a readable OpenAPI description: %w", err)
+	}
+
+	return &FormatError{
+		Format: "a well-formed document that is not a valid OpenAPI description",
+		Err:    err,
+	}
 }

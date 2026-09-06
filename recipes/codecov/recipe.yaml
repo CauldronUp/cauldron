@@ -1,0 +1,541 @@
+# Codecov Recipe for Cauldron
+#
+# Written against Codecov's own OpenAPI 3.0.3 document, served by the API
+# itself at api.codecov.io/api/v2/schema/ -- 34 paths, version 2.0.0 -- and
+# struck live against api.codecov.io on 2026-09-06.
+#
+# **The published description is not valid OpenAPI.**
+#
+# On the repositories listing -- the endpoint this Recipe models, and the one a
+# client is most likely to generate first -- the `names` query parameter is
+# declared:
+#
+#   schema:
+#     type: array
+#     items: string
+#
+# `items` must be a Schema Object. `items: string` is a bare scalar where an
+# object is required, so a conforming parser rejects the document. One node in
+# 34 paths, and it is enough: every strict code generator refuses the whole
+# file, and the ones that do not refuse it guess.
+#
+# This is why the Recipe names no `spec:` URL -- see the note in upstream
+# below. Every observation below was
+# made with no credential at all: coverage for public repositories is public,
+# so the whole read surface could be checked without an account.
+#
+# **The next-page link downgrades to http://.**
+#
+# Struck live, over HTTPS:
+#
+#   GET https://api.codecov.io/api/v2/github/codecov/repos/?page_size=1
+#   HTTP 200
+#   {"count": 146,
+#    "next": "http://api.codecov.io/api/v2/github/codecov/repos/?page=2&page_size=1",
+#    "previous": null,
+#    "results": [ ... ]}
+#
+# The request was https. The link handed back is http, and so is `previous` on
+# every page after the first. Following it live:
+#
+#   GET http://api.codecov.io/api/v2/github/codecov/repos/?page=2&page_size=1
+#   HTTP 301
+#   Location: https://api.codecov.io:443/api/v2/github/codecov/repos/?page=2&page_size=1
+#
+# So the redirect is there and the transport does get fixed -- after the
+# request has already been made in cleartext. A client following `next` on an
+# authenticated call sends `Authorization: Bearer <token>` over plain HTTP on
+# every page but the first, which is exactly what `next` exists to be followed
+# for. Nothing in the response warns about it.
+#
+# The Location is also written with an explicit `:443`, which is unusual enough
+# to break exact-URL comparison, request signing and allow-lists that were
+# built from the URL the client asked for.
+#
+# **`totals` is null, not empty, on repositories with no coverage.**
+#
+# Struck live: of the first six repositories in codecov's own account, three
+# answered `"totals": null`. Not `{}`, not zeroes -- null. So
+# `repo.totals.coverage` throws on half a listing, and the half it throws on is
+# the half a coverage dashboard most wants to draw as "no data".
+#
+# **Adjacent numbers in one object have different JSON types.** In the same
+# totals object, `complexity` is `0.0` and `complexity_ratio` is `0`. A strict
+# decoder that types one of them from a sample gets the other wrong.
+#
+# **Three different 404s, and one of them is GitHub's.** Struck live:
+#
+#   /github/no-such-owner-xyz/repos/  -> 404 {"detail":"No Owner matches the given query."}
+#   /github/codecov/repos/no-such/    -> 404 {"detail":"Github API: Not Found"}
+#   /notaservice/codecov/repos/       -> 404 {"detail":"Invalid service for Owner."}
+#
+# The middle one is the upstream's own words passed through. It means the
+# failure came from GitHub rather than from Codecov, and a client cannot tell
+# "this repository is not on Codecov" from "GitHub refused the lookup" -- which
+# are a configuration problem and an outage, and want different responses.
+#
+# **A rejected credential does carry WWW-Authenticate.** Struck live:
+# 401 with `www-authenticate: Bearer` and `{"detail":"Invalid token."}`. Worth
+# recording because most providers modelled here send a 401 with nothing for a
+# client's retry-with-credentials path to catch, and this one does not.
+#
+# Every failure uses the same key: `detail`, a single string. That is Django
+# REST Framework's default and it is consistent across all four above.
+#
+# **page_size is not capped.** Struck live: `?page_size=9999` on an account
+# with 146 repositories returned all 146 in one response. Most providers clamp
+# silently; this one does what it is told, so a client that passes a page size
+# through from user input can ask for an unbounded response.
+#
+# **The service enum ships a value called `to_be_deleted`.** The path parameter
+# `{service}` is an enum of bitbucket, bitbucket_server, github,
+# github_enterprise, gitlab, gitlab_enterprise -- and `to_be_deleted`. It is in
+# the published document, so a client generating a picker or a validator from
+# the schema offers it.
+#
+# **Nearly every path ends in a slash, and six do not.** `/repos/`,
+# `/commits/`, `/pulls/` all end in one; `/compare/flags`, `/compare/components`,
+# `/compare/impacted_files`, `/report/tree` and the two `{file_path}` paths do
+# not. Django redirects the missing case, so getting it wrong is a 301 rather
+# than a 404 -- and a 301 is where headers and request bodies get dropped.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Repositories on one owner, listed and fetched. 34 paths is a coverage
+#     service: commits, pulls, branches, flags, components, the comparison
+#     endpoints and the file-level reports each want their own evidence.
+#   - **The http:// downgrade is recorded and not reproduced.** This emulator is
+#     served over http on a loopback address, so a next link cannot be a
+#     downgrade relative to the request -- there is no https to fall from. The
+#     finding is in words because the local transport cannot carry it.
+#   - `totals: null` is served on the records that have no coverage, which is
+#     the part that can be reproduced, and it is asserted.
+#   - Coverage numbers are the ones the live API answered on 2026-09-06 for
+#     public repositories. They move; the shape is the claim.
+
+recipe: codecov
+capability: ci
+version: 0.1.0
+
+upstream:
+  api: "2.0.0"
+  docs: https://docs.codecov.com/reference/overview
+  # No spec: here, deliberately, and the absence is a finding rather than an
+  # omission. Codecov serves a description of itself at
+  # api.codecov.io/api/v2/schema/ and it is not valid OpenAPI -- see the
+  # header. `cauldron drift` classifies it as "a format this cannot read",
+  # which is the permanent column rather than the try-again-tomorrow one, and
+  # there is nothing to fingerprint because the fingerprint is taken over
+  # parsed paths. Naming a URL that nothing can check is exactly what the
+  # shipping rule exists to prevent.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_codecov_token
+  # Public coverage is readable with no credential, which is how every live
+  # observation in this Recipe was made. So there is no absent_error: sending
+  # nothing is allowed, and only sending something wrong is refused.
+  rejected_error: invalid_token
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    count_field: count
+    cursor_field: next
+    cursor_url: absolute
+    # Null on the last page rather than absent. Both keys are always present
+    # in Django REST Framework's shape and only their values move, which is
+    # what makes testing for the key the wrong test.
+    cursor_null: true
+    # Null on the first page and a URL after it, which is the half of Django
+    # REST Framework's page shape this format could not say until now.
+    prev_field: previous
+  error:
+    style: flat
+    # Django REST Framework's default, and consistent across all four failures
+    # struck live.
+    message_field: detail
+
+resources:
+  repo:
+    id:
+      # The repository name, which is what the path takes. There is no numeric
+      # identifier anywhere in a v2 response.
+      field: name
+      style: opaque
+    fields:
+      service:
+        type: string
+        in: "-"
+      owner_username:
+        type: string
+        in: "-"
+      private:
+        type: boolean
+        default: false
+      language:
+        type: string
+      branch:
+        type: string
+        default: main
+      active:
+        type: boolean
+        default: true
+      activated:
+        type: boolean
+        default: true
+      updatestamp:
+        type: datetime
+      # Null on a repository with no coverage, and this is the field that
+      # matters: three of the first six live records answered null here.
+      totals:
+
+routes:
+  - method: GET
+    path: /api/v2/{service}/{owner_username}/repos/
+    resource: repo
+    operation: list
+    scope: [service, owner_username]
+    # Struck live with no Authorization header at all: coverage for public
+    # repositories is public. Not `public: true`, because a token that is
+    # present and wrong is still refused -- 401 {"detail":"Invalid token."} --
+    # and waving it through would teach a caller their bad credential is fine
+    # on exactly the route they try first.
+    public: when-absent
+    pagination:
+      style: page
+      limit_param: page_size
+      cursor_param: page
+      limit: 20
+      first_page: 1
+
+  - method: GET
+    path: /api/v2/{service}/{owner_username}/repos/{id}/
+    resource: repo
+    operation: get
+    scope: [service, owner_username]
+    public: when-absent
+    # Not "no such repository". The upstream's own words, passed through.
+    not_found: upstream_not_found
+
+errors:
+  # What a missing owner says, in Django's phrasing.
+  owner_not_found:
+    status: 404
+    message: "No Owner matches the given query."
+  # What a missing repository says, in GitHub's phrasing. The same status from
+  # the same service, and the caller cannot tell a repository that is not on
+  # Codecov from a GitHub lookup that failed.
+  upstream_not_found:
+    status: 404
+    message: "Github API: Not Found"
+  invalid_service:
+    status: 404
+    message: "Invalid service for Owner."
+  invalid_token:
+    status: 401
+    message: "Invalid token."
+    headers:
+      # Present, which is worth asserting: most providers modelled here send a
+      # 401 with nothing for a client's retry path to catch.
+      WWW-Authenticate: Bearer
+  rate_limit:
+    status: 429
+    message: "Request was throttled."
+
+fixtures:
+  empty:
+    repo: []
+
+  codecov-account:
+    repo:
+      - name: example-tutorial
+        service: github
+        owner_username: codecov
+        private: false
+        language: python
+        branch: main
+        active: true
+        activated: true
+        updatestamp: "2026-08-19T17:30:41.163785Z"
+        totals:
+          files: 4
+          lines: 45
+          hits: 44
+          misses: 1
+          partials: 0
+          # A float.
+          coverage: 97.77
+          branches: 0
+          methods: 0
+          sessions: 3
+          # Also a float, and zero.
+          complexity: 0.0
+          complexity_total: 0.0
+          # An integer, in the same object, one key away.
+          complexity_ratio: 0
+          diff: 0
+      - name: basic-test-results
+        service: github
+        owner_username: codecov
+        private: false
+        language: python
+        branch: main
+        active: true
+        activated: true
+        updatestamp: "2026-10-31T16:25:26.913570Z"
+        # Struck live. Not an empty object, not zeroes.
+        totals: null
+      - name: umbrella
+        service: github
+        owner_username: codecov
+        private: false
+        language: python
+        branch: main
+        active: true
+        activated: true
+        updatestamp: "2026-09-01T09:12:03.000000Z"
+        totals:
+          files: 1204
+          lines: 53262
+          hits: 48804
+          misses: 4458
+          partials: 0
+          coverage: 91.63
+          branches: 0
+          methods: 0
+          sessions: 12
+          complexity: 0.0
+          complexity_total: 0.0
+          complexity_ratio: 0
+          diff: 0
+
+conformance:
+  - name: a listing wraps its records and counts them
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+    expect:
+      status: 200
+      body:
+        # count, next, previous, results. Django REST Framework's shape, and
+        # the count is of the whole set rather than the page.
+        count: 3
+        'results[0].name': example-tutorial
+
+  - name: coverage is public, so no credential is not a refusal
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+      # Struck live with no Authorization header at all. Every other
+      # observation in this Recipe was made the same way.
+      headers: {}
+    expect:
+      status: 200
+      body:
+        count: 3
+
+  - name: totals is null on a repository with no coverage
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+    expect:
+      status: 200
+      body:
+        # Struck live: three of the first six records in codecov's own account
+        # answered null here. repo.totals.coverage throws on those, and they
+        # are exactly the ones a dashboard wants to draw as "no data".
+        'results[1].totals': null
+        'results[0].totals.coverage': 97.77
+
+  - name: the next page is a whole URL under a key called next
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+      query:
+        page_size: "1"
+    expect:
+      status: 200
+      matches:
+        # A complete URL rather than a token, which is what makes the scheme
+        # part of it a client's problem. Struck live, this field came back
+        # beginning "http://" from a request made over https -- so following
+        # it verbatim on an authenticated call sends the bearer token in
+        # cleartext, and the 301 that fixes the transport arrives after the
+        # request has already been made.
+        #
+        # Served here over loopback http, where there is no https to fall
+        # from, so what this asserts is that next is an absolute URL carrying
+        # the page forward. The downgrade itself is recorded in the README.
+        next: '^http://.*[?&]page=2'
+      body:
+        count: 3
+        previous: null
+
+  - name: adjacent totals fields disagree about integer and float
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/example-tutorial/
+    expect:
+      status: 200
+      body:
+        # One key apart, in the same object.
+        'totals.complexity': 0.0
+        'totals.complexity_ratio': 0
+        'totals.lines': 45
+        'totals.hits': 44
+
+  - name: a repository is addressed by name, and there is no numeric id
+    source: https://api.codecov.io/api/v2/github/codecov/repos/codecov-api/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/umbrella/
+    expect:
+      status: 200
+      body:
+        name: umbrella
+        private: false
+        language: python
+        branch: main
+        active: true
+      absent:
+        # Struck live: a v2 repository record carries no numeric identifier of
+        # any kind, so the name is the only key a sync can hold -- and a rename
+        # upstream is indistinguishable from a deletion plus a creation.
+        - id
+
+  - name: a missing repository answers GitHub's words, not Codecov's
+    source: https://api.codecov.io/api/v2/github/codecov/repos/no-such-repo-xyz/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/no-such-repo-xyz/
+    expect:
+      status: 404
+      body:
+        # Struck live. The upstream's own message, passed through, so a client
+        # cannot tell "not on Codecov" from "GitHub refused the lookup".
+        detail: "Github API: Not Found"
+
+  - name: a rejected credential is a 401 that says how to authenticate
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+      headers:
+        Authorization: Bearer bogus
+    expect:
+      status: 401
+      body:
+        detail: "Invalid token."
+      headers:
+        # Struck live, and unusual among the providers modelled here.
+        WWW-Authenticate: Bearer
+
+  - name: the page size is honoured rather than clamped
+    source: https://api.codecov.io/api/v2/github/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+      query:
+        # Struck live at 9999 against an account with 146 repositories, which
+        # answered all 146 in one response. There is no cap.
+        page_size: "9999"
+        page: "1"
+    expect:
+      status: 200
+      body:
+        count: 3
+        'results[2].name': umbrella
+
+  - name: "the rate limit says so in these words"
+    source: "https://docs.codecov.com/reference/overview"
+    arm: rate_limit
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+    expect:
+      status: 429
+      body:
+        detail: "Request was throttled."
+
+  - name: a missing owner says Django's words, and a bad service says a third thing
+    source: https://api.codecov.io/api/v2/github/no-such-owner-xyz/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+      # Struck live against an owner that does not exist. Armed here because
+      # the scope is what the fixture is keyed on, so the emulator cannot
+      # reach the same state by asking for a different owner.
+    arm: owner_not_found
+    expect:
+      status: 404
+      body:
+        # A third wording for the same status, on the same host, one path
+        # segment away from the other two.
+        detail: "No Owner matches the given query."
+
+  - name: a service outside the enum is a fourth wording
+    source: https://api.codecov.io/api/v2/notaservice/codecov/repos/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    arm: invalid_service
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/
+    expect:
+      status: 404
+      body:
+        # The enum this is checked against ships a member called
+        # to_be_deleted, which a client generating a picker from the schema
+        # will offer to a user.
+        detail: "Invalid service for Owner."
+
+  - name: a record says when it was last touched and whether it is active
+    source: https://api.codecov.io/api/v2/github/codecov/repos/codecov-api/
+    verified: "2026-09-06"
+    fixture: codecov-account
+    request:
+      method: GET
+      path: /api/v2/github/codecov/repos/example-tutorial/
+    expect:
+      status: 200
+      body:
+        # updatestamp, not updated_at: one word, no separator, and it is an
+        # RFC 3339 string with microseconds where every number in totals is
+        # a bare JSON number.
+        updatestamp: "2026-08-19T17:30:41.163785Z"
+        # Two booleans that sound like the same question and are not. active
+        # is whether the repository is set up; activated is whether coverage
+        # is being received. A repository can be one and not the other.
+        active: true
+        activated: true

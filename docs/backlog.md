@@ -390,7 +390,7 @@ the header says so.
 | ~~Lichess~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **The game counts do not add up** -- 23,723 in total against 11,329 won, 11,345 lost and 1,044 drawn, which is 23,718, on a record where `playing` is 0. Five games are unaccounted for, nothing names them, and there is no fifth field to blame; each number is right on its own and only the sum is wrong, which is why it survives. **And a list of links is separated by a Windows line ending inside a JSON string**, `"github.com/ornicar\r\nmas.to/@thibault"`, so splitting on `\n` leaves a carriage return that renders as nothing and compares as something. Also pinned: **two time units in one record, neither named** -- `createdAt` and `seenAt` in epoch milliseconds beside a `playTime.total` in seconds, so a client dividing the wrong one is out by a factor of a million; **sibling objects with different key sets**, `prov` sent only when true so one rating has it and the next does not, across eighteen game types; **two 404s, one JSON and one the whole website in HTML**, the second opening with a comment about the project being open source; and a colour as the integer 10, with nothing saying what the other nine are. Stated and not served: one user, whose counts move as they play -- the arithmetic gap is the finding rather than the figures -- two of the eighteen perfs, and the HTML page as a fragment rather than its tens of kilobytes. Detection's near miss is **the vendor's own scope, three times over and none of them a client**: a PGN viewer, a WebAssembly engine and the chessboard itself |
 | ~~Gutendex~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **A filter it cannot parse is dropped, and you get the whole catalogue** -- `?ids=84` answers one book and `?ids=abc` answers 79,296, every book Project Gutenberg has, at 200, with nothing saying the filter was ignored. **And the invalid parameter is carried faithfully into the next link**, `?ids=abc&page=2`, so a client paging by the link it was given walks the entire catalogue still asking for "abc" -- the parameter preserved exactly where it does nothing and dropped exactly where it would matter. Also pinned: **one array with two naming conventions**, four `bookshelves` entries prefixed `Category: ` and then four that are not, with nothing marking the boundary; **MIME types as JSON keys**, carrying slashes, plus signs and a semicolon-and-space in `"text/plain; charset=utf-8"`, not one of which can be written after a dot; **the same title twice in two capitalisations**, the field disagreeing with the summary quoting it; a Library of Congress subdivision separator arriving as `-- ` inside a subject string; an author written surname-first; and a `copyright` boolean for a fact that is really true, false or unknown. Stated and not served: one book of seventy-nine thousand; the catalogue count, which read 79293 and 79296 within a minute of itself, so what the case pins is that the filter was dropped rather than the figure; and three of seven subjects and six of eight bookshelves, both a contiguous prefix so an index means what it means upstream. Detection's near miss is **the name itself** -- WordPress's block editor is called Gutenberg, so npm answers "project gutenberg api" with six `@wordpress` packages and Packagist answers "gutendex" with six WordPress plugins |
 | ~~Wikimedia~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **The error message is inside a map keyed by language** -- every failure carries `messageTranslations` and none carries `message`, so `err.message` is undefined on all of them and the sentence is one level down under a code the client must choose; choosing wrongly is silent. **And three failures share no key set at all**: a missing page sends four keys, a missing path sends two with no message in any language -- not an empty map, no map -- and an empty search sends nine, two of which name the same failure and disagree, `error` saying `parameter-validation-failed` where `errorKey` says `missingparam`. Also pinned: **the record links to a different host running the same API**, served from `api.wikimedia.org/core/v1` and pointing at `en.wikipedia.org/w/rest.php/v1`; **two identifiers four orders of magnitude apart**, `id` 9228 for the page beside `latest.id` 1372042770 for the revision, with nothing in either name saying which is which; and a licence URL ending in a language, `.../by-sa/4.0/deed.en`, so the link rendered as "the licence" is one translation of it. Also observed and not served: a language code naming no wiki does not fail but redirects, in HTML, to the Incubator where such wikis are drafted -- and that body ends with an HTML comment naming the PHP file that produced it. Stated and not served: one page, whose latest revision moves whenever anyone edits Earth. Nothing on either registry is a client of this API, so it ships unmapped -- see the row below |
-| Codecov | Assess — coverage reports and the commit they attach to |
+| ~~Codecov~~ | ~~Assess — coverage reports and the commit they attach to~~ — shipped 2026-09-06, 13 cases, 12 struck live with no account |
 | ~~SonarCloud~~ | Shipped. The quality gate has three outcomes and one of them means nobody set a gate: "The different statuses returned are: OK, WARN, ERROR, NONE. The NONE status is returned when there is no quality gate associated with the analysis." So `if (status !== "OK") fail()` fails the build for an ungated project and `if (status === "ERROR") fail()` passes everything on one. And **every number inside the gate is a string** -- the published example sends `"errorThreshold": "85"` beside `"actualValue": "82.50562381034781"`, with the direction of the comparison in a third field as `"comparator": "LT"` -- so evaluating a condition means parsing two strings and reading an operator, and comparing them as text is right on "14" against "0" and wrong on "9" against "10". Also pinned: **there is no verb but GET and POST** (87 of the 156 actions are POST, 69 are GET, and the description cannot express another -- each action carries a boolean called `post`, so deleting a comment is `POST api/issues/delete_comment` and the path is the verb); the analysis and the gate being different objects, since a Compute Engine task that FAILED produced no gate result at all; a failed task handing back a **Java stack trace inside a JSON string** beside a boolean saying whether to read it; and an issue carrying two names for its status (`issueStatus`/`status`) and two for its effort (`effort`/`debt`), agreeing today. Written against the description SonarCloud serves of itself at `api/webservices/list` with response examples at `api/webservices/response_example` -- and `project_status` carries `"deprecatedSince": "16 September, 2025"` there while its own response says nothing, so the only way to learn the endpoint is deprecated is to call a different one that describes it. Detection found an exclusion kind this collection had not recorded: packages that write a file for another program to upload, led by `vitest-sonar-reporter` at 841k downloads and no network request at all |
 | Railway | Assess. Here for the same lapsed reason as New Relic: GraphQL-only was an exclusion before anything here spoke GraphQL, and three Recipes do now |
 
@@ -6238,3 +6238,129 @@ provider's shape, not the generic word.**
   are unexamined.
 - The three credential kinds are not told apart, and doing it properly would
   mean inventing which endpoints each may reach.
+
+## Codecov, and a next-page link that downgrades to http
+
+Struck live against `api.codecov.io` on 2026-09-06 with **no credential at
+all** — coverage for public repositories is public, so the whole read surface
+was checkable without an account. Twelve of thirteen cases are live.
+
+Over HTTPS:
+
+```
+GET https://api.codecov.io/api/v2/github/codecov/repos/?page_size=1
+HTTP 200
+{"count": 146,
+ "next": "http://api.codecov.io/api/v2/github/codecov/repos/?page=2&page_size=1",
+ "previous": null,
+ "results": [ ... ]}
+```
+
+The request was https. The link handed back is http, and so is `previous` on
+every page after the first. Following it:
+
+```
+GET http://api.codecov.io/api/v2/github/codecov/repos/?page=2&page_size=1
+HTTP 301
+Location: https://api.codecov.io:443/api/v2/github/codecov/repos/?page=2&page_size=1
+```
+
+The redirect exists and the transport does get fixed — after the request has
+already been made in cleartext. A client following `next` on an authenticated
+call sends `Authorization: Bearer <token>` over plain HTTP on every page but
+the first, which is exactly what `next` exists to be followed for. Nothing in
+the response warns.
+
+The `Location` also carries an explicit `:443`, which breaks exact-URL
+comparison, request signing, and allow-lists built from the URL the client
+asked for.
+
+**Recorded and not reproduced.** This emulator serves http on loopback, so a
+next link cannot be a downgrade relative to the request — there is no https to
+fall from. The case asserts that `next` is an absolute URL carrying the page
+forward; the scheme finding lives in the README in words.
+
+### What this cost the format, twice
+
+**`prev_field`.** Django REST Framework's page shape is
+`{count, next, previous, results}` and `previous` is not optional in it: null on
+the first page, a URL after that. RAWG's Recipe had written the paragraph — "there
+is no second field for previous, so RAWG's own *here is where you came from* is
+real, documented, and not expressible in this format today" — and Codecov sends
+the same four keys. Second Recipe to say it, so the format grew the key.
+
+Always written when named, null on the first page rather than absent, because a
+client deciding whether it is at the start tests whether the key is *there*, and
+a key that vanishes on page one is a different test from a key that is null.
+Wired into codecov and rawg; RAWG's paragraph is gone.
+
+Writing the test found a second gap in the Recipe I had not noticed: `next` was
+absent rather than null on the last page, because `cursor_null` was unset. Both
+keys are always present in DRF's shape and only their values move — which is the
+whole reason testing for the key is the wrong test.
+
+**Drift's unreadable/unsupported split.** Codecov serves a description of
+itself, and it is not valid OpenAPI. On the repositories listing — the endpoint
+this Recipe models, and the one a client is most likely to generate first — the
+`names` parameter declares:
+
+```yaml
+schema:
+  type: array
+  items: string
+```
+
+`items` must be a Schema Object; `items: string` is a bare scalar where an
+object is required. One node in 34 paths, and it is enough: a conforming parser
+rejects the whole file.
+
+`cauldron drift` classified that as **unreachable**, which is the column meaning
+"a docs host had a bad afternoon, try tomorrow". It arrives intact every time
+and waiting will never fix it. The `Unsupported` constant's own doc comment
+already drew this distinction for Swagger 2.0 — "a fact about the provider
+rather than about the network" — and a well-formed document that is not a valid
+description is the same kind of fact.
+
+Now: if the bytes decode as YAML or JSON at all, the file was fine and the
+description is not, and it reports as unsupported. Anything failing even that
+stays unreachable. Three tests, red-greened.
+
+The Recipe therefore names **no `spec:` URL**, deliberately. There is nothing to
+fingerprint — the fingerprint is taken over parsed paths — and naming a URL that
+nothing can check is exactly what the shipping rule exists to prevent. The
+reason is written into the `upstream:` block where a reader will find it.
+
+### The rest of the Codecov findings
+
+- **`totals` is null, not empty**, on repositories with no coverage. Three of
+  the first six live records answered null, so `repo.totals.coverage` throws on
+  half a listing — and on exactly the half a dashboard wants to draw as "no
+  data".
+- **Adjacent numbers, different JSON types.** `complexity` is `0.0` and
+  `complexity_ratio` is `0`, one key apart in the same object.
+- **Three different 404s, and one is GitHub's.** `{"detail":"Github API: Not
+  Found"}` is the upstream's own words passed through, so a caller cannot tell
+  "not on Codecov" from "GitHub refused the lookup" — a configuration problem
+  and an outage.
+- **A rejected credential does carry `WWW-Authenticate: Bearer`**, which is
+  unusual among the providers modelled here and worth having as the
+  counterexample.
+- **`page_size` is not capped.** `?page_size=9999` on an account with 146
+  repositories returned all 146.
+- **The service enum ships `to_be_deleted`.** A client generating a picker from
+  the schema offers it to a user.
+- **Nearly every path ends in a slash and six do not**, so getting it wrong is a
+  Django 301 rather than a 404 — and a 301 is where headers and bodies get
+  dropped.
+- **A repository has no numeric identifier.** The name is the only key a sync
+  can hold, so a rename upstream is indistinguishable from a delete plus a
+  create.
+
+### Still open
+
+- 34 paths, and this covers repositories on one owner. Commits, pulls, branches,
+  flags, components, the comparison endpoints and the file-level reports are
+  unexamined.
+- The `http://` downgrade cannot be reproduced over loopback http. If this
+  project ever serves TLS locally, that case is worth revisiting — it is the
+  most serious finding here and it is currently only prose.
