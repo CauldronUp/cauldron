@@ -5735,3 +5735,19 @@ a resource whose fixture sets every one of them". Finding it twice in two
 codebases that do the same job is the argument for the sweep converging being
 worth something: a generator that keeps writing the same case is telling you
 about the thing that reads it.
+
+### The generator had the same bug, and that is why it kept writing the same case
+
+Fixing `samePath` in the engine moved three counters and did not stop the sweep
+repeating itself. The generator has its own matcher, `path_matches`, with the
+same whole-segment assumption -- so it kept deciding that the cases it had
+already written were about some other route, and wrote them again. Seven times
+for SEC EDGAR's company, each one asserting the same eleven names.
+
+Sixteen such cases across four Recipes were adding nothing an earlier case on
+the same request already asserted. They are gone. The two matchers now agree,
+and the sweep converges on the first run.
+
+The lesson is not "keep two matchers in step", although that is true. It is that
+a tool which will not converge is reporting something. Both times, the thing it
+was reporting was a rule about paths that no longer described the paths.
