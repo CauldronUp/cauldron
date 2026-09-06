@@ -298,6 +298,18 @@ type ListResponse struct {
 	// Only offset and page numbering can have one. A cursor names a position
 	// the caller was handed and cannot be arithmetic'd backwards.
 	PrevLink bool `yaml:"prev_link"`
+	// CountHeader names the response header carrying how many records exist
+	// in total, before paging. For the providers that put the total there
+	// rather than in the body.
+	//
+	// Gitea is why this exists. Its Link header echoes back a page-size
+	// parameter it ignored, so rel="last" can name a page number computed
+	// from a size the caller never got -- and X-Total-Count is then the only
+	// number in the response that is true. Basecamp sends one too, and three
+	// of its routes carried a comment saying so and serving nothing.
+	//
+	// A count, not a page count: the header says how many records there are.
+	CountHeader string `yaml:"count_header"`
 	// PageField and LimitField name properties echoing the page number and
 	// the page size the request asked for.
 	//

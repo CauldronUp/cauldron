@@ -300,6 +300,7 @@ How every response is wrapped, in four blocks.
 | `final_field` | string | A field sent only on the last page. |
 | `link_header` | bool | Advertise the next page in an RFC 5988 `Link` header rather than in the body. |
 | `prev_link` | bool | Add a `rel="prev"` beside it. |
+| `count_header` | string | Response header carrying how many records exist in total, before paging. For providers that put the total there rather than in the body — Gitea's `X-Total-Count`, which is the only number in its listing that survives sending the wrong page-size parameter. |
 | `entry_field` | string | Make each entry that one field's value rather than the whole record. |
 | `entry_style` | string | `wrapped` wraps each item under the resource's own name. |
 | `omit_when_empty` | bool | Leave the collection key out entirely when there is nothing to send. |

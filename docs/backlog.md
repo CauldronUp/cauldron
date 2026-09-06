@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Ninety-seven Recipes send at least one identifier as a number now, and each
+Ninety-eight Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6069,3 +6069,93 @@ one, because decoding is the step the mark breaks. It is written escape-free --
 `^[^{]`, the document does not begin with its opening brace -- since a regex
 carrying a literal mark is unreadable and, as it turned out, survives neither a
 YAML parser nor a shell heredoc.
+
+## Gitea, and a pagination header that confirms what the server ignored
+
+Gitea's API is deliberately GitHub-shaped, which is what makes its divergences
+expensive: they sit exactly where a GitHub client has no reason to look.
+
+Struck live against `gitea.com` on 2026-09-06, using public repositories and no
+account. `gitea/tea` holds 149 issues:
+
+```
+GET /api/v1/repos/gitea/tea/issues?per_page=1
+HTTP 200
+X-Total-Count: 149
+Link: <...issues?page=2&per_page=1>; rel="next",
+      <...issues?page=15&per_page=1>; rel="last"
+(10 records)
+
+GET /api/v1/repos/gitea/tea/issues?limit=1
+HTTP 200
+X-Total-Count: 149
+Link: <...issues?limit=1&page=2>; rel="next",
+      <...issues?limit=1&page=149>; rel="last"
+(1 record)
+```
+
+The page size parameter is `limit`. GitHub's `per_page` is accepted, ignored,
+and the default of 10 is served — an ordinary naming difference, until you read
+the `Link` header. `rel="last"` in the first response is page 15, which is
+149/10: computed from the size actually served. And the URL it sits in still
+says `per_page=1`, because Gitea echoed back the parameter it did not act on.
+
+So the header a client follows *because it does not want to compute pagination
+itself* confirms a belief the server discarded. Both halves are individually
+defensible and together they are worse than either.
+
+The limit is clamped silently at both ends: `limit=9999` answers 50 and no
+warning.
+
+### What this cost the format, and what it bought
+
+`X-Total-Count` was the only true number in that response, and this project
+could not serve one. Basecamp's Recipe carried the comment "Also not modelled:
+X-Total-Count, which Basecamp sends beside Link" three times, once per paged
+route — a known gap, written down and left.
+
+Added `count_header` to `responses.list`. It serves the count of records before
+paging, which is a different quantity from the page count and from the length of
+the body. Wired into gitea and basecamp; the three Basecamp comments are gone
+because the thing they described is now served.
+
+The Basecamp case that asserts it earns its place by saying something the
+listing alone does not: the account holds three projects, one active, one
+archived and one trashed, and `X-Total-Count` says **one**. The header counts
+what the endpoint would return under its filter, not what the account holds — so
+it cannot be used to detect the records the filter is hiding.
+
+Three tests, red-greened by making the handler serve `len(page.Records)` instead
+of `page.Total`: the count survives paging to the last page, it is records
+rather than pages, and a Recipe naming no header sends none. That last one
+matters because a client taught to read a total here and finding none upstream
+parses the empty string as zero and concludes the account is empty.
+
+### The rest of the Gitea findings
+
+- **The issues listing returns pull requests**, as GitHub's does — but Gitea's
+  `pull_request` is *present and null* on a plain issue rather than absent, so
+  the GitHub idiom (`"pull_request" in issue`) is true for everything. The
+  number space is shared: `/issues/1112` fetches the pull request, and
+  `html_url` says `/pulls/1112`.
+- **Two identifiers, and the path takes the small one.** Number 1112 has id
+  495221; the path takes 1112.
+- **The credential prefix is `token `, not `Bearer`**, per the swagger's own
+  `AuthorizationHeaderToken`. Beside it, `AccessToken` puts the credential in a
+  query string named `access_token` — documented as deprecated for removal in
+  Gitea 1.23, and a credential in a URL reaches access logs, proxy logs and
+  `Referer` headers. Recorded from the spec: telling a *rejected* query
+  credential apart from no credential needs a valid token, which was not asked
+  for.
+- **Every failure carries the same `url`**, the instance's swagger page. Not the
+  failing request, not documentation for that error, not unique — an error
+  reporter grouping by it has one group. The 401 carries no `WWW-Authenticate`.
+- **No rate-limit headers at all.** The only way to find an instance's limit is
+  to cross it.
+
+### Still open
+
+- 342 paths, and this Recipe covers issues on one repository. Pulls, releases,
+  orgs, admin, packages and Actions each want their own evidence.
+- The `Link` echo is recorded in words rather than served. Reproducing it would
+  mean handing clients a URL this emulator knows to be misleading.

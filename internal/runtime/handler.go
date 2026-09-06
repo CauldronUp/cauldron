@@ -828,6 +828,13 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// resume point in Next-Range. A 200 there means you have everything, so
 	// an emulator that always answered 200 taught a client the one thing it
 	// must not believe.
+	// How many records there are in total, for the providers that answer it
+	// in a header instead of the body. Set before the route's own headers so
+	// a Recipe naming the header explicitly still wins.
+	if name := list.CountHeader; name != "" {
+		w.Header().Set(name, strconv.Itoa(page.Total))
+	}
+
 	// The next page as an RFC 5988 Link header, for the providers that
 	// advertise it there rather than in the body. Set before the route's own
 	// headers so a Recipe naming Link explicitly still wins.

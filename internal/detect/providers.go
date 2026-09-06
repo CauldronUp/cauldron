@@ -820,6 +820,11 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe:   "gitea",
+			npm:      []string{"gitea-js"},
+			gomod:    []string{"code.gitea.io/sdk/gitea"},
+		},
+		{
 			recipe:   "github",
 			composer: []string{"knplabs/github-api"},
 			npm:      []string{"@octokit/rest", "@octokit/core", "octokit"},

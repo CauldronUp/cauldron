@@ -1,0 +1,460 @@
+# Gitea Recipe for Cauldron
+#
+# Gitea is a self-hosted git forge whose API is deliberately GitHub-shaped.
+# Owner and repo in the path, an issues listing that includes pull requests, a
+# Link header advertising the next page. That resemblance is the danger: the
+# places it diverges are places a GitHub client has no reason to look.
+#
+# Written against Gitea's own generated swagger -- gitea.com/swagger.v1.json,
+# 342 paths, version 1.27.0+dev -- and struck live against gitea.com on
+# 2026-09-06 using public repositories and no account.
+#
+# **per_page is not the parameter, and the Link header echoes it anyway.**
+#
+# The page size is `limit`. GitHub's spelling is `per_page`, and sending it
+# does not fail -- it is ignored, and the default of 10 is served. That much is
+# an ordinary naming difference. What makes it expensive was struck live
+# against gitea/tea, a repository with 149 issues:
+#
+#   GET /api/v1/repos/gitea/tea/issues?per_page=1
+#   HTTP 200
+#   X-Total-Count: 149
+#   Link: <...issues?page=2&per_page=1>; rel="next",
+#         <...issues?page=15&per_page=1>; rel="last"
+#   (10 records)
+#
+#   GET /api/v1/repos/gitea/tea/issues?limit=1
+#   HTTP 200
+#   X-Total-Count: 149
+#   Link: <...issues?limit=1&page=2>; rel="next",
+#         <...issues?limit=1&page=149>; rel="last"
+#   (1 record)
+#
+# The first response ignored per_page, served pages of 10, and computed
+# rel="last" as page 15 -- and then wrote `per_page=1` into the very URLs it
+# was handing back. The pagination header confirms a belief the server did not
+# act on. A client that trusts rel="last" to say how many pages there are is
+# reading a number derived from a page size it never received.
+#
+# X-Total-Count is the only quantity in that response that is true under both
+# spellings, which is what makes it worth serving rather than noting.
+#
+# The limit is clamped in silence at both ends. limit=9999 answers 50 records
+# and no warning, so a client asking for everything in one request gets 50 and
+# a Link header, and one that reads the record count as "that was all of them"
+# stops at 50 of 149.
+#
+# **The issues listing returns pull requests, and links to them as pulls.**
+#
+# GitHub does this too, so a client ported across is already wrong in the same
+# way -- but Gitea's `pull_request` is present and null on a plain issue rather
+# than absent, so the GitHub test for it (`"pull_request" in issue`) is true for
+# everything. Struck live: both records on the first page of gitea/tea were
+# pull requests, and `html_url` on each pointed at /pulls/1112, not /issues/1112
+# -- the number space is shared, and /issues/1112 fetches the pull request.
+#
+# **A record has two identifiers and the path takes the small one.**
+#
+# `number` is per repository; `id` is instance-global. Struck live: issue
+# number 1112 has id 495221. The path takes 1112.
+#
+# **The credential is prefixed `token `, and there is a documented way to put
+# it in the URL.**
+#
+# The swagger's own AuthorizationHeaderToken says tokens "must be prepended
+# with \"token\" followed by a space" -- not Bearer. Beside it is AccessToken,
+# an apiKey `in: query` named access_token, described there as "deprecated for
+# removal in Gitea 1.23". A credential in a query string reaches access logs,
+# proxy logs and Referer headers. Recorded from the spec: distinguishing a
+# rejected query credential from no credential at all needs a valid token,
+# which this Recipe does not have and did not ask for.
+#
+# **Failures point at the docs rather than at the request.** Struck live:
+#
+#   GET /api/v1/repos/gitea/no-such-repo-xyz
+#   HTTP 404  {"message":"not found","url":"https://gitea.com/api/swagger"}
+#
+#   GET /api/v1/user   (Authorization: Bearer bogus)
+#   HTTP 401  {"message":"invalid username, password or token",
+#              "url":"https://gitea.com/api/swagger"}
+#
+# `url` is the same swagger link on every failure. It is not the failing
+# request, not a documentation page for this error, and not unique -- so an
+# error reporter grouping by it groups every failure the instance has ever
+# returned into one. The 401 carries no WWW-Authenticate.
+#
+# **Nothing says how much budget is left.** No RateLimit headers, no
+# Retry-After, on any response struck. The only way to find an instance's
+# limit is to cross it.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Issues on one repository, listed and fetched. 342 paths is a forge:
+#     pulls, releases, orgs, admin, packages and Actions each want evidence.
+#   - The credential is checked for presence, not validity, and the `token `
+#     prefix is served as the scheme rather than verified. Basic auth and the
+#     Sudo impersonation header are documented and not modelled.
+#   - `pull_request` is served as an object or null, and its contents are not
+#     modelled -- presence, not shape, is the claim.
+#   - The Link header here is computed from the page size actually served.
+#     Reproducing the echo of an ignored parameter would mean serving a URL
+#     this emulator knows to be misleading, and the finding is recorded in
+#     words instead.
+
+recipe: gitea
+capability: vcs
+version: 0.1.0
+
+upstream:
+  api: "v1"
+  docs: https://docs.gitea.com/api/1.20/
+  spec: https://gitea.com/swagger.v1.json
+  spec_hash: a5859db5800c5f7c466b14cf4497710437bce5028066dd24036a787fa5a16057
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Not "Bearer ". The swagger's own words: tokens "must be prepended with
+  # \"token\" followed by a space".
+  prefix: "token "
+  keys:
+    - cauldron0000000000000000000000000000000
+  absent_error: unauthorized
+
+responses:
+  list:
+    style: bare
+    link_header: true
+    prev_link: true
+    # The one number in a Gitea listing that does not depend on which page-size
+    # spelling the caller used.
+    count_header: X-Total-Count
+  error:
+    style: flat
+    message_field: message
+    fields:
+      # The same link on every failure, which is why grouping by it groups
+      # everything together.
+      url: https://gitea.com/api/swagger
+
+resources:
+  issue:
+    id:
+      # The per-repository one, which is what a path addresses.
+      field: number
+      style: numeric
+      type: number
+    fields:
+      # The instance-global one. Large, unique across every repository, and
+      # useless in a path.
+      database_id:
+        type: number
+        as: id
+      # From the path, and Gitea does not echo either back as a field.
+      owner:
+        type: string
+        in: "-"
+      repo:
+        type: string
+        in: "-"
+      title:
+        type: string
+        required: true
+      body:
+        type: string
+      state:
+        type: string
+        default: open
+      # Present and null on a plain issue, an object on a pull request. The
+      # GitHub idiom -- test whether the key exists -- answers true for both.
+      pull_request:
+      # Which is why html_url is worth reading instead: it says /pulls/ for a
+      # pull request and /issues/ for an issue.
+      html_url:
+        type: string
+      comments:
+        type: number
+        default: 0
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v1/repos/{owner}/{repo}/issues
+    resource: issue
+    operation: list
+    scope: [owner, repo]
+    pagination:
+      style: page
+      # limit, not per_page. Sending per_page changes nothing.
+      limit_param: limit
+      cursor_param: page
+      limit: 10
+      max_limit: 50
+      first_page: 1
+
+  - method: GET
+    path: /api/v1/repos/{owner}/{repo}/issues/{id}
+    resource: issue
+    operation: get
+    scope: [owner, repo]
+    # Gitea's own words for a missing record, which are the same two for a
+    # missing repository and a missing issue.
+    not_found: not_found
+
+errors:
+  not_found:
+    status: 404
+    message: "not found"
+  unauthorized:
+    status: 401
+    message: "invalid username, password or token"
+  rate_limit:
+    status: 429
+    message: "rate limit exceeded"
+
+fixtures:
+  empty:
+    issue: []
+
+  tea:
+    issue:
+      - number: 1112
+        database_id: 495221
+        owner: gitea
+        repo: tea
+        title: "feat(login): support TLS client certificates"
+        state: open
+        pull_request:
+          merged: false
+          merged_at: null
+          draft: false
+          html_url: https://gitea.com/gitea/tea/pulls/1112
+        html_url: https://gitea.com/gitea/tea/pulls/1112
+        comments: 0
+        created_at: "2026-08-30T09:14:02Z"
+      - number: 1111
+        database_id: 494758
+        owner: gitea
+        repo: tea
+        title: "Make `tea pulls create` honor `--output`"
+        state: open
+        pull_request:
+          merged: false
+          merged_at: null
+          draft: false
+          html_url: https://gitea.com/gitea/tea/pulls/1111
+        html_url: https://gitea.com/gitea/tea/pulls/1111
+        comments: 2
+        created_at: "2026-08-28T17:41:55Z"
+      - number: 1109
+        database_id: 494002
+        owner: gitea
+        repo: tea
+        title: "tea issues --state all ignores the flag"
+        body: "tea issues --state all returns open issues only."
+        state: open
+        pull_request: null
+        html_url: https://gitea.com/gitea/tea/issues/1109
+        comments: 5
+        created_at: "2026-08-21T11:03:10Z"
+
+conformance:
+  - name: the total count travels in a header, not the body
+    source: https://gitea.com/api/v1/repos/gitea/tea/issues
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      headers:
+        # Struck live against gitea/tea, which answered 149. A listing body is
+        # a bare array, so there is nowhere in it for a total to live.
+        X-Total-Count: "3"
+
+  - name: the listing is a bare array with no envelope
+    source: https://gitea.com/swagger.v1.json
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        # No wrapper, no data key, no meta. Struck live: the response body
+        # begins with '[' and the total is only in the header.
+        '[0]':
+          number: 1112
+      absent:
+        - '[3]'
+
+  - name: a pull request comes back from the issues listing
+    source: https://gitea.com/api/v1/repos/gitea/tea/issues
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        # Struck live: both records on the first page were pull requests, and
+        # each html_url pointed at /pulls/, not /issues/.
+        '[0].html_url': https://gitea.com/gitea/tea/pulls/1112
+        '[1].html_url': https://gitea.com/gitea/tea/pulls/1111
+        # And the one plain issue links to /issues/, which is the only field
+        # that tells them apart.
+        '[2].html_url': https://gitea.com/gitea/tea/issues/1109
+
+  - name: pull_request is null on a plain issue, not absent
+    source: https://gitea.com/swagger.v1.json
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues/1109
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        number: 1109
+        # Present and null. The GitHub test for "is this a pull request" asks
+        # whether the key exists, and here it always does.
+        pull_request: null
+        html_url: https://gitea.com/gitea/tea/issues/1109
+
+  - name: the path takes number, and id is a different number
+    source: https://gitea.com/api/v1/repos/gitea/tea/issues/1112
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues/1112
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        number: 1112
+        # Struck live. The instance-global identifier, which the path does not
+        # take.
+        id: 495221
+
+  - name: fetching by the global id is a 404
+    source: https://gitea.com/swagger.v1.json
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues/495221
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 404
+      body:
+        message: "not found"
+
+  - name: a failure points at the swagger page, not at the request
+    source: https://gitea.com/api/v1/repos/gitea/no-such-repo-xyz
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues/999999
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 404
+      body:
+        message: "not found"
+        # Struck live, and the same string on every failure the instance
+        # returns. An error reporter grouping by it has one group.
+        url: https://gitea.com/api/swagger
+
+  - name: no credential is a 401 with no WWW-Authenticate
+    source: https://gitea.com/api/v1/user
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      headers: {}
+    expect:
+      status: 401
+      body:
+        message: "invalid username, password or token"
+
+  - name: "the rate limit says so in these words"
+    source: "https://docs.gitea.com/api/1.20/"
+    arm: rate_limit
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 429
+      body:
+        message: "rate limit exceeded"
+        url: https://gitea.com/api/swagger
+
+  - name: the page size parameter is limit, and page numbering starts at 1
+    source: https://gitea.com/swagger.v1.json
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      query:
+        # Struck live: this is the spelling that changes the page size.
+        # per_page is accepted, ignored, and echoed back into the Link header.
+        limit: "2"
+        page: "1"
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      headers:
+        # Still the whole set, not the size of this page.
+        X-Total-Count: "3"
+      body:
+        '[0]':
+          number: 1112
+          title: "feat(login): support TLS client certificates"
+          state: open
+          comments: 0
+          created_at: "2026-08-30T09:14:02Z"
+      absent:
+        - '[2]'
+
+  - name: a second page continues rather than restarting
+    source: https://gitea.com/swagger.v1.json
+    verified: "2026-09-06"
+    fixture: tea
+    request:
+      method: GET
+      path: /api/v1/repos/gitea/tea/issues
+      query:
+        limit: "2"
+        page: "2"
+      headers:
+        Authorization: "token cauldron0000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        '[0]':
+          number: 1109
+          # The one plain issue, and the only record whose body is set.
+          body: "tea issues --state all returns open issues only."
+      absent:
+        - '[1]'
