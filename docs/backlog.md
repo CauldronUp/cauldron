@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-122 paging parameter name(s) across 57 recipe(s) are declared and sent by no
+118 paging parameter name(s) across 54 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4554,6 +4554,17 @@ whether the name was read or not -- but the position can: past the only record t
 collection is empty, and a name the runtime ignored would have answered with the
 record again. 95 more cases went in on that, each saying in its own comment which
 half it shows and which it cannot.
+
+A size with no position is provable on its own, which the generator had also
+been treating as unbuildable. Amadeus takes `max` and no cursor at all: ask for
+one out of several, receive one, and the name was read. There is no second case
+because there is nowhere to page to, and the comment says so rather than leaving
+a reader to wonder where the other half went.
+
+And a template with no request body is not a reason to give up on a route whose
+paging travels in one. Cohere's rerank is declared `in: body` on a GET and its
+green case sends nothing, so the paging fields *are* the whole body -- which is
+exactly what a client reading that declaration would send.
 
 ### Two more gaps that looked like provider behaviour
 

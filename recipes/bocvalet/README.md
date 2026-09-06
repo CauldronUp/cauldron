@@ -2,7 +2,7 @@
 
 Emulates the BoC Valet API (bocvalet), for local development and tests.
 
-**6 conformance cases, all of them checked against the live API on 2026-08-30.**
+**7 conformance cases, 6 checked against the live API on 2026-08-30.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 
