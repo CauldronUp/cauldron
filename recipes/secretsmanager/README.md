@@ -2,7 +2,7 @@
 
 Emulates the AWS Secrets Manager API (2017-10-17), for local development and tests.
 
-**15 conformance cases, 2 checked against the live API.**
+**17 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs real AWS credentials. The credential check itself was verified directly against secretsmanager.us-east-1.amazonaws.com, unsigned, on 2026-09-05.
 

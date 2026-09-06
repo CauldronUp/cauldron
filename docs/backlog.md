@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-74 paging parameter name(s) across 37 recipe(s) are declared and sent by no
+68 paging parameter name(s) across 34 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5287,3 +5287,24 @@ for that route's resource first, settles five more names.
 This is the third time the same mistake has been found in a different generator.
 The lesson is not about fixtures. It is that "the first thing in the file that
 matches" is a guess wearing the clothes of a lookup.
+
+### A record is not always an object, and a route is not always a path
+
+DynamoDB's ListTables answers a list of table names. SQS's ListQueues answers a
+list of URLs. The generator looked for a field on a string, found none, and
+wrote the routes off -- when the assertion it wanted was simply on the element:
+`QueueUrls[0]` is the queue.
+
+Both Recipes then produced cases named "MaxResults is read on , and a page of
+one is not the whole collection". AWS mounts every operation on `/` and tells
+them apart by an `X-Amz-Target` header, so the path contributed nothing to the
+name, two cases in a file collided, and the whole batch was dropped without a
+word -- the case names never appeared in `verify`'s output, so the check that
+looks for them found nothing to look at. Naming those cases after the operation
+in the header fixed six of them at once.
+
+Two more small things fell out on the way: a position is best read off the page
+the sandbox actually served rather than off the fixture (Workable's jobs carry a
+`shortcode` where the generator wanted an `id`), and a generator that drops
+work silently is worse than one that fails loudly. The silent drop hid a
+one-line naming bug for three sweeps.
