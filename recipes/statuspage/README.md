@@ -2,7 +2,7 @@
 
 Emulates the Statuspage API (v1), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API on 2026-09-05.**
+**19 conformance cases, 2 checked against the live API on 2026-09-05.**
 
 Statuspage has no sandbox, so the incident and component cases still cite documentation. The credential shape needed no page of its own, and checking it live found this Recipe's own error model wrong.
 

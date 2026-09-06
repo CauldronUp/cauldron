@@ -2,7 +2,7 @@
 
 Emulates the Langfuse API (1), for local development and tests.
 
-**16 conformance cases, 2 checked against the live API.**
+**17 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against cloud.langfuse.com, no account and no key -- and found that auth had never actually been enforced. This file declared `scheme: basic` with no `keys` at all, which this format treats as "route first, tighten auth later"; every one of its own cases sent a credential and every one would have been accepted regardless of what it sent, because nothing was ever compared against anything. A real key is declared now, along with the two real refusal sentences: "No authorization header" for a missing credential and "Invalid credentials. Confirm that you've configured the correct host." for a wrong one.
 

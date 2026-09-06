@@ -2,7 +2,7 @@
 
 Emulates the NeverBounce API (v4.2), for local development and tests.
 
-**10 conformance cases, 6 checked against the live API on 2026-09-02.**
+**11 conformance cases, 6 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

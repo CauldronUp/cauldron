@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-1090 record field name(s) across 308 recipe(s) are declared and asserted
+1040 record field name(s) across 302 recipe(s) are declared and asserted
 by no case.
 ```
 
