@@ -1,0 +1,519 @@
+# GoCardless Recipe for Cauldron
+#
+# **The envelope key is plural even when it holds one object.**
+#
+# GoCardless's own example of fetching a single mandate is:
+#
+#   {"mandates": {"id": "MD123", "status": "pending_submission", ...}}
+#
+# Not `mandate`. Not an array. The same key that holds a list of mandates on the
+# collection endpoint holds a single object here, so `body.mandates[0].id` reads
+# undefined on a get and works on a list, and `body.mandate` is undefined on
+# both. Code written against one endpoint and reused against the other fails on
+# a key that is present, spelled correctly, and the wrong shape.
+#
+# **The version header is not optional and is not a version of your client.**
+#
+# Every request must carry `GoCardless-Version: 2015-07-06`. It is a fixed date
+# that has not moved since it was minted, so it reads like boilerplate somebody
+# forgot to update, and removing it is refused rather than defaulted.
+#
+# **The error array changes its keys depending on why the request failed.**
+#
+# A failure is `{"error": {type, code, message, documentation_url, request_id,
+# errors: [...]}}`, and what is inside `errors` depends on `type`:
+#
+#   validation_failed  ->  {"message": ..., "field": "branch_code",
+#                           "request_pointer": "/customer_bank_accounts/branch_code"}
+#   everything else    ->  {"message": ..., "reason": ...}
+#
+# So `error.errors[0].field` is a string on a 422 and undefined on a 409, and a
+# client that renders it against the form gets nothing to highlight. GoCardless
+# documents both shapes under one key.
+#
+# **`code` in the body is a number, and `type` is the thing to branch on.**
+#
+# There are four types -- gocardless (500, 504), invalid_api_usage (400, 401,
+# 403, 404, 405, 406, 415, 426, 429), invalid_state (409, 410) and
+# validation_failed (422) -- so one type covers nine statuses and one status
+# does not identify a type. The type is the discriminator; the status is not.
+#
+# **A mandate has ten states and only one of them is "working".**
+#
+# pending_customer_approval, pending_submission, submitted, active,
+# suspended_by_payer, failed, cancelled, expired, consumed, blocked. Three of
+# those are on their way to working, one is working, and six are not coming
+# back. Code that branches active-versus-everything-else treats a mandate that
+# is two days from collecting the same as one the payer has blocked.
+#
+# Written against GoCardless's own API reference rather than a page about it:
+# docs.gocardless.com/docs/api-reference, read on 2026-09-06. No case here is
+# marked verified, because none was struck against a live account -- the
+# documentation is GoCardless's, the responses are this emulator's.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Mandates only. Payments, refunds, payouts, subscriptions and the mandate
+#     import flow are real resources with their own lifecycles, and each wants
+#     evidence of its own rather than a shape copied from this one.
+#   - The `links` object is served as declared and its targets are not. A
+#     mandate points at a customer, a creditor and a bank account; following
+#     one of those here 404s, because this Recipe models the mandate.
+#   - `consent_parameters`, `authorisation_source`, `funds_settlement` and
+#     `consent_type` are documented on the resource and not served. They belong
+#     to schemes this Recipe does not model, and inventing values for them
+#     would be describing a scheme rather than reproducing one.
+
+recipe: gocardless
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: "2015-07-06"
+  docs: https://docs.gocardless.com/docs/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_gocardless_token_000000000000
+  absent_error: no_credential
+  rejected_error: authentication_error
+
+required_headers:
+  # A fixed date, required on every request, unchanged since it was minted.
+  # Omitting it is refused rather than defaulted to the newest.
+  GoCardless-Version: missing_version
+
+responses:
+  list:
+    style: wrapped
+    key: mandates
+  resource:
+    # The same plural key, holding one object rather than an array.
+    style: wrapped
+    key: mandates
+  error:
+    # {"error": {"type": ..., "message": ..., ...}} -- one object under one
+    # singular key, unlike the resource envelope two lines above it.
+    style: nested
+    key: error
+
+resources:
+  mandate:
+    id:
+      style: prefixed
+      prefix: MD
+    fields:
+      reference:
+        type: string
+      # Ten of them, and six are terminal.
+      status:
+        type: string
+      scheme:
+        type: string
+      next_possible_charge_date:
+        type: string
+      payments_require_approval:
+        type: boolean
+      created_at:
+        type: datetime
+      # Present and null until the mandate has been verified.
+      verified_at:
+        type: datetime
+        null_when_unset: true
+      # Free-form, and the only place a client's own identifier can live.
+      metadata:
+        type: map
+      # Ids of related records, not URLs and not embedded objects.
+      links:
+        type: map
+
+routes:
+  - method: GET
+    path: /mandates
+    resource: mandate
+    operation: list
+    pagination:
+      # before and after are the ids of the records either side of the page,
+      # not offsets and not tokens: GoCardless's own words are "the ID of the
+      # object immediately preceding the array to be returned".
+      style: cursor
+      limit: 50
+      max_limit: 500
+      limit_param: limit
+      cursor_param: after
+
+  - method: GET
+    path: /mandates/{id}
+    resource: mandate
+    operation: get
+
+  - method: POST
+    path: /mandates
+    resource: mandate
+    operation: create
+
+errors:
+  no_credential:
+    status: 401
+    type: invalid_api_usage
+    message: "Authentication required"
+  authentication_error:
+    status: 401
+    type: invalid_api_usage
+    message: "Invalid token"
+  missing_version:
+    status: 400
+    type: invalid_api_usage
+    message: "Missing required header GoCardless-Version"
+  resource_missing:
+    status: 404
+    type: invalid_api_usage
+    message: "Resource not found"
+  parameter_missing:
+    status: 422
+    type: validation_failed
+    message: "Validation failed"
+  # 409 and 410, and the one type whose errors array carries reason rather
+  # than field.
+  invalid_state:
+    status: 409
+    type: invalid_state
+    message: "Mandate is not in a state where it can be cancelled"
+  unknown_route:
+    status: 404
+    type: invalid_api_usage
+    message: "Resource not found"
+  method_not_allowed:
+    status: 405
+    type: invalid_api_usage
+    message: "Method not allowed"
+  rate_limit:
+    status: 429
+    type: invalid_api_usage
+    message: "Rate limit exceeded"
+
+fixtures:
+  empty:
+    mandate: []
+
+  small-creditor:
+    mandate:
+      # Working, and the only one of the three that is.
+      - id: MD00012345678901
+        reference: REF-CAULDRON-1
+        status: active
+        scheme: bacs
+        next_possible_charge_date: "2026-09-10"
+        payments_require_approval: false
+        created_at: "2026-04-08T17:01:06.000Z"
+        verified_at: "2026-04-11T09:22:31.000Z"
+        metadata:
+          contract: ABCD1234
+        links:
+          customer_bank_account: BA00098765432101
+          creditor: CR00011122233344
+          customer: CU00055566677788
+
+      # On its way. Not a failure, and not chargeable yet either.
+      - id: MD00012345678902
+        reference: REF-CAULDRON-2
+        status: pending_submission
+        scheme: bacs
+        next_possible_charge_date: "2026-09-17"
+        payments_require_approval: false
+        created_at: "2026-08-30T11:14:52.000Z"
+        verified_at: null
+        metadata: {}
+        links:
+          customer_bank_account: BA00098765432102
+          creditor: CR00011122233344
+          customer: CU00055566677789
+
+      # Stopped by the person paying, which is not the same as cancelled by
+      # the merchant and not the same as failed at the bank.
+      - id: MD00012345678903
+        reference: REF-CAULDRON-3
+        status: suspended_by_payer
+        scheme: bacs
+        next_possible_charge_date: null
+        payments_require_approval: true
+        created_at: "2026-06-19T08:45:00.000Z"
+        verified_at: "2026-06-21T14:02:10.000Z"
+        metadata:
+          contract: WXYZ9876
+        links:
+          customer_bank_account: BA00098765432103
+          creditor: CR00011122233344
+          customer: CU00055566677790
+
+conformance:
+  - name: one mandate comes back under the plural key, as an object
+    source: https://docs.gocardless.com/docs/api-reference/mandate
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates/MD00012345678901
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 200
+      body:
+        # Not body.mandate, and not body.mandates[0]. The same key that holds
+        # an array on the collection holds one object here.
+        "mandates.id": "MD00012345678901"
+        "mandates.status": "active"
+      absent:
+        # The singular key a client reaches for first does not exist.
+        - mandate
+        # And indexing the plural one, which works on the listing, does not.
+        - "mandates[0]"
+
+  - name: the same key holds an array on the listing
+    source: https://docs.gocardless.com/docs/api-reference/mandate
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates[0].id": "MD00012345678901"
+        "mandates[1].id": "MD00012345678902"
+
+  - name: a mandate the payer stopped is not cancelled and not failed
+    source: https://docs.gocardless.com/docs/api-reference/mandate
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates/MD00012345678903
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 200
+      body:
+        # One of ten states, six of which are terminal. Branching on
+        # active-versus-everything-else loses the distinction entirely.
+        "mandates.status": "suspended_by_payer"
+        "mandates.payments_require_approval": true
+
+  - name: a mandate on its way is not yet chargeable and is not a failure
+    source: https://docs.gocardless.com/docs/api-reference/mandate
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates/MD00012345678902
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates.status": "pending_submission"
+        # Verified is present and null rather than absent, so a client that
+        # checks for the key finds it and reads nothing.
+        "mandates.verified_at": null
+
+  - name: links carry ids, not URLs and not embedded records
+    source: https://docs.gocardless.com/docs/api-reference/mandate
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates/MD00012345678901
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates.links.customer": "CU00055566677788"
+        "mandates.links.creditor": "CR00011122233344"
+
+  - name: the version header is required, and its absence is a 400
+    source: https://docs.gocardless.com/docs/api-reference/making-requests
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+    expect:
+      # Not defaulted to the newest version. Refused.
+      status: 400
+      body:
+        "error.message": "Missing required header GoCardless-Version"
+
+  - name: a failure names its type, which is the thing to branch on
+    source: https://docs.gocardless.com/docs/api-reference/responses-and-errors
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates/MD00000000000000
+      headers:
+        Authorization: "Bearer cauldron_gocardless_token_000000000000"
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 404
+      body:
+        # invalid_api_usage covers nine different statuses, so the status
+        # alone does not identify the failure and the type does.
+        "error.type": "invalid_api_usage"
+        "error.message": "Resource not found"
+
+  - name: no credential at all is refused
+    source: https://docs.gocardless.com/docs/api-reference/making-requests
+    fixture: small-creditor
+    request:
+      method: GET
+      path: /mandates
+      headers:
+        GoCardless-Version: "2015-07-06"
+    expect:
+      status: 401
+      body:
+        "error.message": "Authentication required"
+
+  # The page size, asserted from what the sandbox answered rather than
+  # from what the fixture lists -- the two are not the same thing,
+  # because the store does not serve records in the order a fixture
+  # writes them. Asking for one out of 3 and receiving one can only
+  # happen if limit was read.
+  - name: "limit is read on mandates, and a page of one is not the whole collection"
+    source: "https://docs.gocardless.com/docs/api-reference/mandate"
+    fixture: small-creditor
+    request:
+      method: GET
+      path: "/mandates"
+      query:
+        "limit": "1"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_000000000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates[0].id": "MD00012345678901"
+      absent:
+        - "mandates[1]"
+
+  # And the position. after=MD00012345678901 answers a different record,
+  # which the size alone cannot produce.
+  - name: "after moves the page on for mandates"
+    source: "https://docs.gocardless.com/docs/api-reference/mandate"
+    fixture: small-creditor
+    request:
+      method: GET
+      path: "/mandates"
+      query:
+        "limit": "1"
+        "after": "MD00012345678901"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_000000000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates[0].id": "MD00012345678902"
+      absent:
+        - "mandates[1]"
+
+  # The names. This Recipe declares 5 field(s) on a mandate that no case
+  # asserted, so each of them could have been renamed to anything and
+  # every case would have stayed green. The runtime builds the response
+  # out of the declaration and the fixture, so this seeds one and
+  # asserts the 5 name(s) that came back at the paths they came back
+  # under.
+  - name: "a mandate carries the field names this Recipe declares"
+    source: "https://docs.gocardless.com/docs/api-reference/mandate"
+    fixture: small-creditor
+    request:
+      method: GET
+      path: "/mandates"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_000000000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 200
+      body:
+        "mandates[0].created_at": "2026-04-08T17:01:06.000Z"
+        "mandates[0].metadata.contract": "ABCD1234"
+        "mandates[0].next_possible_charge_date": "2026-09-10"
+        "mandates[0].reference": "REF-CAULDRON-1"
+        "mandates[0].scheme": "bacs"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for authentication error and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- sending a credential nobody issued -- and asserts
+  # what came back, envelope and all.
+  - name: "a credential nobody issued is refused in these words"
+    source: "https://docs.gocardless.com/docs/api-reference"
+    fixture: small-creditor
+    request:
+      method: GET
+      path: "/mandates/MD00012345678901"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_cauldronwrongkey000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 401
+      body:
+        "error.code": "authentication_required"
+        "error.message": "Invalid token"
+        "error.type": "invalid_api_usage"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for method not allowed and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- using a method this route does not take -- and
+  # asserts what came back, envelope and all.
+  - name: "a method this route does not take is refused in these words"
+    source: "https://docs.gocardless.com/docs/api-reference"
+    fixture: small-creditor
+    request:
+      method: DELETE
+      path: "/mandates/MD00012345678901"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_000000000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 405
+      body:
+        "error.code": "method_not_allowed"
+        "error.message": "Method not allowed"
+        "error.type": "invalid_api_usage"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://docs.gocardless.com/docs/api-reference"
+    arm: rate_limit
+    fixture: small-creditor
+    request:
+      method: GET
+      path: "/mandates/MD00012345678901"
+      headers:
+        "Authorization": "Bearer cauldron_gocardless_token_000000000000"
+        "GoCardless-Version": "2015-07-06"
+    expect:
+      status: 429
+      body:
+        "error.code": "rate_limit"
+        "error.message": "Rate limit exceeded"
+        "error.type": "invalid_api_usage"
+
+
+

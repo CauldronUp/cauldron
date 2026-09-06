@@ -232,8 +232,9 @@ func TestTheBacklogCountsUnstatedPaging(t *testing.T) {
 // are not. Circle is the stablecoin company and not CircleCI, which is a
 // homonym. GitHub Actions and Stripe Tax are separate surfaces of a vendor
 // already here, and both rows say so themselves -- "probably its own",
-// "probably a specialised extension". GoCardless is payments, where the shipped
-// gocardlessbank is GoCardless Bank Account Data: one vendor, two APIs,
+// "probably a specialised extension". GoCardless sat here for the same reason
+// until it shipped in its own right -- payments, where gocardlessbank is
+// GoCardless Bank Account Data: one vendor, two APIs,
 // different shapes. Cloudflare R2 is an S3-compatible object store that shares
 // a brand with the Cloudflare Recipe and nothing else. And two are accidents of
 // spelling -- "lob" sits inside "Azure Blob Storage", and "kit" inside
@@ -254,7 +255,6 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 		"Grafana Cloud":          "a stack-management API on top of the Grafana HTTP API, which is what ships",
 		"Cloudflare R2":          "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
 		"GitHub Actions":         "a separate surface of GitHub, as the row itself says",
-		"GoCardless":             "payments, where gocardlessbank is GoCardless Bank Account Data",
 		"Stripe Tax":             "a specialised extension of Stripe, as the row itself says",
 		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
 		"Wise Business":          "the business banking product, where wise is the transfers API",

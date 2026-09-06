@@ -5227,6 +5227,14 @@ func providers() []provider {
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
 		{
+			// GoCardless's own clients. Not to be confused with the Bank
+			// Account Data product, which is a separate API and a separate
+			// Recipe: gocardlessbank.
+			recipe:   "gocardless",
+			composer: []string{"gocardless/gocardless-pro"},
+			npm:      []string{"gocardless-nodejs"},
+		},
+		{
 			// Aiven's own clients. The Go module is versioned in its path, so
 			// both majors are listed: v1 is still what a good deal of
 			// Terraform-adjacent code imports.
@@ -5318,8 +5326,14 @@ func providers() []provider {
 		{
 			// Nordigen is the same API under its former name, and plenty of
 			// manifests still carry it.
+			//
+			// gocardless-nodejs used to be listed here and is not this API.
+			// Its own description is "the collection of recurring bank-to-bank
+			// payments" and its repository is gocardless/gocardless-nodejs --
+			// that is the payments API, which is the gocardless Recipe. A
+			// manifest carrying it was being pointed at the wrong emulator.
 			recipe: "gocardlessbank",
-			npm:    []string{"nordigen-node", "gocardless-nodejs"},
+			npm:    []string{"nordigen-node"},
 		},
 		{
 			recipe: "googleaddress",

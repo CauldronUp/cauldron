@@ -70,7 +70,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Braintree | Transactions, customers, payment methods |
 | ~~Mollie~~ | Shipped. The webhook is an id and nothing else, open is not pending, the checkout link disappears |
 | Wise Business | Transfers, recipients, balances, settlement states |
-| GoCardless | Mandates, direct debit, failed collections |
+| ~~GoCardless~~ | Shipped, written against GoCardless's own API reference. **The envelope key is plural even when it holds one object** -- fetching one mandate answers `{"mandates": {...}}`, so `body.mandates[0]` works on the listing and is undefined on the get while `body.mandate` is undefined on both. The `errors` array changes its keys by failure type: `validation_failed` entries carry `field` and `request_pointer`, everything else carries `reason`, so rendering `errors[0].field` against a form gets nothing on a 409. `type` is the discriminator and the status is not -- `invalid_api_usage` alone covers nine statuses. A mandate has ten states, six terminal, and `suspended_by_payer` is neither cancelled by the merchant nor failed at the bank. `GoCardless-Version: 2015-07-06` is required on every request and refused rather than defaulted when absent |
 | ~~Brex~~ | Shipped. Money as an object, pending cards, expenses against transactions |
 | ~~Ramp~~ | Shipped. Cents without saying so, pending holds, declines in the list |
 | ~~Mercury~~ | Shipped. Direction in the sign, two balances, failed transfers in the list |
@@ -5559,7 +5559,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-636 declared error(s) across 304 recipe(s) have no case asserting what
+638 declared error(s) across 305 recipe(s) have no case asserting what
 they say.
 ```
 
