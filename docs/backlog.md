@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-1100 record field name(s) across 310 recipe(s) are declared and asserted
+1090 record field name(s) across 308 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5590,8 +5590,16 @@ cases. The same change failed the moment one case asserted the path.
 
 Four cases were dropped by the check that says so out loud -- three on Bluesky
 and one on Geoapify, where `verify` never mentioned the case name at all, which
-means it never ran it. Worth a look; the drop is loud precisely so that it gets
-one.
+means it never ran it. The cause was one character. Geoapify's country carries a
+flag emoji, and `json.dumps` writes anything outside the BMP as a surrogate
+pair; YAML has no such thing, so the two halves are lone surrogates, and the
+Recipe stopped loading. No case in the file ran, and only the loud drop said so
+-- the run before this one would have reported the four as quietly absent.
+
+Writing the character as itself fixed all four. It also cost the generator its
+own source file: the same escape went through a patch script, which opened the
+file for writing, failed to encode the surrogate, and left nothing behind. The
+file was rewritten from the patch's own record of it.
 
 What is left is mostly what has no record to observe: a Recipe whose fixtures
 hold nothing of that resource cannot show a field on it, which is the same wall
