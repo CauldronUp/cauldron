@@ -2,7 +2,7 @@
 
 Emulates the Mailgun API (v3), for local development and tests.
 
-**11 conformance cases, 2 checked against the live API.**
+**12 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.mailgun.net, no account and no key. A wrong key matches this file's declared `{"message":"Invalid private key"}` exactly -- but no credential at all answers a completely different envelope, `{"Error":"unauthorized"}`, capital E and no `message` field anywhere. Neither case was checkable before; both are now.
 

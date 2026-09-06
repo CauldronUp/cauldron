@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-620 record field name(s) across 219 recipe(s) are declared and asserted
+593 record field name(s) across 212 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
@@ -5884,14 +5884,38 @@ The remainder, counted once each and in priority order:
 |---|---|
 | No fixture holds a record of the resource | 199 |
 | No fixture sets it, so the emulator never sends it | 172 |
-| **A fixture sets it and the response still lacked it** | **165** |
+| A fixture sets it and the response still lacked it | 140 |
 | No request anywhere in the Recipe to build one from | 66 |
 | No route serves the resource at all | 14 |
-| Filled by a default or a null and still unseen | 5 |
+| Filled by a default or a null and still unseen | 2 |
 
 The first two and the fourth want a value written into a fixture or a provider
-watched. The third and the sixth want an explanation: a field a fixture sets,
-on a route the generator can reach, that the response did not carry. Edamam,
-TaxJar, api.video, Fitbit and Repology have five to seven each. That is the next
-thing to look at, and it is a question about the emulator rather than about the
-evidence.
+watched. The third wanted an explanation, and chasing it down found three more
+things the generator believed that the engine did not.
+
+### Three more things the generator believed and the engine did not
+
+The category that should not have existed -- a field a fixture sets, on a route
+the generator can reach, that the response did not carry -- went 189, 165, 156,
+140 as each of these was found. None of them was about a provider.
+
+**A value is echoed by a whole path segment, not a substring.** The rule that
+discards an assertion repeating something the request sent compared the value
+against the path as text. Fitbit's activity summary reports `0` for floors,
+elevation and active minutes, and the path
+`/1/user/-/activities/date/2018-12-26.json` contains a `0` -- so every
+zero-valued field in the corpus read as the request handing itself back.
+
+**A list has more than one element in it.** The reader descended into `[0]` and
+stopped, on the grounds that asserting `[1].x` claims something about ordering.
+The cases it already wrote assert `[0]`, which claims exactly as much, so the
+restriction bought nothing and hid every field a fixture sets on its second
+record. Repology's packaging carries `subrepo` on some rows and not others.
+
+**A resource's fields are not all on one route.** Checkout.com's payment read
+declares `returns:` naming a subset, so `action_id` and `auth_code` are
+legitimately absent from it and present on the create. The generator stopped at
+the first route that covered anything, and the rest of the names looked
+unobservable. It now keeps going until the names run out or the routes do.
+
+593 names left, and the 140 is the only category still owed an explanation.

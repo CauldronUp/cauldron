@@ -2,7 +2,7 @@
 
 Emulates the razorpay API (v1), for local development and tests.
 
-**25 conformance cases, 4 checked against the live API.**
+**26 conformance cases, 4 checked against the live API.**
 
 Everything about orders, payments, and captures still cites documentation rather than an observation, because reaching it needs a real merchant. The credential and routing checks were verified directly against api.razorpay.com, unauthenticated, on 2026-09-05.
 
