@@ -2691,7 +2691,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred Recipes send at least one identifier as a number now, and each
+One hundred and two Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -6455,3 +6455,100 @@ usually a number.
 - 119 paths and this covers two. Streams, topics, subscriptions, users, drafts,
   scheduled messages, reactions and the events queue are unexamined.
 - `narrow` is a JSON-encoded array inside a query parameter and is not modelled.
+
+## Sonarr and Radarr, where the same integer is a success and a failure
+
+A pair, shipped together, because neither Recipe carries the finding alone.
+
+Both written against each project's own generated OpenAPI document —
+`Sonarr/Sonarr` `src/Sonarr.Api.V3/openapi.json` (162 paths) and
+`Radarr/Radarr` `src/Radarr.Api.V3/openapi.json` (164 paths), read 2026-09-06.
+Both are self-hosted with no public instance, so nothing here is struck live and
+every claim is the provider's own document. Said plainly on both Recipes.
+
+### They are the same API until they are not
+
+Same fork, same framework, same `/api/v3` prefix, the same `info.version` string
+of `3.0.0`, the same two credential schemes with the same names. **134 paths
+appear in both documents.** A client written for one and pointed at the other
+connects, authenticates, and answers 200.
+
+Thirteen shared paths take different parameters. `GET /api/v3/history` takes
+`seriesIds` and `includeSeries` on Sonarr, `movieIds` and `includeMovie` on
+Radarr. `GET /api/v3/calendar` differs by four. The framework is ASP.NET Core,
+whose model binding drops a query key with no matching property rather than
+refusing it — so the wrong parameter is not an error. It is **a filter that does
+not filter**, and the answer is every record instead of none.
+
+### And the same integer means different things
+
+`eventType` is a filter taking an array of integers and a response field holding
+a string. The two documents list their members in this order:
+
+| position | Sonarr | Radarr |
+|---|---|---|
+| 0 | `unknown` | `unknown` |
+| 1 | `grabbed` | `grabbed` |
+| 2 | `seriesFolderImported` | `downloadFolderImported` |
+| 3 | `downloadFolderImported` | `downloadFailed` |
+| 4 | `downloadFailed` | `movieFileDeleted` |
+| 5 | `episodeFileDeleted` | `movieFolderImported` |
+| 6 | `episodeFileRenamed` | `movieFileRenamed` |
+| 7 | `downloadIgnored` | `downloadIgnored` |
+
+Only 0, 1 and 7 agree. Neither document pins explicit values, so the integers a
+caller sends are the members' declaration positions — which means **`?eventType=3`
+asks for successful imports on Sonarr and failed downloads on Radarr.** A
+monitoring job counting failures against the wrong one of the pair counts
+successes, and nothing anywhere returns an error.
+
+The inference — declaration order is the wire value — is written down on both
+Recipes rather than encoded, because neither document states it. What the
+Recipes serve is the names.
+
+What tells the two apart is `appName` on `/api/v3/system/status` and nothing
+else. `instanceName` looks like a second discriminator and is not: it is
+settable, and an operator running both may rename them to the same thing.
+
+### The rest, on both
+
+- **The same field is an integer going out and a string coming back.** Filter
+  with `eventType=3`, read back `"eventType": "downloadFolderImported"`. No
+  client type round-trips it.
+- **The credential is documented as a query parameter as well as a header** —
+  `apikey`, "Apikey passed as query parameter", beside `X-Api-Key`. These are
+  self-hosted boxes commonly sat behind a reverse proxy that logs full URLs.
+  Recorded and not served, because serving it would make a credential in a URL
+  the easy path in local development.
+- **The status endpoint is a host inventory**: `startupPath`, `appData`,
+  `osName`, `osVersion`, `isDocker`, `sqliteVersion`, `migrationVersion`,
+  `runtimeVersion`, `branch`. Absolute filesystem paths behind a credential the
+  same document says may travel in a query string.
+- **Radarr's document declares OpenAPI 3.0.4 and Sonarr's declares 3.0.1**, from
+  the same generator on the same fork. A toolchain pinned to one patch reads one
+  and refuses the other.
+
+### Keeping the pair's claim true
+
+A claim that lives across two files rots the first time somebody edits one of
+them. So `internal/recipe/arr_pair_test.go` checks both halves: that the two
+agree where the products do (credential header, listing key, count/page/limit
+fields, both paths) and diverge where they do (`seriesId` vs `movieId`, the
+filter parameter names, `episodeId` present on one side only, `appName`). Red-
+greened by renaming Radarr's scope field to Sonarr's: four failures.
+
+### A test that could not count past a hundred
+
+Unrelated and found on the way. The backlog states its figures in words, and the
+check that verified them was a map lookup against a table ending at
+`"One hundred": 100`.
+
+The regex captured one word. When the count first reached 100 it failed with
+"the backlog says hundred Recipes…" — a message about its own regex rather than
+about the figure. Widened to two words. Two commits later the count reached 102
+and it failed with "the backlog says and two Recipes…".
+
+Widening it again buys two more counts. So the check now parses the spelled
+number: split on the hundreds, look the remainder up in the table, add. Below a
+hundred it is still a lookup, because English below a hundred is a table and not
+a grammar.

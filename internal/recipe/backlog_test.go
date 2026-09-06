@@ -99,15 +99,16 @@ func TestTheBacklogCountsNumericIdentifiers(t *testing.T) {
 		}
 	}
 
-	// Two words, optionally: the map has spelled out "One hundred" since long
-	// before the count reached it, and a single-word capture could never match
-	// that entry. The count arriving at exactly 100 is what surfaced it.
-	stated := regexp.MustCompile(`((?:[A-Za-z-]+ )?[A-Za-z-]+) Recipes send at least one identifier as a number`).FindStringSubmatch(string(raw))
+	// A spelled number of any length, because they get longer. This capture
+	// was one word until the count reached a hundred, then two until it
+	// reached a hundred and two. Widening it each time is the wrong repair --
+	// see spelled below.
+	stated := regexp.MustCompile(`([A-Z][a-z-]*(?: (?:and )?[a-z-]+)*) Recipes send at least one identifier as a number`).FindStringSubmatch(string(raw))
 	if stated == nil {
 		t.Fatal("the backlog no longer states how many Recipes send a numeric identifier; update this test with it")
 	}
 
-	if words[stated[1]] != counted {
+	if spelled(stated[1]) != counted {
 		t.Errorf("the backlog says %s Recipes send a numeric identifier and %d do", stated[1], counted)
 	}
 }
@@ -144,6 +145,52 @@ var words = map[string]int{
 	"Ninety-three": 93, "Ninety-four": 94, "Ninety-five": 95,
 	"Ninety-six": 96, "Ninety-seven": 97, "Ninety-eight": 98,
 	"Ninety-nine": 99, "One hundred": 100,
+}
+
+// spelled reads a number this document writes out, including the ones past a
+// hundred that no table would keep up with.
+//
+// The table above stopped at a hundred, and the check that read it was a map
+// lookup, so the day a count reached 101 the test failed with "the backlog
+// says and two Recipes..." -- a message about its own regex, not about the
+// figure. It had already been widened once, from one captured word to two,
+// when the count first hit a hundred. Widening it again would buy two more
+// counts.
+//
+// So: split on the hundreds, look the remainder up in the table, and add.
+// Everything below a hundred is still a table lookup, because English below a
+// hundred is a table and not a grammar.
+func spelled(phrase string) int {
+	if value, ok := words[phrase]; ok {
+		return value
+	}
+
+	hundreds, rest, found := strings.Cut(phrase, " hundred")
+	if !found {
+		return 0
+	}
+
+	count, ok := words[hundreds]
+	if !ok {
+		return 0
+	}
+
+	total := count * 100
+
+	rest = strings.TrimPrefix(strings.TrimSpace(rest), "and ")
+	if rest == "" {
+		return total
+	}
+
+	// The remainder is written lowercase inside a sentence -- "One hundred and
+	// two" -- and the table is keyed by the capitalised form it takes when it
+	// starts one.
+	remainder, ok := words[capitalised(rest)]
+	if !ok {
+		return 0
+	}
+
+	return total + remainder
 }
 
 // The backlog states how many routes still page by a parameter nobody named.
