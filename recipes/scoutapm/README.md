@@ -2,7 +2,7 @@
 
 Emulates the Scout APM API (0.1), for local development and tests.
 
-**14 conformance cases, 4 checked against the live API on 2026-09-01.**
+**16 conformance cases, 4 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

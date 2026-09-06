@@ -2,7 +2,7 @@
 
 Emulates the Open Brewery DB API (openbrewerydb), for local development and tests.
 
-**17 conformance cases, 10 checked against the live API on 2026-08-29.** The unchecked one is the paging case: it sends the two parameter names this Recipe declares, which is a claim read from the provider's own description rather than struck against it.
+**18 conformance cases, 10 checked against the live API on 2026-08-29.** The unchecked one is the paging case: it sends the two parameter names this Recipe declares, which is a claim read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

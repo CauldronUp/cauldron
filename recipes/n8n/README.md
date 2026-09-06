@@ -2,7 +2,7 @@
 
 Emulates the n8n API (v1), for local development and tests.
 
-**17 conformance cases, 16 checked against the live API on 2026-09-01.**
+**18 conformance cases, 16 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the RubyGems API (v1), for local development and tests.
 
-**10 conformance cases, 9 checked against the live API on 2026-08-25.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**11 conformance cases, 9 checked against the live API on 2026-08-25.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

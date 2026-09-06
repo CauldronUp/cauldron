@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-695 record field name(s) across 245 recipe(s) are declared and asserted
+540 record field name(s) across 190 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5662,3 +5662,20 @@ language than the thing that reads it.
 695 names remain. 261 of those are in Recipes whose fixtures hold no record of
 the resource, which is the wall every counter on this page ends at, and the rest
 are fields no fixture sets -- a name declared, never served, and now visibly so.
+
+### A null is a value, and "None" is not a request
+
+A field declared `null_when_unset` arrives as `null` when the fixture does not
+set it, and the generator skipped nulls when reading the response -- so the name
+read as one the response did not carry, when the response carries it and says
+there is nothing there. That is the distinction the declaration exists to make,
+and asserting it is worth exactly as much as asserting a string.
+
+Turning nulls on found nothing, which was the more interesting bug. The rule
+that drops a value the request already sent compares values as text, and
+`str(None)` is `"None"` on both sides: every null matched the absent body of
+every GET, so every field the response nulls out looked like an echo of a
+request that had nothing in it at all.
+
+Two lines to fix -- a null was not sent by anybody, and a nil node in a body
+matches nothing -- and 164 more names settled across 73 Recipes.

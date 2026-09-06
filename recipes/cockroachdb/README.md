@@ -2,7 +2,7 @@
 
 Emulates the CockroachDB API (v1), for local development and tests.
 
-**15 conformance cases, 7 checked against the live API on 2026-09-02.**
+**16 conformance cases, 7 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the ZeroBounce API (v2), for local development and tests.
 
-**13 conformance cases, 5 checked against the live API on 2026-09-02.**
+**14 conformance cases, 5 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

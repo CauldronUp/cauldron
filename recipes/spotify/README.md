@@ -2,7 +2,7 @@
 
 Emulates the Spotify API (v1), for local development and tests.
 
-**15 conformance cases, 4 checked against the live API on 2026-08-31.**
+**16 conformance cases, 4 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

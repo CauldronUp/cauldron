@@ -2,7 +2,7 @@
 
 Emulates the Linear API (graphql), for local development and tests.
 
-**12 conformance cases, 1 checked against the live API.**
+**13 conformance cases, 1 checked against the live API.**
 
 Struck live 2026-09-05 against api.linear.app, no account and no key -- and found a declared error that nothing could ever reach. This file's authentication failure was named "authentication" and declared status 400; the runtime's own credential check falls back to the name "authentication_error" on a real refusal, so every actual unauthenticated request was serving a generic placeholder instead of this entry. Renamed and fixed to the real status, 401 -- the sentence itself was already right.
 

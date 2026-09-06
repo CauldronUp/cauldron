@@ -2,7 +2,7 @@
 
 Emulates the PandaDoc API (v1), for local development and tests.
 
-**14 conformance cases, 6 checked against the live API on 2026-09-01.**
+**15 conformance cases, 6 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 
