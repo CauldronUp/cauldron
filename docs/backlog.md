@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**60 more listings across 39 Recipes declare no paging at all**, and the
+**58 more listings across 37 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,20 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+SerpApi documents a position and no size, and gives away the size in its own
+worked example: `start` "skips the given number of results ... 0 (default) is the
+first page of results, 10 is the 2nd page of results, 20 is the 3rd page". The
+arithmetic steps by ten, which is the underlying engine's page and not something
+a caller can set -- so the size is `"-"` and the ten beside it is inferred from
+the provider's example rather than from this engine's habit, which is stated at
+the declaration.
+
+Marqeta will not settle either, and one clause survived its JavaScript: "use the
+/transactions endpoint to retrieve smaller datasets (**up to one page**)", with a
+pointer to a different product for anything larger. One page and no more is a
+stronger claim than "it pages" and a different one from "it does not", and it is
+not declarable from a single clause in a paragraph about something else.
 
 DHL is the sharpest of the ones that will not settle, because it is the only
 provider so far that *confirms* it pages without saying how. Its Unified Tracking
