@@ -5769,3 +5769,25 @@ That is the useful shape of this bug: a second implementation of something the
 system already does correctly, written from memory of what paths look like
 rather than from the thing that matches them. Worth a look wherever else this
 project has two implementations of one idea.
+
+### And a test that compares them, so it cannot happen a fourth time
+
+Three shapes of placeholder, three commits, and the same cause each time: two
+implementations of one idea, one of which was written from memory. The fix that
+matters is not the third patch, it is the test that would have made all three
+unnecessary.
+
+`recipe.PathMatches` is now exported for one reason -- so a test in
+`internal/runtime` can put it next to the router and compare them on every path
+every bundled Recipe's cases actually ask for. **10,439 routed paths**, and the
+rule is that the router is the authority: a path it routes to a route is a path
+about that route, whatever the second implementation thinks.
+
+The reverse direction is asserted too, with one stated exception. `PathMatches`
+trims a trailing slash and the router does not, because for Django-shaped APIs
+the slash is part of the path -- sixty-one routes across five Recipes declare
+one. That is a deliberate difference and the test says so rather than papering
+over it.
+
+Removing the greedy support again fails the test twelve times, which is the only
+evidence worth having that a regression test regresses.

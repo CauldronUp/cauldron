@@ -835,6 +835,20 @@ func (r Recipe) sendsParam(route Route, name string) bool {
 	return false
 }
 
+// PathMatches reports whether a concrete path is one the declared path
+// describes, in the three shapes the runtime's router understands: a whole
+// segment, a placeholder embedded in one, and a greedy {name...} that swallows
+// the rest.
+//
+// Exported because it is the second implementation of something the router
+// already does, and a test in internal/runtime compares the two across every
+// bundled Recipe. Two implementations of one idea is how all three shapes came
+// to be missing here while the router handled them: the rules that ask whether
+// a case is about a route were written from memory of what paths look like.
+func PathMatches(asked, declared string) bool {
+	return samePath(asked, declared)
+}
+
 // samePath compares a case's path to a route's, ignoring any query string on
 // the case and treating a {placeholder} as matching whatever sits in its
 // position.
