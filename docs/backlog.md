@@ -7214,3 +7214,62 @@ rewrote two unrelated sentences in the drift-status table, which used 504 as its
 example of a transient docs-host failure. Caught by reading the diff, not by any
 test — the figures the tests guard were all correct, and the prose they sat
 inside was not. Wiring scripts should target the row, not the number.
+
+## Coolify, whose document uses writeOnly nowhere and declares secrets on responses
+
+Written against Coolify's own OpenAPI 3.1 document — `coollabsio/coolify`
+`openapi.json`, 192 paths, `info.version` "0.1", read 2026-09-06. Coolify Cloud
+requires an account and has no anonymous surface, so nothing is struck live and
+the Recipe says so.
+
+`writeOnly` is OpenAPI's way of saying "this may be sent and is never returned".
+It appears **zero times** in this 192-path, one-megabyte document.
+
+Meanwhile the `Application` schema — the one a listing answers with — declares
+`http_basic_auth_password` ("Password for HTTP Basic Authentication") and four
+`manual_webhook_secret_*` fields, and the `PrivateKey` schema declares
+`private_key`, `format: private-key`.
+
+So as published, nothing in this document distinguishes a secret you send from a
+secret you get back. A generated client types all of them onto the response; a
+generated TypeScript interface for `Application` has a password on it. Anything
+that logs a response body, serialises one into an error report, or caches one is
+handling five secrets per application and does not know it.
+
+**Bounded carefully.** This is a claim about the document, not about the running
+server. Coolify may redact these at runtime; there is no anonymous endpoint to
+check, so the Recipe does not claim it either way, and says so in the header.
+The fixture uses `PLACEHOLDER-NOT-A-SECRET`, never a plausible value — what is
+being reproduced is that the key is present on a listing, which is the finding.
+
+### The rest
+
+- **There is no `POST /applications`.** Five separate creation endpoints chosen
+  by where the code comes from — `/public`, `/private-github-app`,
+  `/private-deploy-key`, `/dockerfile`, `/dockerimage` — all answering the same
+  shape. One type for the result, five paths for the request.
+- **A bad credential is 400 and no credential is 401.** The document's own
+  reusable responses. That is the opposite way round from most providers here,
+  so a refresh-on-401 path never fires on an expired token — and 400 is the
+  status every client treats as "do not retry".
+- **The field called `uuid` is not one.** Coolify's identifiers are 24-character
+  lowercase alphanumeric strings with no hyphens and no version nibble. A client
+  validating the field against a UUID pattern because of its name rejects every
+  real identifier, and a `uuid` column cannot hold one. Beside it sits `id`, the
+  database integer, exposed and addressing nothing.
+- **Ports are a string.** `ports_exposes` is `type: string` with no format and
+  no pattern, holding `"3000,9229"`. The separator is a convention the schema
+  never states.
+- **The status is a compound string**, `"running:healthy"` — two facts joined by
+  a colon in one untyped field with no enum for either half, so comparing to
+  `"running"` never matches. `build_pack` right beside it is a proper enum.
+- **Eighty-six fields on one record**, returned in full by a listing whose only
+  parameter is `tag`.
+- **The 429 declares `Retry-After`**, which most providers modelled here do not.
+
+### The wiring script now targets rows, not numbers
+
+After the Portainer near-miss — a blanket `"504 "` → `"505 "` rewriting two
+unrelated sentences — this Recipe's wiring script matches each README row by a
+regex that includes its surrounding text, asserts the old value is in that line,
+and replaces only within it. Eight lines changed, all of them counts.

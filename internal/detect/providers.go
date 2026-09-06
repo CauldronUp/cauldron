@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "coolify",
+			npm:    []string{"coolify-sdk"},
+		},
+		{
 			recipe: "portainer",
 			gomod:  []string{"github.com/portainer/client-api-go"},
 		},
