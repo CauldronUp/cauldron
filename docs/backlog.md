@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**44 more listings across 24 Recipes declare no paging at all**, and the
+**43 more listings across 23 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,12 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Kustomer says only one thing about its page numbering and it is enough: `page` is
+typed with a **minimum of 1**. A type constraint settles what no sentence on the
+page states. Its Recipe already declared the response half as `links.next`, a
+whole URL, so this route now carries three spellings of the same idea -- `page`
+out, a URL back, and a `pageSize` that is neither `limit` nor `per_page`.
 
 Basiq's dated record turned up something larger than its paging. Its reference
 could not be reached at any address -- api.basiq.io/reference/<operation> 404s for
