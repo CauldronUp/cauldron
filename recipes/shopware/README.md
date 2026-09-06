@@ -2,7 +2,7 @@
 
 Emulates the Shopware API (store-api 6.7), for local development and tests.
 
-**24 conformance cases, 5 checked against the live API on 2026-09-05.**
+**26 conformance cases, 5 checked against the live API on 2026-09-05.**
 
 Most of this Recipe was read out of Shopware's own source rather than a running shop. `demo-frontends.shopware.store` needs no account to check the shape of a refusal, so the credential and routing claims were struck live there.
 

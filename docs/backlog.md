@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-340 paging parameter name(s) across 146 recipe(s) are declared and sent by no
+315 paging parameter name(s) across 136 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -4554,6 +4554,25 @@ whether the name was read or not -- but the position can: past the only record t
 collection is empty, and a name the runtime ignored would have answered with the
 record again. 95 more cases went in on that, each saying in its own comment which
 half it shows and which it cannot.
+
+Then three widenings, and one guard that had to come with them.
+
+Paging in the **request body** is now sent in the body -- Plaid's `options.count`
+and `options.offset` nest inside the JSON, Algolia's `hitsPerPage` sits at its
+top level, and both are POSTs whose whole request is the body, so reading a query
+string there settled nothing. The **default and `envelope` shapes** are the same
+`{"object": "list", "data": [...]}` the runtime emits from its default arm, and
+treating an undeclared style as unaddressable had left 33 names unprovable on the
+commonest shape in the collection. And the two-case pattern works for a fixture of
+**any** size, not just exactly two: ask for one and get the first without the
+second, then ask for one from after the first.
+
+The guard is the interesting part. Run without it, that widening produced **234
+cases and settled 18 names** -- 216 assertions repeating what the file already
+proved, because nothing checked whether a parameter was already sent before
+writing a case to send it. A suite that grows faster than its coverage is a suite
+nobody will read. With the check in place the same run produced 29 cases and
+settled 25 names.
 
 That is the whole remaining shape of this debt, incidentally. Half of it was never
 about missing evidence; it was about asking for evidence a two-record fixture

@@ -2,7 +2,7 @@
 
 Emulates the Ecwid API (v3), for local development and tests.
 
-**15 conformance cases, 3 checked against the live API on 2026-09-05.**
+**17 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real store; the refusal cases were struck live, unauthenticated, against app.ecwid.com.
 

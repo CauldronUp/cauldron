@@ -2,7 +2,7 @@
 
 Emulates the Ashby API (v1), for local development and tests.
 
-**12 conformance cases, 6 checked against the live API on 2026-09-02.**
+**14 conformance cases, 6 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 

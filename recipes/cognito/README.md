@@ -2,7 +2,7 @@
 
 Emulates the AWS Cognito API (2016-04-18), for local development and tests.
 
-**10 conformance cases, 7 checked against the live API on 2026-09-02.**
+**12 conformance cases, 7 checked against the live API on 2026-09-02.**
 
 ## What this Recipe found
 
