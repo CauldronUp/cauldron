@@ -363,20 +363,23 @@ func (r Recipe) UnassertedField() int {
 // credited author_id with every assertion of any id on that route -- which is
 // precisely the collision that as: exists to make possible, so the field that
 // most needs telling apart was the one this could not tell apart.
-func wirePath(name string, field Field) string {
+func wirePath(name string, field Field) []string {
 	wire := name
 	if field.As != "" {
 		wire = field.As
 	}
 
+	// The nest is a path and splits. The name is a name and does not: Alpha
+	// Vantage calls a quote field "01. symbol", and splitting that on the dot
+	// turns one name into two that match nothing.
 	if field.In != "" && field.In != "-" {
-		return field.In + "." + wire
+		return append(splitFieldPathForMatch(field.In), wire)
 	}
 
-	return wire
+	return []string{wire}
 }
 
-func (r Recipe) assertsFieldOf(resource, wire string) bool {
+func (r Recipe) assertsFieldOf(resource string, wire []string) bool {
 	own := false
 
 	for _, route := range r.Routes {
@@ -400,7 +403,7 @@ func (r Recipe) assertsFieldOf(resource, wire string) bool {
 			continue
 		}
 
-		if strings.Contains(wire, ".") {
+		if len(wire) > 1 {
 			if assertsPath([]Case{c}, wire) {
 				return true
 			}
@@ -408,7 +411,7 @@ func (r Recipe) assertsFieldOf(resource, wire string) bool {
 			continue
 		}
 
-		if assertsName([]Case{c}, wire) {
+		if assertsName([]Case{c}, wire[0]) {
 			return true
 		}
 	}
@@ -527,12 +530,7 @@ func stamps(kind string) bool {
 
 // assertsPath reports whether a case asserts something at this nested path,
 // which is the whole chain contiguously and not merely its last name.
-func assertsPath(cases []Case, chain string) bool {
-	// The declared nest may name an element of a list -- Ory Kratos writes
-	// in: ui.nodes[0].attributes -- and the index is not part of the name. The
-	// asserted paths have theirs stripped, so this one has to be as well or
-	// "nodes[0]" is compared against "nodes" and never matches.
-	want := splitFieldPathForMatch(chain)
+func assertsPath(cases []Case, want []string) bool {
 
 	for _, c := range cases {
 		paths := make([]string, 0, len(c.Expect.Body)+len(c.Expect.Matches))
@@ -570,10 +568,21 @@ func assertsPath(cases []Case, chain string) bool {
 
 // splitFieldPathForMatch splits an assertion path into names, dropping any
 // [n] index so items[0].author.id reads as items, author, id.
+// splitFieldPathForMatch splits an assertion path into names, honouring the
+// backslash that escapes a dot inside one and dropping any [n] index, so
+// items[0].author.id reads as items, author, id and Global Quote.01\. symbol
+// reads as two names rather than three.
 func splitFieldPathForMatch(path string) []string {
-	var out []string
+	var (
+		out     []string
+		current strings.Builder
+		escaped bool
+	)
 
-	for _, segment := range strings.Split(path, ".") {
+	flush := func() {
+		segment := current.String()
+		current.Reset()
+
 		if at := strings.IndexByte(segment, '['); at >= 0 {
 			segment = segment[:at]
 		}
@@ -582,6 +591,23 @@ func splitFieldPathForMatch(path string) []string {
 			out = append(out, segment)
 		}
 	}
+
+	for _, r := range path {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+
+			escaped = false
+		case r == 0x5C:
+			escaped = true
+		case r == '.':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	flush()
 
 	return out
 }

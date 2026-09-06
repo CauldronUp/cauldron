@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-630 record field name(s) across 220 recipe(s) are declared and asserted
+620 record field name(s) across 219 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
@@ -5859,3 +5859,32 @@ that found it was not looking for it: it was a tally of why the remaining names
 could not be settled, and one of its categories -- reachable, served, and still
 missing -- did not make sense. A category that does not make sense is worth more
 than a category that does.
+
+### The nest is a path and splits; the name is a name and does not
+
+Alpha Vantage calls a quote field `01. symbol`. The engine reaches it by
+escaping the dot -- `Global Quote.01\. symbol` -- and the rule that credits a
+field built its chain by splitting the declared name on dots, turning one name
+into two that match nothing. The splitter that read the assertion path did not
+honour the escape either, so both halves of the comparison were wrong in
+different ways and happened to agree often enough not to be noticed.
+
+A nest is a path: `in: ui.nodes[0].attributes` splits, and its indexes come off.
+A name is a name: it is whatever the provider called it, dots and spaces
+included, and it never splits.
+
+That is the fifth path-shaped bug in a row, and the last of them. The tally that
+found it had a category that should not have existed -- "a fixture sets it and
+the observed response lacked it", 189 names. It is 0 now, and what remains
+divides cleanly:
+
+| why a name is still unasserted | count |
+|---|---|
+| No fixture holds a record of the resource | 265 |
+| No fixture sets it, so the emulator never sends it | 172 |
+| No green case anywhere in the Recipe to build a request from | 66 |
+| No route serves the resource at all | 14 |
+
+Every one of those wants a value written into a fixture, or a provider watched.
+None of them wants a cleverer generator, which is the first time in this stretch
+that has been true.

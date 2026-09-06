@@ -248,3 +248,51 @@ func TestAnIndexInANestIsNotPartOfTheName(t *testing.T) {
 		t.Errorf("asserted at a path missing the attributes object: counted %d unasserted, want 1", n)
 	}
 }
+
+// A field name may contain a dot, and the nest is not the only thing with
+// structure.
+//
+// Alpha Vantage names its quote fields "01. symbol", "02. open", "03. high".
+// The engine reaches those by escaping the dot -- Global Quote.01\. symbol --
+// and the rule that credits a field built its chain by splitting the declared
+// name on dots, which turned one name into two that match nothing.
+//
+// The nest is a path and splits. The name is a name and does not.
+func TestAFieldNameMayContainADot(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/query", Resource: "quote", Operation: "get"}},
+		Resources: map[string]Resource{"quote": {
+			Fields: map[string]Field{"01. symbol": {Type: "string"}},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/query"},
+			Expect: Expectation{Status: 200, Body: map[string]any{
+				`Global Quote.01\. symbol`: "IBM",
+			}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a field name with a dot in it, asserted with the dot escaped: counted %d unasserted, want 0", n)
+	}
+}
+
+// And the same name nested, so both halves are exercised at once.
+func TestANestedFieldNameMayContainADot(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/query", Resource: "quote", Operation: "get"}},
+		Resources: map[string]Resource{"quote": {
+			Fields: map[string]Field{"symbol": {Type: "string", In: "Global Quote", As: "01. symbol"}},
+		}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/query"},
+			Expect: Expectation{Status: 200, Body: map[string]any{
+				`Global Quote.01\. symbol`: "IBM",
+			}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a nested field name with a dot in it: counted %d unasserted, want 0", n)
+	}
+}
