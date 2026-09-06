@@ -8024,3 +8024,76 @@ same array-of-maps shape, that is the signal.
   Cilium's is. That makes four documents in the collection declaring none, for
   four different reasons — Argo CD an omission, Cilium and OpenCost correct,
   Exoscale unrepresentable.
+
+## Boundary, which documents its own information leak and argues for it
+
+Written against Boundary's own generated Swagger 2.0 document —
+`hashicorp/boundary` `internal/gen/controller.swagger.json`, 95 paths, version
+0.21.0, read 2026-09-06. Self-hosted with no public instance.
+
+**Mostly a counterexample, and that is why it is here.** Most Recipes in this
+collection record a provider doing something that will surprise a caller.
+Boundary's document states its own rules, including the uncomfortable ones, in
+enough detail that a client can be written correctly from it — which shows the
+traps elsewhere are choices rather than inevitabilities.
+
+From `info.description`, on the 404:
+
+> "this happens *prior* to authentication/authorization checking in nearly all
+> cases… **While this could be considered an information leak**, since IDs are
+> randomly generated and this only discloses whether an ID is valid, **it's
+> tolerable** as it allows for far simpler and more robust client
+> implementation."
+
+So a caller *can* tell "no such resource" from "not yours", and the document says
+why that was chosen and what it costs.
+
+Coder, two Recipes earlier, makes the opposite choice — "Resource not found or
+you do not have access to this resource", one sentence for both — and does not
+explain it. **Two access-control products, opposite decisions, and only one tells
+you which it made.** That pairing is worth more than either Recipe alone.
+
+### A missing credential can succeed
+
+> "A token that is invalid or missing, but where the anonymous user (`u_anon`) is
+> able to successfully perform the action, will not return a `401` but instead
+> will return the result of the action."
+
+So 401 is not a property of the request. It depends on what `u_anon` has been
+granted, which is deployment configuration — and a client treating "no token" as
+"will fail" is wrong wherever anonymous access is permitted, in the
+safe-looking direction.
+
+Recorded and not served: reproducing it would mean modelling a grant system, and
+the finding is that 401 depends on one.
+
+### A listing that tells you what to evict
+
+> `removed_ids` — "A list of item IDs that have been removed since they were
+> returned as part of a pagination. They should be dropped from any client
+> cache."
+
+A paginated listing that only ever adds cannot tell a client about deletions, so
+every cache built on one drifts. Boundary sends the tombstones. It is the only
+provider in this collection that does.
+
+### The rest
+
+- **Two statuses for being rate limited.** 429 is the caller's quota; 503 is
+  Boundary being unable to *store* a quota under load. Both carry `Retry-After`,
+  and a client that retries on 429 and gives up on 503 gives up on the one most
+  likely to clear.
+- **`response_type` is `"delta"` or `"complete"`**, so the same endpoint is a
+  page or an update to a finished pagination.
+- **The count is named `est_item_count`** and documented as an estimate that may
+  change during pagination — where most providers here call it `total` and let a
+  reader assume it is exact.
+- **`authorized_actions` rides on every record**, which Vikunja needs a header
+  for and only on single items.
+- **`version` is optimistic concurrency on the resource**, not an ETag, so it
+  survives a client that strips headers.
+- **Identifiers carry their type as a prefix** — `acctpw_`, `ampw_` — so mixing
+  two up is refused by shape rather than by lookup.
+- **Custom actions hang off a colon**, the same convention as Exoscale and the
+  opposite of Cilium's, which puts a namespace before the colon rather than a
+  verb after it.

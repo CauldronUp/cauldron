@@ -1,0 +1,523 @@
+# Boundary Recipe for Cauldron
+#
+# Written against Boundary's own generated Swagger 2.0 document, published in
+# its own repository -- github.com/hashicorp/boundary,
+# internal/gen/controller.swagger.json, 95 paths, version 0.21.0 -- read on
+# 2026-09-06. Boundary is self-hosted and there is no public instance, so
+# nothing here is verified live: every claim is the provider's own document.
+#
+# **This one is mostly a counterexample, and that is why it is here.**
+#
+# Most Recipes in this collection record a provider doing something that will
+# surprise a caller. Boundary's document is the other case: it states its own
+# rules, including the uncomfortable ones, in enough detail that a client can be
+# written correctly from it. Recording that is worth as much as recording a
+# trap, because it shows the traps are choices rather than inevitabilities.
+#
+# **It documents an information leak and argues for it.**
+#
+# From `info.description`, on the 404:
+#
+#   "Boundary returns 404 if a resource cannot be found. Note that this happens
+#    _prior_ to authentication/authorization checking in nearly all cases... As a
+#    result, an action against a resource that does not exist returns a 404
+#    instead of a 401 or 403. While this could be considered an information leak,
+#    since IDs are randomly generated and this only discloses whether an ID is
+#    valid, it's tolerable as it allows for far simpler and more robust client
+#    implementation."
+#
+# So a caller can distinguish "no such resource" from "not yours", and the
+# document says why that was chosen and what it costs.
+#
+# The Coder Recipe in this collection makes the opposite choice -- "Resource not
+# found or you do not have access to this resource", one sentence for both -- and
+# does not explain it. Two access-control products, opposite decisions, and only
+# one of them tells you which it made.
+#
+# **A missing credential can succeed.**
+#
+# Also from the description:
+#
+#   "A token that is invalid or missing, but where the anonymous user (u_anon) is
+#    able to successfully perform the action, will not return a 401 but instead
+#    will return the result of the action."
+#
+# So 401 is not a property of the request. It depends on what `u_anon` has been
+# granted, which is deployment configuration -- and a client that treats "no
+# token" as "will fail" is wrong on any instance where anonymous access is
+# permitted, in the safe-looking direction.
+#
+# **Two statuses for being rate limited, and they mean different things.**
+#
+#   429  "any of the API rate limit quotas have been exhausted for the resource
+#         and action"
+#   503  "unable to store a quota due to the API rate limit being exceeded"
+#
+# The first is the caller's quota; the second is the server's own accounting
+# failing under load. Both carry Retry-After, and a client that retries on 429
+# and gives up on 503 gives up on the one that is most likely to clear.
+#
+# **A listing tells you what to evict from your cache.**
+#
+#   removed_ids  "A list of item IDs that have been removed since they were
+#                 returned as part of a pagination. They should be dropped from
+#                 any client cache."
+#
+# That is rare and it is right: a paginated listing that only ever adds cannot
+# tell a client about deletions, so every cache built on one drifts. Boundary
+# sends the tombstones. A client that ignores the field accumulates records that
+# no longer exist -- which is the ordinary outcome everywhere else, here made
+# avoidable.
+#
+# **And the same endpoint is a listing or a change feed.** `response_type` is
+# `"delta"` or `"complete"`: delta means this is part of a pagination or an
+# update to one already finished, complete means it is the last page. So the
+# meaning of the response depends on a string, and the two meanings are "here is
+# some data" and "here is what changed".
+#
+# **The count is honestly named.** `est_item_count` -- "An estimate at the total
+# items available. This may change during pagination." Most providers here call
+# that `total` and let a reader assume it is exact.
+#
+# **Permissions travel on every record.** `authorized_actions` is "the available
+# actions on this resource for this user", inline on each item -- so a listing
+# answers what you may do without a second call, which the Vikunja Recipe here
+# needs a header for and only on single items.
+#
+# **Mutations carry a version.** `version` is "used in mutation requests, after
+# the initial creation, to ensure this resource has not changed" -- optimistic
+# concurrency, declared on the resource rather than left to an ETag.
+#
+# **Custom actions hang off a colon.** `/v1/accounts/{id}:set-password`,
+# `:change-password`. The same convention Exoscale uses and the opposite of
+# Cilium's, which puts a namespace before the colon rather than a verb after it.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Nothing here is verified against a live API. Boundary is self-hosted and
+#     there is no public instance.
+#   - Accounts, listed and fetched. 95 paths is an access proxy: targets, hosts,
+#     host sets, credential stores, sessions, scopes, roles, users, groups and
+#     the whole authentication surface each want their own evidence.
+#   - `removed_ids` is served as an empty array, because a fixture has no
+#     deletions to report. What is reproduced is that the key is there to be
+#     read.
+#   - The u_anon behaviour is recorded and not served. Reproducing it would mean
+#     modelling a grant system, and the finding is that 401 depends on one.
+
+recipe: boundary
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: "0.21.0"
+  docs: https://developer.hashicorp.com/boundary/api-docs
+  spec: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+  spec_hash: 30cf7726a27e904a2d08bd4561a09de4ec35ed110a22c21f9a59bc8e1a35f941
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - at_1234567890_cauldron
+  absent_error: unauthenticated
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    # Honestly named: "an estimate at the total items available. This may
+    # change during pagination."
+    count_field: est_item_count
+    cursor_field: list_token
+  error:
+    style: flat
+    message_field: message
+    code_field: status
+    code_type: number
+
+resources:
+  account:
+    id:
+      style: prefixed
+      prefix: acctpw_
+    fields:
+      name:
+        type: string
+      description:
+        type: string
+      auth_method_id:
+        type: string
+      type:
+        type: string
+        default: password
+      # Optimistic concurrency, on the record rather than in an ETag.
+      version:
+        type: number
+        default: 1
+      # What this caller may do with this record, inline -- so a listing
+      # answers the question without a second call.
+      authorized_actions:
+        type: list
+      scope:
+      created_time:
+        type: datetime
+      updated_time:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/accounts
+    resource: account
+    operation: list
+    fields:
+      # "The type of response, either delta or complete." So the same endpoint
+      # is a page of a listing or an update to one already finished.
+      response_type: complete
+      # The tombstones. Empty here because a fixture has no deletions to
+      # report; the finding is that the key exists.
+      removed_ids: []
+      sort_by: created_time
+      sort_dir: desc
+    pagination:
+      style: cursor
+      limit_param: page_size
+      cursor_param: list_token
+      limit: 1000
+    filters:
+      - field: auth_method_id
+        param: auth_method_id
+
+  - method: GET
+    path: /v1/accounts/{id}
+    resource: account
+    operation: get
+    not_found: not_found
+
+errors:
+  unauthenticated:
+    status: 401
+    code: 401
+    message: "Unauthenticated, or invalid token."
+  not_found:
+    status: 404
+    code: 404
+    message: "Resource not found."
+  forbidden:
+    status: 403
+    code: 403
+    message: "Forbidden."
+  # The caller's quota.
+  rate_limit:
+    status: 429
+    code: 429
+    message: "API rate limit exceeded."
+    headers:
+      Retry-After: "30"
+  # The server's own quota accounting failing. A different status for a
+  # different cause, and the one more likely to clear on a retry.
+  quota_storage:
+    status: 503
+    code: 503
+    message: "Unable to store quota, API rate limit exceeded."
+    headers:
+      Retry-After: "1"
+
+fixtures:
+  empty:
+    account: []
+
+  controller:
+    account:
+      - id: acctpw_1234567890
+        name: admin
+        description: Initial admin account
+        auth_method_id: ampw_1234567890
+        type: password
+        version: 3
+        # What this caller may do, on the record.
+        authorized_actions:
+          - "no-op"
+          - "read"
+          - "update"
+          - "delete"
+          - "set-password"
+          - "change-password"
+        scope:
+          id: global
+          type: global
+          name: global
+        created_time: "2026-01-04T09:00:00.000000Z"
+        updated_time: "2026-07-19T11:22:00.000000Z"
+      - id: acctpw_0987654321
+        name: readonly
+        description: An account that may only look
+        auth_method_id: ampw_1234567890
+        type: password
+        version: 1
+        # A shorter list, on the same shape -- so two records in one listing
+        # disagree about what the caller may do, and only this field says so.
+        authorized_actions:
+          - "no-op"
+          - "read"
+        scope:
+          id: global
+          type: global
+          name: global
+        created_time: "2026-05-02T16:40:00.000000Z"
+        updated_time: "2026-05-02T16:40:00.000000Z"
+
+conformance:
+  - name: a listing tells you what to drop from your cache
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # "A list of item IDs that have been removed since they were returned
+        # as part of a pagination. They should be dropped from any client
+        # cache." Empty here because a fixture has no deletions -- the finding
+        # is that the key is there to be read at all, which is rare.
+        removed_ids: []
+        'items[0].id': acctpw_1234567890
+
+  - name: the same endpoint is a listing or a change feed
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # "delta" means this is part of a pagination or an update to one
+        # already finished; "complete" means it is the last page. So the
+        # meaning of the response is a string, and the two meanings are "here
+        # is some data" and "here is what changed".
+        response_type: complete
+        sort_by: created_time
+        sort_dir: desc
+
+  - name: the count is named as an estimate
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      query:
+        page_size: "1"
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # est_item_count -- "an estimate at the total items available. This
+        # may change during pagination." Most providers here call that `total`
+        # and let a reader assume it is exact.
+        est_item_count: 2
+        'items[0].name': admin
+      absent:
+        - 'items[1]'
+        - total
+
+  - name: permissions travel on every record
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # "The available actions on this resource for this user", inline on
+        # each item -- so a listing answers what you may do without a second
+        # call. Two records in one response disagree, and only this field
+        # says so.
+        'items[0].authorized_actions[1]': read
+        'items[0].authorized_actions[4]': set-password
+        'items[1].authorized_actions[0]': no-op
+        'items[1].authorized_actions[1]': read
+      absent:
+        - 'items[1].authorized_actions[2]'
+
+  - name: a record carries a version for optimistic concurrency
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts/acctpw_1234567890
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # "Used in mutation requests, after the initial creation, to ensure
+        # this resource has not changed." Declared on the resource rather than
+        # left to an ETag, so it survives a client that strips headers.
+        version: 3
+        name: admin
+        auth_method_id: ampw_1234567890
+        type: password
+
+  - name: the identifier carries its type as a prefix
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts/acctpw_0987654321
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      body:
+        # acctpw_ for a password account, ampw_ for its auth method. So an
+        # identifier says what it is, and a client that mixes two up is
+        # refused by shape rather than by lookup.
+        id: acctpw_0987654321
+        auth_method_id: ampw_1234567890
+        # And the scope, inline, because Boundary's whole model is scoped and
+        # a record without its scope cannot be placed.
+        'scope.id': global
+        'scope.type': global
+
+  - name: a missing resource answers 404 before any permission check
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts/acctpw_0000000000
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      # The document's own words: this happens "prior to
+      # authentication/authorization checking in nearly all cases... While
+      # this could be considered an information leak... it's tolerable as it
+      # allows for far simpler and more robust client implementation."
+      #
+      # So a caller CAN tell "no such resource" from "not yours" -- the exact
+      # opposite of the Coder Recipe's single sentence for both, and the only
+      # one of the two that says which choice it made.
+      status: 404
+      body:
+        message: "Resource not found."
+        # Boundary's Error carries the numeric status in the body beside the
+        # HTTP one -- the same number twice, unlike Argo CD and etcd where the
+        # body's code is gRPC's and disagrees.
+        status: 404
+
+  - name: no credential is refused, unless the anonymous user may act
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers: {}
+    expect:
+      # "A token that is invalid or missing, but where the anonymous user
+      # (u_anon) is able to successfully perform the action, will not return a
+      # 401 but instead will return the result of the action."
+      #
+      # So 401 is not a property of the request: it depends on what u_anon has
+      # been granted, which is deployment configuration. Served as a refusal
+      # because that is the default grant; recorded because a client that
+      # treats "no token" as "will fail" is wrong wherever it is not.
+      status: 401
+      body:
+        message: "Unauthenticated, or invalid token."
+
+  - name: "a forbidden request is separate from a missing one"
+    source: "https://developer.hashicorp.com/boundary/api-docs"
+    arm: forbidden
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 403
+      body:
+        message: "Forbidden."
+
+  - name: "the caller's quota is a 429 with a wait"
+    source: "https://developer.hashicorp.com/boundary/api-docs"
+    arm: rate_limit
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 429
+      headers:
+        Retry-After: "30"
+      body:
+        message: "API rate limit exceeded."
+
+  - name: "the server's own quota failure is a 503 with a shorter wait"
+    source: "https://developer.hashicorp.com/boundary/api-docs"
+    arm: quota_storage
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      # A different status for a different cause: the caller's quota is a 429,
+      # and Boundary being unable to store a quota under load is a 503. Both
+      # carry Retry-After, and a client that retries on 429 and gives up on
+      # 503 gives up on the one most likely to clear.
+      status: 503
+      headers:
+        Retry-After: "1"
+      body:
+        message: "Unable to store quota, API rate limit exceeded."
+
+  - name: the pagination token and the scope filter are named
+    source: https://raw.githubusercontent.com/hashicorp/boundary/main/internal/gen/controller.swagger.json
+    fixture: controller
+    request:
+      method: GET
+      path: /v1/accounts
+      query:
+        # The auth method whose accounts to list -- Boundary's accounts are
+        # always scoped to one, so this is not optional in practice even
+        # though the document does not require it.
+        auth_method_id: ampw_1234567890
+        page_size: "1"
+        # An opaque continuation token. Empty on a first request, and the same
+        # parameter later carries a token asking for what changed -- which is
+        # why response_type has to exist.
+        list_token: ""
+      headers:
+        Authorization: Bearer at_1234567890_cauldron
+    expect:
+      status: 200
+      matches:
+        # An opaque token, and the same field is used both to continue a
+        # pagination and to ask for updates since one finished -- which is
+        # what makes response_type necessary.
+        list_token: '.'
+      body:
+        'items[0].auth_method_id': ampw_1234567890
+        # And the three descriptive fields, which a listing carries and a
+        # client rendering a table needs.
+        'items[0].name': admin
+        'items[0].description': Initial admin account
+        'items[0].created_time': "2026-01-04T09:00:00.000000Z"
+        'items[0].updated_time': "2026-07-19T11:22:00.000000Z"
+      absent:
+        - 'items[1]'

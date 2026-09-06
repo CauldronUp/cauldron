@@ -886,6 +886,10 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			recipe: "boundary",
+			gomod:  []string{"github.com/hashicorp/boundary/api"},
+		},
+		{
 			recipe: "opencost",
 			gomod:  []string{"github.com/opencost/opencost/core"},
 		},
