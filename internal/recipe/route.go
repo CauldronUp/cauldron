@@ -850,6 +850,22 @@ func samePath(asked, declared string) bool {
 	a := strings.Split(strings.Trim(asked, "/"), "/")
 
 	d := strings.Split(strings.Trim(declared, "/"), "/")
+
+	// A greedy placeholder swallows the rest of the path. The runtime's router
+	// has understood {name...} since it was written -- Artifactory stores an
+	// artifact at /api/storage/{repo}/{id...} where the id is a whole file path
+	// -- and these rules compared segment counts and stopped, so a case asking
+	// for six segments was not about a route declaring four.
+	if len(d) > 0 && strings.Contains(d[len(d)-1], "...}") {
+		if len(a) < len(d) {
+			return false
+		}
+
+		rest := strings.Join(a[len(d)-1:], "/")
+		a = append(append([]string{}, a[:len(d)-1]...), rest)
+		d[len(d)-1] = strings.Replace(d[len(d)-1], "...}", "}", 1)
+	}
+
 	if len(a) != len(d) {
 		return false
 	}

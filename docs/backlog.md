@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-618 record field name(s) across 216 recipe(s) are declared and asserted
+604 record field name(s) across 216 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5751,3 +5751,21 @@ and the sweep converges on the first run.
 The lesson is not "keep two matchers in step", although that is true. It is that
 a tool which will not converge is reporting something. Both times, the thing it
 was reporting was a rule about paths that no longer described the paths.
+
+### And a third shape of placeholder, found the same way
+
+One Recipe kept repeating after both matchers were fixed. JFrog Artifactory
+stores an artifact at `/api/storage/{repo}/{id...}`, where the id is a whole
+file path several segments long, and the runtime's router has understood
+`{name...}` since it was written. Both matchers compared segment counts and
+stopped, so a case asking for six segments was not about a route declaring four.
+
+Fourteen more names, and the third time in one sitting that a rule about paths
+had fallen behind the paths. The router knew all three shapes -- whole-segment,
+embedded, greedy -- and the rules that ask "is this case about that route?" knew
+one of them.
+
+That is the useful shape of this bug: a second implementation of something the
+system already does correctly, written from memory of what paths look like
+rather than from the thing that matches them. Worth a look wherever else this
+project has two implementations of one idea.

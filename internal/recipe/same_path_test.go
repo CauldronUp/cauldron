@@ -51,3 +51,29 @@ func TestAPlaceholderDoesNotCrossASlash(t *testing.T) {
 		t.Error("a placeholder inside a segment matched across a slash")
 	}
 }
+
+// A greedy placeholder swallows the rest of the path.
+//
+// The runtime's router has understood {name...} since it was written: JFrog
+// Artifactory stores an artifact at /api/storage/{repo}/{id...} where the id is
+// a whole file path, several segments long. The rules that ask whether a case
+// is about a route compared segment counts and stopped, so a case asking for
+// six segments was not about a route declaring four -- and the field generator
+// wrote the same case for Artifactory's artifact three times running, each time
+// asserting the same twelve names, because nothing ever counted them.
+func TestAGreedyPlaceholderSwallowsTheRest(t *testing.T) {
+	for _, tt := range []struct {
+		asked, declared string
+		want            bool
+	}{
+		{"/api/storage/jfrog-cli/v2/2.119.0/linux/jfrog", "/api/storage/{repo}/{id...}", true},
+		{"/api/storage/jfrog-cli/jfrog", "/api/storage/{repo}/{id...}", true},
+		{"/api/storage/jfrog-cli", "/api/storage/{repo}/{id...}", false},
+		{"/api/other/jfrog-cli/jfrog", "/api/storage/{repo}/{id...}", false},
+		{"/files/a/b/c.json", "/files/{path...}", true},
+	} {
+		if got := samePath(tt.asked, tt.declared); got != tt.want {
+			t.Errorf("samePath(%q, %q) = %v, want %v", tt.asked, tt.declared, got, tt.want)
+		}
+	}
+}
