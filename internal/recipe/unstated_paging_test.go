@@ -9,7 +9,7 @@ import (
 	"github.com/CauldronUp/cauldron/internal/recipe"
 )
 
-// A listing that declares no paging must say why.
+// A listing that declares no paging, or names only half of it, must say why.
 //
 // 344 listings across 222 Recipes once declared nothing, and silence covered two
 // completely different situations: "this provider serves the whole collection"
@@ -36,6 +36,13 @@ func TestEveryUnstatedListingSaysWhatWasTried(t *testing.T) {
 		"Paging is still unstated here",
 		"Paging is deliberately not declared",
 		"deliberately not declared on any of",
+		"Still unstated, and this is what was tried",
+		"Still unnamed, and this is what was tried",
+		// Salesforce's is the one shape neither phrase fits: its position
+		// does come back, as a whole nextRecordsUrl, and refusing the
+		// parameter with "-" refused the next page with it. The Recipe
+		// explains that where the declaration is.
+		"cursor_param is left alone rather than set to",
 	}
 
 	names := recipe.Bundled()
@@ -49,7 +56,7 @@ func TestEveryUnstatedListingSaysWhatWasTried(t *testing.T) {
 			t.Fatalf("open %s: %v", name, err)
 		}
 
-		if r.UnstatedPagination() == 0 {
+		if r.UnstatedPagination() == 0 && r.GuessedPagination() == 0 {
 			continue
 		}
 
@@ -71,8 +78,9 @@ func TestEveryUnstatedListingSaysWhatWasTried(t *testing.T) {
 		}
 
 		if !said {
-			t.Errorf("%s has a listing declaring no paging and no record of what was tried. "+
-				"Declare pagination.style, or write down which addresses failed and when", name)
+			t.Errorf("%s has a listing that declares no paging, or names only half of it, "+
+				"and no record of what was tried. Declare the parameters, or write down "+
+				"which addresses failed and when", name)
 		}
 	}
 }

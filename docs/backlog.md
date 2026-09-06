@@ -1346,6 +1346,20 @@ position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
 
+**And every route that names only half its paging says why too.** The twenty that
+page by a parameter nobody named are in the same position as the forty-one: each
+carries a dated record of the attempt. The guard test covers both categories, so
+neither kind of silence can arrive without an explanation again.
+
+100ms is the last of them and the clearest statement of the rule this sweep keeps
+proving. Its Rooms and Sessions listings are settled -- `limit` and `start`, "Min
+: 10, Max : 100" -- and every address for its *room-codes* listing 404s, including
+the one that page's own anchor link points at. The neighbouring pair is very
+likely the same pair, because 100ms uses one shape across its listings. "Very
+likely" is exactly why nothing is named there: copying a sibling's parameters
+onto a route is the mistake this sweep keeps finding, and doing it deliberately
+would be worse than doing it by accident.
+
 **Every listing that still declares no paging now says what was tried.** That is
 the line this sweep was heading for. 41 listings across 21 Recipes remain
 unstated, and there are no silent ones left in the collection: each carries a
