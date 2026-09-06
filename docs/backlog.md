@@ -157,7 +157,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~CockroachDB Cloud~~ | Shipped as `cockroachdb`. The state enum has no word for deleting |
 | ~~Turso~~ | Shipped. **It answers a missing header with a JWT parsing error** -- "token contains an invalid number of segments" when no token was sent at all, so the message describes the shape of a credential the caller never supplied, and a junk string answers identically. Its create is a different failure from Temporal's: not an unfinished operation but a **truncated projection**, three fields where a read gives eight, and among the missing is `group`, which the create request was required to supply. There is no state field in the schema to be pending. Also pinned: `DbId` is a real UUID that nothing addresses by, since every path takes the name; a delete answers a bare string under the key a create wraps an object under; and **no 405 exists on this host at all**, where SingleStore's Recipe records a real one with an `Allow` header |
 | Confluent Cloud | Kafka topics, schemas, consumers |
-| Aiven | Managed databases, Kafka, service lifecycle |
+| ~~Aiven~~ | Shipped, written against Aiven's own OpenAPI document. **Its `securitySchemes` says `"scheme": "bearer"` and its own description of the same scheme says the header must read `authorization: aivenv1 <TOKEN>`** -- so a generated client sends the wrong one and the file that told it to is the file that says not to. Every *successful* response is entitled to carry an `errors` array beside its payload (`services`, `errors`, `message`, with only `services` required), so `if (body.errors) throw` is testing a key the success envelope may include. A service has four states and three of them are up: `REBUILDING` serves traffic while the plan moves underneath it, and a powered-off service keeps listing with the plan and disk it is still billed for. `termination_protection` is a field, not a permission, so a refused delete sends people looking at IAM |
 | CloudAMQP | RabbitMQ instances and queues |
 
 ## Messaging and notifications
@@ -5559,7 +5559,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-635 declared error(s) across 303 recipe(s) have no case asserting what
+636 declared error(s) across 304 recipe(s) have no case asserting what
 they say.
 ```
 

@@ -1,0 +1,459 @@
+# Aiven Recipe for Cauldron
+#
+# **The credential does not go in a Bearer header, and Aiven's own description
+# of it says so while its own machine-readable spec says otherwise.**
+#
+# The securitySchemes entry in api.aiven.io/doc/openapi.json declares
+# `"scheme": "bearer"`, which is what every OpenAPI client generator reads and
+# what every HTTP helper implements. Its description, two lines further down in
+# the same object, says:
+#
+#   Header should be of the format `authorization: aivenv1 <TOKEN>`
+#
+# So the generated client sends `Authorization: Bearer <token>` and is refused,
+# and the thing that told it to is the same document that says not to. A person
+# reading the prose gets it right; a tool reading the schema gets it wrong; and
+# the two disagree inside one file.
+#
+# **Every successful response carries an `errors` array and a `message`.**
+#
+# Listing services answers with three keys -- `services`, `errors` and
+# `message` -- and only `services` is required. Fetching one answers with
+# `service`, `errors` and `message`, and only `service` is required. So the
+# obvious client-side guard:
+#
+#   if (body.errors) throw new Error(body.message)
+#
+# is testing for the presence of a key the success envelope is entitled to
+# carry, and whether it fires depends on whether Aiven sent an empty array or
+# omitted it. Both are within the spec. Neither is the error case.
+#
+# **A failure says the same thing twice, in two shapes.**
+#
+# The error envelope is `{"message": ..., "errors": [...]}` where each entry
+# carries its own `message`, a `status` that repeats the HTTP status as an
+# integer inside the body, and a `more_info` URL. A client has three places to
+# read the failure from and no statement of which is canonical.
+#
+# **A service has four states and one of them is not a failure.**
+#
+# `state` is POWEROFF, REBALANCING, REBUILDING or RUNNING. REBUILDING is the
+# one that costs people: the service is up, the URI resolves, and the plan is
+# being moved underneath it. Code that treats anything other than RUNNING as
+# down takes an outage that is not happening; code that treats everything that
+# is not POWEROFF as ready connects to a node that is going away.
+#
+# Written against Aiven's own OpenAPI document rather than a page about it:
+# api.aiven.io/doc/openapi.json, 321 paths, fetched on the date in spec_seen.
+# No case here is marked verified, because none of them was struck against a
+# live account -- the document is Aiven's, the responses are this emulator's.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - One service type. A real project holds PostgreSQL, Kafka, OpenSearch and
+#     more, and each carries its own `metadata`, `connection_info` and
+#     `components` shapes. Modelling one of those honestly is a Recipe of its
+#     own; modelling all of them from a schema would be inventing.
+#   - The service lifecycle is served as states, not as transitions. Creating a
+#     service here answers RUNNING rather than REBUILDING settling to RUNNING
+#     over minutes, because the interesting thing is that a client must branch
+#     on four values, not how long each one lasts.
+#   - Plans, clouds and service types are not enumerated. Those lists are an
+#     account's entitlements and change per customer.
+#   - **Stated and not served: the top-level `message` on a failure.** Aiven's
+#     error envelope is a `message` *and* an `errors` array, and the format
+#     here can express one envelope, not two at once. The array is served,
+#     because that is where Aiven's own schema puts `status` and `more_info`.
+#     A client reading `body.message` off a failure gets undefined here and a
+#     sentence from the real API, which is the wrong direction for a
+#     difference to run in and is why it is written down rather than left to
+#     be discovered.
+
+recipe: aiven
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.aiven.io/doc/
+  spec: https://api.aiven.io/doc/openapi.json
+  spec_hash: 1d8f5993e9b3438507e45fe8a8f860509498b20a506bd8421a01f1782cf0ee30
+  spec_seen: "2026-09-06"
+
+auth:
+  # Not Bearer. The word is aivenv1, and a client that reaches for a standard
+  # bearer helper sends the wrong one.
+  scheme: header
+  header: authorization
+  prefix: "aivenv1 "
+  keys:
+    - cauldron-aiven-token-0000000000000000
+  absent_error: no_credential
+  rejected_error: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    key: services
+  resource:
+    style: wrapped
+    key: service
+  error:
+    # {"errors": [{"message": ..., "status": ...}]}. Aiven sends a top-level
+    # "message" beside this array as well; see the note in the header on why
+    # only one of the two is served.
+    style: list
+    key: errors
+
+resources:
+  service:
+    id:
+      style: opaque
+      field: service_name
+    fields:
+      # The project a service belongs to. It lives in the path and Aiven does
+      # not repeat it in the body, so it never reaches the wire.
+      project:
+        type: string
+        in: "-"
+      service_name:
+        type: string
+        required: true
+      service_type:
+        type: string
+        required: true
+      # POWEROFF, REBALANCING, REBUILDING or RUNNING. Three of those are "up".
+      state:
+        type: string
+        required: true
+      service_uri:
+        type: string
+        required: true
+      cloud_name:
+        type: string
+        required: true
+      plan:
+        type: string
+        required: true
+      # Guards a delete. A client that deletes and gets a refusal is reading
+      # this, not a permission problem.
+      termination_protection:
+        type: boolean
+        required: true
+      create_time:
+        type: datetime
+      update_time:
+        type: datetime
+      node_count:
+        type: integer
+      disk_space_mb:
+        type: integer
+      project_vpc_id:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v1/project/{project}/service
+    resource: service
+    operation: list
+    scope: [project]
+    pagination:
+      # Aiven's document declares no page size and no cursor on this listing:
+      # a project's services come back in one array. Saying so is a claim, and
+      # it is the claim the document makes.
+      style: none
+
+  - method: GET
+    path: /v1/project/{project}/service/{id}
+    resource: service
+    operation: get
+    scope: [project]
+
+  - method: POST
+    path: /v1/project/{project}/service
+    resource: service
+    operation: create
+    scope: [project]
+
+errors:
+  no_credential:
+    status: 401
+    message: "Authentication required"
+  authentication_error:
+    status: 401
+    message: "Invalid token"
+  resource_missing:
+    status: 404
+    message: "Service does not exist"
+  parameter_missing:
+    status: 400
+    message: "Invalid input for {detail}"
+  unknown_route:
+    status: 404
+    message: "Not found"
+  method_not_allowed:
+    status: 405
+    message: "Method not allowed"
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+fixtures:
+  empty:
+    service: []
+
+  one-project:
+    service:
+      # Up, and being rebuilt underneath. The state a client most often gets
+      # wrong, so it is the first record.
+      - service_name: pg-main
+        project: cauldron
+        service_type: pg
+        state: REBUILDING
+        service_uri: "postgres://avnadmin:password@pg-main-cauldron.a.aivencloud.com:12691/defaultdb?sslmode=require"
+        cloud_name: google-europe-west1
+        plan: startup-4
+        termination_protection: true
+        create_time: "2026-04-02T09:15:44Z"
+        update_time: "2026-09-01T11:02:07Z"
+        node_count: 1
+        disk_space_mb: 81920
+        project_vpc_id: null
+
+      - service_name: kafka-events
+        project: cauldron
+        service_type: kafka
+        state: RUNNING
+        service_uri: "kafka-events-cauldron.a.aivencloud.com:12693"
+        cloud_name: google-europe-west1
+        plan: business-4
+        termination_protection: false
+        create_time: "2026-05-19T14:41:02Z"
+        update_time: "2026-08-28T08:30:15Z"
+        node_count: 3
+        disk_space_mb: 245760
+        project_vpc_id: null
+
+      # Off, not gone. It still lists, still has a plan, and still bills for
+      # its disk.
+      - service_name: os-logs
+        project: cauldron
+        service_type: opensearch
+        state: POWEROFF
+        service_uri: "https://os-logs-cauldron.a.aivencloud.com:12695"
+        cloud_name: google-europe-west1
+        plan: startup-4
+        termination_protection: false
+        create_time: "2026-06-30T16:20:11Z"
+        update_time: "2026-08-30T22:14:59Z"
+        node_count: 1
+        disk_space_mb: 81920
+        project_vpc_id: null
+
+conformance:
+  - name: the credential is aivenv1, not Bearer
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service
+      headers:
+        # The spec's own securityScheme says "scheme": "bearer"; its
+        # description says this. A generated client sends the other one.
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        "services[0].service_name": "pg-main"
+
+  - name: and a Bearer credential is refused
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service
+      headers:
+        # Exactly what an OpenAPI-generated client sends after reading
+        # "scheme": "bearer" out of the same document.
+        authorization: "Bearer cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 401
+      body:
+        "errors[0].message": "Invalid token"
+
+  - name: a service can be up and being rebuilt at the same time
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service/pg-main
+      headers:
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        # Not RUNNING, and not down either. Code branching on == RUNNING
+        # reports an outage that is not happening.
+        "service.state": "REBUILDING"
+        "service.service_uri": "postgres://avnadmin:password@pg-main-cauldron.a.aivencloud.com:12691/defaultdb?sslmode=require"
+
+  - name: a service that is off still lists, with its plan and its disk
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service/os-logs
+      headers:
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        "service.state": "POWEROFF"
+        # Off is not deleted: it keeps the plan it is billed for.
+        "service.plan": "startup-4"
+        "service.disk_space_mb": 81920
+
+  - name: termination protection is a field, not a permission
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service/pg-main
+      headers:
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        # A delete that comes back refused is this, and a client that reads it
+        # as an authorisation problem goes looking in the wrong place.
+        "service.termination_protection": true
+
+  - name: the listing carries every service, in one array and no page size
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service
+      headers:
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        "services[0].service_name": "pg-main"
+        "services[1].service_name": "kafka-events"
+        "services[2].service_name": "os-logs"
+      absent:
+        # No cursor, no offset, no next link. The document declares none.
+        - services[3]
+        - offset
+        - next
+
+  - name: a service nobody created is refused inside an array
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service/no-such-service
+      headers:
+        authorization: "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 404
+      body:
+        # Inside the array, which is where Aiven's own schema puts the detail.
+        "errors[0].message": "Service does not exist"
+
+  - name: no credential at all is refused
+    source: https://api.aiven.io/doc/openapi.json
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/project/cauldron/service
+    expect:
+      status: 401
+      body:
+        "errors[0].message": "Authentication required"
+
+  # The names. This Recipe declares 6 field(s) on a service that no case
+  # asserted, so each of them could have been renamed to anything and
+  # every case would have stayed green. The runtime builds the response
+  # out of the declaration and the fixture, so this seeds one and
+  # asserts the 6 name(s) that came back at the paths they came back
+  # under.
+  - name: "a service carries the field names this Recipe declares"
+    source: "https://api.aiven.io/doc/openapi.json"
+    fixture: one-project
+    request:
+      method: GET
+      path: "/v1/project/cauldron/service"
+      headers:
+        "authorization": "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 200
+      body:
+        "services[0].cloud_name": "google-europe-west1"
+        "services[0].create_time": "2026-04-02T09:15:44Z"
+        "services[0].node_count": 1
+        "services[0].project_vpc_id": null
+        "services[0].service_type": "pg"
+        "services[0].update_time": "2026-09-01T11:02:07Z"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for method not allowed and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- using a method this route does not take -- and
+  # asserts what came back, envelope and all.
+  - name: "a method this route does not take is refused in these words"
+    source: "https://api.aiven.io/doc/"
+    fixture: one-project
+    request:
+      method: DELETE
+      path: "/v1/project/cauldron/service"
+      headers:
+        "authorization": "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 405
+      body:
+        "errors[0].message": "Method not allowed"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://api.aiven.io/doc/"
+    arm: rate_limit
+    fixture: one-project
+    request:
+      method: GET
+      path: "/v1/project/cauldron/service"
+      headers:
+        "authorization": "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 429
+      body:
+        "errors[0].message": "Too many requests"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for unknown route and nothing asserted
+  # any of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # asking for a path this provider does not serve -- and asserts what
+  # came back, envelope and all.
+  - name: "a path this provider does not serve is refused in these words"
+    source: "https://api.aiven.io/doc/"
+    fixture: one-project
+    request:
+      method: GET
+      path: "/cauldron-no-such-path"
+      headers:
+        "authorization": "aivenv1 cauldron-aiven-token-0000000000000000"
+    expect:
+      status: 404
+      body:
+        "errors[0].message": "Not found"
+
+

@@ -5227,6 +5227,16 @@ func providers() []provider {
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
 		{
+			// Aiven's own clients. The Go module is versioned in its path, so
+			// both majors are listed: v1 is still what a good deal of
+			// Terraform-adjacent code imports.
+			recipe: "aiven",
+			gomod: []string{
+				"github.com/aiven/aiven-go-client/v2",
+				"github.com/aiven/aiven-go-client",
+			},
+		},
+		{
 			recipe: "xendit",
 			npm:    []string{"xendit-node"},
 			gomod:  []string{"github.com/xendit/xendit-go"},
