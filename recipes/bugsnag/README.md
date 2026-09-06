@@ -2,7 +2,7 @@
 
 Emulates the Bugsnag API (v2), for local development and tests.
 
-**16 conformance cases, 3 checked against the live API.**
+**17 conformance cases, 3 checked against the live API.**
 
 Three were struck live against api.bugsnag.com on 2026-09-05. One had claimed the wrong authorisation scheme (Bearer instead of Bugsnag's own "token") reads as "Invalid token" -- it does not; Bugsnag sends "Bad Credentials", the identical sentence a present, correctly-scheme'd but wrong token gets. An absent header entirely gets a third sentence, "Authentication Required", which this file had never modelled at all.
 

@@ -2,7 +2,7 @@
 
 Emulates the Ably API (v1), for local development and tests.
 
-**17 conformance cases, 3 checked against the live API.**
+**18 conformance cases, 3 checked against the live API.**
 
 Most cases here cite documentation rather than an observation, and the Recipe's own header says why for the ones that still do. Three were struck live against rest.ably.io on 2026-09-05 with no app at all, and they corrected a mistake: every auth failure in this file had been modelled as 40100 "Invalid credentials", and the live host answers an entirely absent credential with 40101 "No authentication information provided" instead. 40100 turns out to be what a doc page says a wrong secret gets for a real app, and this project has no real, paid Ably app to check that half against.
 

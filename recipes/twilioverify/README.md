@@ -2,7 +2,7 @@
 
 Emulates the twilioverify API (v2), for local development and tests.
 
-**27 conformance cases, 3 checked against the live API on 2026-09-05.**
+**28 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The verification and check cases still cite documentation, since a real code needs a real phone. The credential and routing shapes needed no account at all, and checking them live found this Recipe's own message incomplete.
 

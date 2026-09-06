@@ -2,7 +2,7 @@
 
 Emulates the Instatus API (v1), for local development and tests.
 
-**15 conformance cases, 6 checked against the live API on 2026-09-03.**
+**17 conformance cases, 6 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

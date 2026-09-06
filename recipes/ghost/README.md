@@ -2,7 +2,7 @@
 
 Emulates the Ghost API (v5.0), for local development and tests.
 
-**20 conformance cases, 4 checked against the live API on 2026-09-05.**
+**21 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource cases cite documentation rather than an observation on a real member-facing site, because publishing with an email filter sends real mail. The refusal cases were struck live, unauthenticated, against demo.ghost.io, a real public Ghost install.
 

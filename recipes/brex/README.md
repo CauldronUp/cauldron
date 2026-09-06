@@ -2,7 +2,7 @@
 
 Emulates the Brex API (v2), for local development and tests.
 
-**15 conformance cases, 1 checked against the live API.**
+**17 conformance cases, 1 checked against the live API.**
 
 Struck live against platform.brexapis.com on 2026-09-05: an unauthorized request carries no body at all, byte for byte the same whether the Authorization header is absent or a made-up Bearer value. This file had claimed the message "The access token is invalid.", which Brex does not send.
 

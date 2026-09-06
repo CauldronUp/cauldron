@@ -2,7 +2,7 @@
 
 Emulates the Jira API (v3), for local development and tests.
 
-**22 conformance cases, 7 checked against the live API.**
+**23 conformance cases, 7 checked against the live API.**
 
 Struck live on 2026-09-05 against `https://your-domain.atlassian.net` -- Atlassian's own documentation placeholder, and a real, provisioned Jira Cloud site rather than a bare wildcard. Two things it answered contradicted this file outright: the retired `/rest/api/3/search` endpoint's message was invented text, and the real one is longer and cites a changelog number; and the field list (`/rest/api/3/field`) had inherited the same `issues`-wrapped envelope the search endpoint uses and was never checked -- it is a bare array on the real API, confirmed on twenty-eight built-in fields. A third finding was an omission rather than an error: `isLast`, the field marking a search's last page, was declared absent, and a real empty search answered `{"issues":[],"isLast":true}`. All three are fixed. Two other claims matched byte for byte: the 401 body for a route that always requires identity, and the 404 body for an issue that does not exist.
 

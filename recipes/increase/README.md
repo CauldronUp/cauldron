@@ -2,7 +2,7 @@
 
 Emulates the Increase API (v1), for local development and tests.
 
-**20 conformance cases, 3 checked against the live API.**
+**21 conformance cases, 3 checked against the live API.**
 
 Struck live 2026-09-05 against api.increase.com, no account and no key. This file declared the auth failure as code `authentication_error`, "Your API key is invalid."; the real one is `invalid_api_key_error`, "Invalid API key.", with a nested reason and detail that differ between no credential and a wrong one. Also confirmed: the credential is checked before routing, so a path this file does not even declare answers the identical auth failure rather than a 404. Fixed below.
 

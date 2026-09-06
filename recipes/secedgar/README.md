@@ -2,7 +2,7 @@
 
 Emulates the SEC EDGAR API (edgar), for local development and tests.
 
-**9 conformance cases, 6 checked against the live API on 2026-08-31.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**13 conformance cases, 6 checked against the live API on 2026-08-31.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

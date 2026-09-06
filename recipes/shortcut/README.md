@@ -2,7 +2,7 @@
 
 Emulates the Shortcut API (v3), for local development and tests.
 
-**13 conformance cases, 3 checked against the live API on 2026-09-05.**
+**14 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Shortcut has no sandbox, so the story/epic/iteration cases still cite documentation rather than a workspace. The three that do not need one -- what an unauthenticated request gets back -- were struck live and found the Recipe's own claim wrong.
 

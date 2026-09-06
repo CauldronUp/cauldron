@@ -2,7 +2,7 @@
 
 Emulates the Bluesky API (v1), for local development and tests.
 
-**16 conformance cases, 13 checked against the live API on 2026-09-02.** The 3 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**18 conformance cases, 13 checked against the live API on 2026-09-02.** The 3 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

@@ -2,7 +2,7 @@
 
 Emulates the Square API (2026-01-22), for local development and tests.
 
-**23 conformance cases, 4 checked against the live API on 2026-09-05.**
+**24 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 Most of this Recipe still cites documentation, since Square's own record-level behaviour needs a real account. What an unauthenticated request gets back does not, and checking it live confirmed the credential shape and found a routing claim this Recipe had never made.
 

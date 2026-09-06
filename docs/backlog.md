@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-540 record field name(s) across 190 recipe(s) are declared and asserted
+794 record field name(s) across 227 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5679,3 +5679,28 @@ request that had nothing in it at all.
 
 Two lines to fix -- a null was not sent by anybody, and a nil node in a body
 matches nothing -- and 164 more names settled across 73 Recipes.
+
+### A name is a name of something
+
+The field counter asked whether any case in the file asserted the name anywhere.
+That is the right question for an envelope -- there is one envelope per Recipe --
+and the wrong one for a record. Nutritionix declares `name` on four resources and
+a case about one of them credited all four. Across the corpus **476 names were
+credited by a case about something else entirely**, which is the same
+over-generosity `UnshownListing` was caught in over a 206 and
+`UnsentPagingParam` over a 400.
+
+Scoping it -- the assertion has to be in a successful case whose route serves
+that resource -- took the figure from 540 to 1152. The generator then closed 431
+of them under the stricter rule, most in a single sweep, because the request it
+needed was the one it had already been using for the sibling resource.
+
+One exception, and it is not a loophole. A resource served by no route of its
+own appears only nested inside another's response -- Harvest's `client`, a time
+entry's `task` -- so an assertion anywhere in the file is an assertion about it.
+Demanding a case on a route it does not have would be demanding the impossible,
+which is how a counter earns being ignored.
+
+794 remain, and the wall is the one every counter on this page ends at: a
+fixture that holds no record of the resource, or holds one that sets none of
+these fields. A name declared, never served, and now visibly so.

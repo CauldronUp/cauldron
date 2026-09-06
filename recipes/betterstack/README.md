@@ -2,7 +2,7 @@
 
 Emulates the Better Stack API (v2), for local development and tests.
 
-**20 conformance cases, 7 checked against the live API on 2026-09-03.**
+**21 conformance cases, 7 checked against the live API on 2026-09-03.**
 
 ## What this Recipe found
 

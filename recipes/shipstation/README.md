@@ -2,7 +2,7 @@
 
 Emulates the ShipStation API (v1), for local development and tests.
 
-**19 conformance cases, 3 checked against the live API.**
+**20 conformance cases, 3 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a real account. The credential check itself was verified directly against ssapi.shipstation.com on 2026-09-05.
 

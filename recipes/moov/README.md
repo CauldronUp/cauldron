@@ -2,7 +2,7 @@
 
 Emulates the Moov API (latest), for local development and tests.
 
-**16 conformance cases, 3 checked against the live API on 2026-09-01.**
+**18 conformance cases, 3 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

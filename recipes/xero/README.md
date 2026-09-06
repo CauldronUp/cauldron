@@ -2,7 +2,7 @@
 
 Emulates the Xero API (2.0), for local development and tests.
 
-**19 conformance cases, 3 checked against the live API on 2026-09-05.**
+**22 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 The invoice and contact cases still cite documentation, since a real organisation needs a real connection. The credential and routing shapes needed no organisation at all, and checking them live found this Recipe's own error shape and sentence wrong.
 

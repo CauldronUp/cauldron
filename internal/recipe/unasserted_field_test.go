@@ -74,3 +74,84 @@ func TestTheAssertedNameIsTheWireName(t *testing.T) {
 		t.Errorf("a renamed field asserted under its wire name: counted %d unasserted, want 0", n)
 	}
 }
+
+// A name is a name *of something*, and the case has to be about that thing.
+//
+// The first version of this counter asked whether any case in the file asserted
+// the name anywhere, which is the right question for an envelope -- there is one
+// envelope per Recipe -- and the wrong one for a record. Nutritionix declares
+// name on four resources and a case about one of them credited all four; across
+// the corpus, 476 names were credited by a case about something else entirely.
+//
+// The name is credited by a case whose route serves the resource. A resource
+// with no route of its own is the exception: it appears only nested inside
+// another's response, so an assertion anywhere is an assertion about it.
+func TestAFieldIsAssertedByACaseAboutItsOwnResource(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{
+			{Method: "GET", Path: "/v1/things", Resource: "thing", Operation: "list"},
+			{Method: "GET", Path: "/v1/others", Resource: "other", Operation: "list"},
+		},
+		Resources: map[string]Resource{
+			"thing": {Fields: map[string]Field{"colour": {Type: "string"}}},
+			"other": {Fields: map[string]Field{"colour": {Type: "string"}}},
+		},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/others"},
+			Expect:  Expectation{Status: 200, Body: map[string]any{"data[0].colour": "red"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Fatalf("a colour asserted on the other listing only: counted %d unasserted, want 1", n)
+	}
+
+	r.Conformance = append(r.Conformance, Case{
+		Request: Request{Method: "GET", Path: "/v1/things"},
+		Expect:  Expectation{Status: 200, Body: map[string]any{"data[0].colour": "blue"}},
+	})
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("both listings asserting their own colour: counted %d unasserted, want 0", n)
+	}
+}
+
+// A resource served by no route of its own lives inside another's response, so
+// an assertion anywhere in the file is an assertion about it.
+func TestANestedOnlyResourceIsAssertedAnywhere(t *testing.T) {
+	r := &Recipe{
+		Routes: []Route{{Method: "GET", Path: "/v1/things", Resource: "thing", Operation: "list"}},
+		Resources: map[string]Resource{
+			"thing":  {Fields: map[string]Field{"id": {Type: "string"}}},
+			"client": {Fields: map[string]Field{"trading_name": {Type: "string"}}},
+		},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/things"},
+			Expect: Expectation{Status: 200, Body: map[string]any{
+				"data[0].id":                  "t_1",
+				"data[0].client.trading_name": "Acme",
+			}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 0 {
+		t.Errorf("a nested-only resource asserted through its parent: counted %d unasserted, want 0", n)
+	}
+}
+
+// And the case has to succeed, for the same reason a paging parameter's does:
+// a refusal never reached the response, so it says nothing about its shape.
+func TestAFieldAssertedOnlyByAFailingCaseIsUnasserted(t *testing.T) {
+	r := &Recipe{
+		Routes:    []Route{{Method: "GET", Path: "/v1/things", Resource: "thing", Operation: "list"}},
+		Resources: map[string]Resource{"thing": {Fields: map[string]Field{"colour": {Type: "string"}}}},
+		Conformance: []Case{{
+			Request: Request{Method: "GET", Path: "/v1/things"},
+			Expect:  Expectation{Status: 404, Body: map[string]any{"data[0].colour": "red"}},
+		}},
+	}
+
+	if n := r.UnassertedField(); n != 1 {
+		t.Errorf("a field asserted only by a 404: counted %d unasserted, want 1", n)
+	}
+}

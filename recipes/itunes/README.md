@@ -2,7 +2,7 @@
 
 Emulates the iTunes Search API (itunes), for local development and tests.
 
-**11 conformance cases, 9 checked against the live API on 2026-08-30.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**12 conformance cases, 9 checked against the live API on 2026-08-30.** The 2 unchecked ones are the paging cases: they send the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

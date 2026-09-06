@@ -317,8 +317,9 @@ func (f Field) WireName(name string) string {
 func (r Recipe) UnassertedField() int {
 	unasserted := 0
 
-	for _, resource := range r.Resources {
+	for what, resource := range r.Resources {
 		for name, field := range resource.Fields {
+
 			if field.In == "-" {
 				continue
 			}
@@ -328,7 +329,7 @@ func (r Recipe) UnassertedField() int {
 				wire = field.As
 			}
 
-			if assertsName(r.Conformance, wire) {
+			if r.assertsFieldOf(what, wire) {
 				continue
 			}
 
@@ -337,4 +338,69 @@ func (r Recipe) UnassertedField() int {
 	}
 
 	return unasserted
+}
+
+// assertsFieldOf reports whether some successful case about this resource names
+// the field.
+//
+// The first version of the counter asked whether any case in the file asserted
+// the name anywhere, which is the right question for an envelope -- there is one
+// per Recipe -- and the wrong one for a record. Nutritionix declares name on
+// four resources and a case about one of them credited all four. Across the
+// corpus, 476 names were credited by a case about something else entirely,
+// which is the same over-generosity every other counter here has been caught in.
+//
+// A resource served by no route of its own is the exception. It appears only
+// nested inside another's response -- Harvest's client, a time entry's task --
+// so an assertion anywhere in the file is an assertion about it, and demanding
+// a case on a route it does not have would be demanding the impossible.
+//
+// The case has to succeed, for the same reason a paging parameter's does: a
+// refusal never reached the response, so it says nothing about its shape.
+func (r Recipe) assertsFieldOf(resource, wire string) bool {
+	own := false
+
+	for _, route := range r.Routes {
+		if route.Resource == resource {
+			own = true
+
+			break
+		}
+	}
+
+	for _, c := range r.Conformance {
+		if c.Arm != "" {
+			continue
+		}
+
+		if status := c.Expect.Status; status != 0 && (status < 200 || status >= 300) {
+			continue
+		}
+
+		if own && !r.aboutResource(c, resource) {
+			continue
+		}
+
+		if assertsName([]Case{c}, wire) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// aboutResource reports whether a case's request goes to a route serving this
+// resource.
+func (r Recipe) aboutResource(c Case, resource string) bool {
+	for _, route := range r.Routes {
+		if route.Resource != resource || c.Request.Method != route.Method {
+			continue
+		}
+
+		if samePath(c.Request.Path, route.Path) {
+			return true
+		}
+	}
+
+	return false
 }

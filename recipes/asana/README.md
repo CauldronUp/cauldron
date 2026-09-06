@@ -2,7 +2,7 @@
 
 Emulates the Asana API (1.0), for local development and tests.
 
-**21 conformance cases, 1 checked against the live API.**
+**23 conformance cases, 1 checked against the live API.**
 
 One was struck live against app.asana.com on 2026-09-05, with no Authorization header at all and again with a made-up Bearer token: byte-identical 401. This file had claimed the message was "Not Authorized: authentication is required"; Asana sends plainly "Not Authorized", with no such phrase attached.
 

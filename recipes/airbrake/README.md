@@ -2,7 +2,7 @@
 
 Emulates the Airbrake API (v4), for local development and tests.
 
-**20 conformance cases, 5 checked against the live API on 2026-09-01.**
+**21 conformance cases, 5 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

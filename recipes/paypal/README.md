@@ -2,7 +2,7 @@
 
 Emulates the PayPal API (v2), for local development and tests.
 
-**17 conformance cases, 2 checked against the live API.**
+**18 conformance cases, 2 checked against the live API.**
 
 Everything that needs a sandbox account still cites documentation rather than an observation -- the Recipe's own header says why, and that reason is the finding as often as not. The two auth failures were checked directly against api-m.paypal.com, unauthenticated, on 2026-09-05.
 

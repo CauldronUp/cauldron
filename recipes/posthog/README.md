@@ -2,7 +2,7 @@
 
 Emulates the PostHog API (v1), for local development and tests.
 
-**23 conformance cases, 2 checked against the live API.**
+**24 conformance cases, 2 checked against the live API.**
 
 Everything past the credential check still cites documentation rather than an observation, because reaching it needs a project this Recipe cannot fabricate. The credential check itself was verified directly against us.posthog.com on 2026-09-05.
 

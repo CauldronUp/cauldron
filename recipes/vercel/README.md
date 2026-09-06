@@ -2,7 +2,7 @@
 
 Emulates the Vercel API (v13), for local development and tests.
 
-**21 conformance cases, 3 checked against the live API on 2026-09-05.**
+**23 conformance cases, 3 checked against the live API on 2026-09-05.**
 
 Most of this Recipe still cites documentation, since deployments and domains need a real account. The credential and routing shapes needed no account at all, and checking them live found this Recipe's own claim wrong.
 

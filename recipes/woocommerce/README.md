@@ -2,7 +2,7 @@
 
 Emulates the WooCommerce API (wc/v3), for local development and tests.
 
-**22 conformance cases, 4 checked against the live API on 2026-09-05.**
+**24 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 WooCommerce has no shared sandbox, since every install is a merchant's own site -- except one. woo.com runs its own storefront on WooCommerce, so its `/wp-json/wc/v3` is a real production API with nothing special about its unauthenticated behaviour, and checking it live found two claims here that had never been run.
 

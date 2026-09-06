@@ -2,7 +2,7 @@
 
 Emulates the FlightAware API (4.17.1), for local development and tests.
 
-**9 conformance cases, 2 checked against the live API on 2026-08-31.**
+**10 conformance cases, 2 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

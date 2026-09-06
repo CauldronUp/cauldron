@@ -2,7 +2,7 @@
 
 Emulates the Perplexity API (v1), for local development and tests.
 
-**10 conformance cases, 6 checked against the live API on 2026-08-31.**
+**11 conformance cases, 6 checked against the live API on 2026-08-31.**
 
 ## What this Recipe found
 

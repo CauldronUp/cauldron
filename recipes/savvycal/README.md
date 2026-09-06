@@ -2,7 +2,7 @@
 
 Emulates the SavvyCal API (v1), for local development and tests.
 
-**24 conformance cases, 10 checked against the live API on 2026-09-01.**
+**25 conformance cases, 10 checked against the live API on 2026-09-01.**
 
 ## What this Recipe found
 

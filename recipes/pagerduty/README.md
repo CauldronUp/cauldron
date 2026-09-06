@@ -2,7 +2,7 @@
 
 Emulates the PagerDuty API (2), for local development and tests.
 
-**18 conformance cases, 2 checked against the live API.**
+**19 conformance cases, 2 checked against the live API.**
 
 Struck live 2026-09-05 against api.pagerduty.com, no account and no key -- and found this file's own existing case had never been checked against reality. It asserted a documented code-2006 JSON body for a wrong-scheme credential; the real answer, identical whether no credential was sent or the wrong scheme was, is empty, zero bytes. Fixed below.
 
