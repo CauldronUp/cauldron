@@ -4433,7 +4433,7 @@ counts it now, the same way it counts the other two, and the real figure is far
 larger because today's sweep added roughly two hundred declarations of its own:
 
 ```
-51 paging parameter name(s) across 26 recipe(s) are declared and sent by no
+48 paging parameter name(s) across 24 recipe(s) are declared and sent by no
 case, so renaming them would break nothing.
 ```
 
@@ -5402,3 +5402,23 @@ Two smaller ones alongside. The paging generator was insisting on a 200 where
 the listing generator had already been taught not to -- Agora answers 201 -- and
 a position is any identifier the served record carries, not one of the six names
 the generator knew: Workable's jobs are told apart by a `shortcode`.
+
+### Two requests that were nearly right
+
+SerpAPI's template case writes its whole query into the path, in the older
+spelling: `/search?q=cauldron+search+recipe&api_key=...`. The generator read
+that into a query dictionary without decoding it, so it asked for a phrase with
+plus signs in it and the Recipe answered 404 -- correctly, since that is not a
+search anyone ran. A path's query string is percent-encoded and a query
+dictionary holds the decoded value; the two are not the same text.
+
+PlanetScale's only green case for its databases listing asks for somebody
+else's organisation, and is answered with an empty list, which is the point of
+that case. The generator copied the path along with everything else and found
+nothing to page. The listing generator already knows how to fill a path
+parameter from the fixture; borrowing that and trying the other candidates when
+the copied path serves nothing settles both names.
+
+Neither was a provider being difficult. Both were a request that was nearly
+right, which is the harder kind to see, because a nearly-right request comes
+back with a real answer.
