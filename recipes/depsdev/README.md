@@ -2,7 +2,7 @@
 
 Emulates the deps.dev API (v3), for local development and tests.
 
-**13 conformance cases, 12 checked against the live API on 2026-08-28.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
+**14 conformance cases, 12 checked against the live API on 2026-08-28.** The unchecked one is the paging case: it sends the parameter names this Recipe declares, read from the provider's own description rather than struck against it.
 
 ## What this Recipe found
 

@@ -5555,7 +5555,7 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-926 record field name(s) across 288 recipe(s) are declared and asserted
+873 record field name(s) across 287 recipe(s) are declared and asserted
 by no case.
 ```
 
@@ -5624,3 +5624,17 @@ that is a case asserting the shape of its own request. The generator now drops
 those values before writing, which is the format's own rule applied one step
 earlier -- and the reason it had never mattered before is that a read sends
 nothing to echo.
+
+### A placeholder is not always a whole segment
+
+Homebrew's formula lives at `/api/formula/{id}.json`. Every generator here
+filled a path parameter by looking for a segment that begins with `{` and ends
+with `}`, and that one does not -- it ends with `.json` -- so the braces stayed
+in the path, the request 404'd, and sixteen declared field names on a resource
+whose fixture sets every one of them read as unobservable.
+
+Filling placeholders wherever they appear in a segment settles fifty-three
+names across a handful of Recipes, and turned up one more listing nobody had
+answered. The bug had been in the shared helper the whole time; nothing had
+asked it for a path shaped like that until a resource with no listing needed
+its fetch route.
