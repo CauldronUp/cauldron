@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**87 more listings across 60 Recipes declare no paging at all**, and the
+**82 more listings across 55 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1345,6 +1345,29 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+Sumo Logic is the argument for having built `may_undershoot` this morning. Its
+search-messages endpoint documents the limit parameter as: "limit the number of
+messages returned in the response. **The number of messages returned may be less
+than the limit.**" That is Onfleet's behaviour, in a description written years
+apart from Onfleet's, found by accident four hours after the key existed. Both
+its parameters are also *required* -- there is no request that omits them, so
+there is no default page at all, which the format has no way to say and the
+declaration says in prose.
+
+FRED holds the largest default in the collection by three orders of magnitude:
+`limit` defaults to **100000**. That is right for what FRED serves -- an economic
+series is meant to arrive whole -- and the fake was answering ten observations. A
+chart drawn from ten observations is not a short chart, it is a wrong one.
+
+TomTom bounds the *walk* rather than the page: `ofs` caps at 1900 because "the
+total number of results can be no more than 2000". HERE is the third geocoder
+here with the same shape as Nominatim and Mapbox -- a size, no position, a ranked
+answer rather than a walkable collection -- defaulting to 20. And Canvas's one
+unstated listing turned out to be a JWKS document, which is the whole key set by
+definition: a verifier that receives half of it cannot validate tokens signed by
+the other half. Canvas pages plenty of things, at ten with `per_page` and Link
+headers, and a Recipe copying that onto every listing would have put it here too.
 
 The Guardian named its own paging parameters inside an error this Recipe has been
 pinning all along. `?page=99999` answers "Content API does not support paging this
