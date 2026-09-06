@@ -820,13 +820,13 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
-			recipe:   "chatwoot",
-			npm:      []string{"@chatwoot/sdk", "chatwoot"},
+			recipe: "chatwoot",
+			npm:    []string{"@chatwoot/sdk", "chatwoot"},
 		},
 		{
-			recipe:   "gitea",
-			npm:      []string{"gitea-js"},
-			gomod:    []string{"code.gitea.io/sdk/gitea"},
+			recipe: "gitea",
+			npm:    []string{"gitea-js"},
+			gomod:  []string{"code.gitea.io/sdk/gitea"},
 		},
 		{
 			recipe:   "github",
