@@ -886,6 +886,10 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			recipe: "coder",
+			gomod:  []string{"github.com/coder/coder/v2"},
+		},
+		{
 			recipe: "casdoor",
 			npm:    []string{"casdoor-js-sdk", "casdoor-nodejs-sdk"},
 			gomod:  []string{"github.com/casdoor/casdoor-go-sdk"},

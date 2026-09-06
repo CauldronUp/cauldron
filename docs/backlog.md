@@ -7886,3 +7886,78 @@ row on the unmapped table records.
 
 First Recipe in three to get a mapping at all, and it got one because the
 packages are real.
+
+## Coder, whose search language has a key that is not a filter
+
+Written against Coder's own generated Swagger 2.0 document — `coder/coder`
+`coderd/apidoc/swagger.json`, 344 paths, "Coder API 2.0", read 2026-09-06.
+Self-hosted with no public instance, so nothing is struck live.
+
+`GET /api/v2/workspaces` takes `q`, "Search query in the format `key:value`",
+with twelve keys:
+
+```
+owner  template  name  status  has-agent  dormant  healthy  has-ai-task
+last_used_after  last_used_before  has_external_agent  include_agent_metadata
+```
+
+The twelfth is documented, in the parameter's own description, as expanding each
+agent with the named metadata keys **"rather than filtering"**.
+
+So eleven narrow the result and the twelfth changes its *shape*, sharing one
+parameter, one syntax and one description. A caller assembling `q` from user
+input can widen the response by accident, and a client typing the response has to
+know that one search key adds fields to it.
+
+The keys also disagree about separators — `has-agent` and `has-ai-task` use
+hyphens, `has_external_agent` and `last_used_after` use underscores. Two
+conventions in one vocabulary, in the same string.
+
+### A workspace's state is whether a timestamp is null
+
+> `dormant_at` — "DormantAt being non-nil indicates a workspace that is dormant.
+> A dormant workspace is no longer accessible must be activated."
+
+There is no `status` field carrying the word. The state **is** the nullness of a
+date, so `if (workspace.dormant_at)` is the check and a client rendering the
+value shows the user when they stopped being able to reach it.
+
+`deleting_at` is sharper: a timestamp in the **future**, naming when the
+workspace will be permanently deleted. A listing includes workspaces scheduled
+for deletion, and nothing but a non-null date says so.
+
+### The rest
+
+- **Six `/api/experimental/` paths sit beside 300-odd `/api/v2/` ones** with no
+  marking in the operations, so a generated client gets methods for all of them
+  and no signal about which are stable.
+- **Three header credentials**, one named after a product feature
+  (`X-AI-Governance-Gateway-Key`) — so which header authenticates depends on
+  what the request is *for* rather than on who is calling.
+- **The owner appears twice**, as id and as name, and neither is stable under a
+  rename.
+- **A missing workspace and a forbidden one share one sentence** — a deliberate
+  choice not to leak existence, and it means a caller cannot tell a typo from a
+  permission problem.
+
+### Assessed and not written: Authelia
+
+Authelia's published `api/openapi.yml` is a **Go template**, not a document. 127
+template markers, conditioned on `.TOTP`, `.WebAuthn`, `.Passkeys`, `.Duo`,
+`.OpenIDConnect`, `.PasswordReset`, `.PasswordChange` and `.Domain`.
+
+So which endpoints exist depends on which authentication methods a deployment
+enabled, and the file in the repository does not parse as YAML at all. There is
+no single document describing the API and no honest way to write one Recipe
+against it — rendering the template would mean choosing a feature set and
+presenting the result as though it were Authelia's.
+
+Recorded rather than guessed. If it is ever worth doing, the honest shape is
+several Recipes, one per feature combination, and the header of each saying which
+flags it assumes.
+
+### Mapped after checking
+
+`github.com/coder/coder/v2` resolves on the module proxy and is the module
+containing `codersdk`. The bare npm name `coder` also resolves and is left out,
+for the same reason `casdoor` was.
