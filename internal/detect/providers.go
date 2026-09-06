@@ -5227,6 +5227,11 @@ func providers() []provider {
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
 		{
+			// FreshBooks' own Node SDK: freshbooks/freshbooks-nodejs-sdk.
+			recipe: "freshbooks",
+			npm:    []string{"@freshbooks/api"},
+		},
+		{
 			// Authorize.Net's own SDKs, both published by the company:
 			// AuthorizeNet/sdk-php and AuthorizeNet/sdk-node.
 			recipe:   "authorizenet",

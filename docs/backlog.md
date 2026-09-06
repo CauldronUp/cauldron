@@ -192,7 +192,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~TaxJar~~ | Shipped. Decimal rates, present-and-zero jurisdictions, nexus |
 | ~~Avalara~~ | Shipped, AvaTax REST v2. A quote and a record are the same call with one word different, and only one of them is ever filed |
 | Stripe Tax | Probably a specialised extension of the Stripe Recipe |
-| FreshBooks | Invoices, clients, expenses |
+| ~~FreshBooks~~ | Shipped, written against FreshBooks' own reference. **Two envelopes before the payload, with the paging inside the second**: a list is `{"response": {"result": {"clients": [...], "page": 1, "pages": 1, "per_page": 15, "total": 2}}}`, so the records sit at `response.result.clients` and the four paging numbers are siblings of the array rather than a meta object -- anything walking `result` for "the data" has to know which key is not an integer. The key is singular on a fetch and plural on a listing, both two levels down. The account id is a path segment on every accounting call, so an integration cannot hold one base URL. And FreshBooks has its own error numbers -- 1001 RequiredField, 1003 AccessDenied, running to 1108 -- carried alongside a much coarser HTTP status, so only the number is specific enough to branch on |
 | Sage | Accounting, contacts, invoices |
 | ~~Zoho Books~~ | Shipped, written against Zoho's own OpenAPI document. **`page_context` is an array** -- the paging block is wrapped in a one-element list, so `page_context.has_more_page` is undefined, `page_context[0].has_more_page` is the boolean, and the loop everybody writes stops after one page of ten. **Money is a string**: `total` and `balance` are declared `"type": "string"` on an accounting API, so adding two concatenates and `"9.00"` sorts above `"100.00"`. `code: 0` means success and sits inside a 200 beside the payload, and the same key carries failures, so the discriminator is a value rather than a key. The credential prefix is `Zoho-oauthtoken`, not Bearer. There are eight data-centre hosts and an account lives on exactly one |
 | Wave | Accounting and invoicing |
@@ -5558,11 +5558,11 @@ three names it invented, because nothing ever looked inside the collection.
 Where it stands now:
 
 ```
-594 record field name(s) across 213 recipe(s) are declared and asserted
+595 record field name(s) across 214 recipe(s) are declared and asserted
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-645 declared error(s) across 308 recipe(s) have no case asserting what
+646 declared error(s) across 309 recipe(s) have no case asserting what
 they say.
 ```
 

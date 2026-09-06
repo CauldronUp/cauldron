@@ -1,0 +1,388 @@
+# FreshBooks Recipe for Cauldron
+#
+# **Two wrappers before the payload, and the paging is inside the second one.**
+#
+# A list answers:
+#
+#   {"response": {"result": {"clients": [...],
+#                            "page": 1, "pages": 1,
+#                            "per_page": 15, "total": 2}}}
+#
+# So the records are at `response.result.clients` -- two envelopes deep -- and
+# the four paging numbers are siblings of the array rather than a meta object
+# beside it. Iterating the keys of `result` gives you the resource name and four
+# integers, and any code that walks that object looking for "the data" has to
+# know which key is not a number.
+#
+# A single record is the same two wrappers with an object at the end:
+# `{"response": {"result": {"client": {...}}}}`. Singular there, plural on the
+# listing, so the path changes with the operation as well as the depth.
+#
+# **The account id is in the path, on every accounting call.**
+#
+# /accounting/account/{accountId}/users/clients. Not a header, not a query
+# parameter: a path segment that every URL has to be built around, so an
+# integration cannot hold one base URL and append endpoints to it.
+#
+# **FreshBooks has its own error numbers, and they are not HTTP statuses.**
+#
+# 1001 is RequiredField, 1002 is InvalidValue, 1003 is AccessDenied, and the
+# published table runs to 1108. They travel with an HTTP status that is much
+# coarser -- 401, 403, 404, 409, 500 -- so the status says what kind of refusal
+# it was and the number says which one, and only the number is specific enough
+# to branch on.
+#
+# Written against FreshBooks' own reference: freshbooks.com/api/start and
+# /api/errors, read on 2026-09-06. No case here is marked verified, because none
+# was struck against a live account.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - **The failure envelope is not modelled from evidence.** FreshBooks
+#     publishes the error *numbers* and their names, and no page reachable
+#     without an account shows the JSON a failure arrives in. What this Recipe
+#     serves is its own convention -- a flat object with a message -- and the
+#     numbers in it are FreshBooks'. If the real envelope nests the failure
+#     under `response` the way successes are nested, this is wrong in the shape
+#     while being right in the codes, and it is written here so that whoever
+#     finds out has somewhere to correct.
+#   - Clients only. Invoices, expenses, payments, projects and time entries are
+#     separate resources, and the projects half of the API lives under a
+#     different path root with a different identifier -- which is worth its own
+#     Recipe rather than a guess appended to this one.
+#   - The `vis_state` field that marks a record deleted rather than removing it
+#     is not modelled. It is real and it is the kind of thing this project
+#     exists for; it wants an observation rather than an assumption.
+
+recipe: freshbooks
+capability: accounting
+version: 0.1.0
+
+upstream:
+  api: alpha
+  docs: https://www.freshbooks.com/api/start
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_freshbooks_token_00000000000
+  absent_error: no_credential
+  rejected_error: authentication_error
+
+responses:
+  list:
+    # Two deep. The dotted key nests.
+    style: wrapped
+    key: response.result.clients
+  resource:
+    style: wrapped
+    key: response.result.client
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  client:
+    id:
+      style: numeric
+      field: id
+    fields:
+      # The account the client belongs to. It lives in the path and FreshBooks
+      # does not repeat it in the record, so it never reaches the wire --
+      # unlike accounting_systemid, which is a different identifier that does.
+      account:
+        type: string
+        in: "-"
+      email:
+        type: string
+      fname:
+        type: string
+      lname:
+        type: string
+      organization:
+        type: string
+      # FreshBooks' own account identifier for the client, not the one in the
+      # path.
+      accounting_systemid:
+        type: string
+      currency_code:
+        type: string
+      updated:
+        type: string
+
+routes:
+  - method: GET
+    path: /accounting/account/{account}/users/clients
+    resource: client
+    operation: list
+    scope: [account]
+    pagination:
+      # Beside the records rather than beyond them: page, pages, per_page and
+      # total all sit inside result with the array.
+      style: page
+      limit: 15
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /accounting/account/{account}/users/clients/{id}
+    resource: client
+    operation: get
+    scope: [account]
+
+errors:
+  no_credential:
+    status: 401
+    # 1003 AccessDenied, which is FreshBooks' number rather than the status.
+    code: 1003
+    message: "The server could not verify that you are authorized"
+  authentication_error:
+    status: 401
+    code: 1003
+    message: "The server could not verify that you are authorized"
+  resource_missing:
+    status: 404
+    code: 1012
+    message: "Client not found"
+  parameter_missing:
+    status: 400
+    # 1001 RequiredField.
+    code: 1001
+    message: "A required field is missing"
+  unknown_route:
+    status: 404
+    code: 1012
+    message: "Not found"
+  method_not_allowed:
+    status: 405
+    message: "Method not allowed"
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+fixtures:
+  empty:
+    client: []
+
+  small-account:
+    client:
+      - id: 12345
+        account: ABC123
+        email: ada@example.com
+        fname: Ada
+        lname: Lovelace
+        organization: Analytical Engines
+        accounting_systemid: ABC123
+        currency_code: GBP
+        updated: "2026-08-14 09:31:22"
+
+      - id: 12346
+        account: ABC123
+        email: grace@example.com
+        fname: Grace
+        lname: Hopper
+        organization: Compiler Works
+        accounting_systemid: ABC123
+        currency_code: USD
+        updated: "2026-09-01 16:04:10"
+
+conformance:
+  - name: the records are two envelopes deep
+    source: https://www.freshbooks.com/api/start
+    fixture: small-account
+    request:
+      method: GET
+      path: /accounting/account/ABC123/users/clients
+      headers:
+        Authorization: "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        # Not body.clients, and not body.result.clients.
+        "response.result.clients[0].email": "ada@example.com"
+      absent:
+        - clients
+        - "result.clients"
+        - "data"
+
+  - name: a single client is the same two wrappers with a singular key
+    source: https://www.freshbooks.com/api/start
+    fixture: small-account
+    request:
+      method: GET
+      path: /accounting/account/ABC123/users/clients/12345
+      headers:
+        Authorization: "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        # Singular here, plural on the listing: the path changes with the
+        # operation as well as the depth.
+        "response.result.client.organization": "Analytical Engines"
+      absent:
+        - "response.result.clients"
+
+  - name: the account id is a path segment on every accounting call
+    source: https://www.freshbooks.com/api/start
+    fixture: small-account
+    request:
+      method: GET
+      path: /accounting/account/ABC123/users/clients
+      headers:
+        Authorization: "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        "response.result.clients[1].fname": "Grace"
+
+  - name: a client nobody created is refused with a FreshBooks number
+    source: https://www.freshbooks.com/api/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /accounting/account/ABC123/users/clients/99999
+      headers:
+        Authorization: "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 404
+      body:
+        # The status says what kind of refusal; the number says which one.
+        message: "Client not found"
+
+  - name: no credential at all is refused
+    source: https://www.freshbooks.com/api/start
+    fixture: small-account
+    request:
+      method: GET
+      path: /accounting/account/ABC123/users/clients
+    expect:
+      status: 401
+      body:
+        message: "The server could not verify that you are authorized"
+
+  # The page size, asserted from what the sandbox answered rather than
+  # from what the fixture lists -- the two are not the same thing,
+  # because the store does not serve records in the order a fixture
+  # writes them. Asking for one out of 2 and receiving one can only
+  # happen if per_page was read.
+  - name: "per_page is read on accounting account users clients, and a page of one is not the whole collection"
+    source: "https://www.freshbooks.com/api/start"
+    fixture: small-account
+    request:
+      method: GET
+      path: "/accounting/account/ABC123/users/clients"
+      query:
+        "per_page": "1"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        "response.result.clients[0].id": 12345
+      absent:
+        - "response.result.clients[1]"
+
+  # And the position. page=2 answers a different record, which the size
+  # alone cannot produce.
+  - name: "page moves the page on for accounting account users clients"
+    source: "https://www.freshbooks.com/api/start"
+    fixture: small-account
+    request:
+      method: GET
+      path: "/accounting/account/ABC123/users/clients"
+      query:
+        "per_page": "1"
+        "page": "2"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        "response.result.clients[0].id": 12346
+      absent:
+        - "response.result.clients[1]"
+
+  # The names. This Recipe declares 4 field(s) on a client that no case
+  # asserted, so each of them could have been renamed to anything and
+  # every case would have stayed green. The runtime builds the response
+  # out of the declaration and the fixture, so this seeds one and
+  # asserts the 3 name(s) that came back at the paths they came back
+  # under.
+  - name: "a client carries the field names this Recipe declares"
+    source: "https://www.freshbooks.com/api/start"
+    fixture: small-account
+    request:
+      method: GET
+      path: "/accounting/account/ABC123/users/clients"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 200
+      body:
+        "response.result.clients[0].currency_code": "GBP"
+        "response.result.clients[0].lname": "Lovelace"
+        "response.result.clients[0].updated": "2026-08-14 09:31:22"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for method not allowed and nothing
+  # asserted any of them, so the wording could have been changed to
+  # anything and every case would have stayed green. This makes the
+  # refusal happen -- using a method this route does not take -- and
+  # asserts what came back, envelope and all.
+  - name: "a method this route does not take is refused in these words"
+    source: "https://www.freshbooks.com/api/start"
+    fixture: small-account
+    request:
+      method: DELETE
+      path: "/accounting/account/ABC123/users/clients"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 405
+      body:
+        "message": "Method not allowed"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for rate limit and nothing asserted any
+  # of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # arming the rate limit -- and asserts what came back, envelope and
+  # all.
+  - name: "the rate limit says so in these words"
+    source: "https://www.freshbooks.com/api/start"
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: "/accounting/account/ABC123/users/clients"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 429
+      body:
+        "message": "Too many requests"
+
+  # What this provider says when it refuses. The Recipe declares a
+  # status, a code and a message for unknown route and nothing asserted
+  # any of them, so the wording could have been changed to anything and
+  # every case would have stayed green. This makes the refusal happen --
+  # asking for a path this provider does not serve -- and asserts what
+  # came back, envelope and all.
+  - name: "a path this provider does not serve is refused in these words"
+    source: "https://www.freshbooks.com/api/start"
+    fixture: small-account
+    request:
+      method: GET
+      path: "/cauldron-no-such-path"
+      headers:
+        "Authorization": "Bearer cauldron_freshbooks_token_00000000000"
+    expect:
+      status: 404
+      body:
+        "message": "Not found"
+
+
+
