@@ -820,6 +820,10 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "outline",
+			npm:    []string{"@outlinewiki/outline-client"},
+		},
+		{
 			recipe: "immich",
 			npm:    []string{"@immich/sdk"},
 		},

@@ -6867,3 +6867,75 @@ carries a warning no tool reads: Codecov's is invalid OpenAPI, Argo CD's
 declares no authentication, Sonarr and Radarr's enums disagree at the same
 integer, and Immich's deprecations live half in a vendor extension. The document
 being published is not the same as the document being read.
+
+## Outline, where a GET on a real endpoint says the endpoint does not exist
+
+Struck live against `app.getoutline.com` on 2026-09-06 with no account — every
+live case is a refusal, and being refused needs no sign-up. Written against
+Outline's own OpenAPI 3.0 document, `outline/openapi` `spec3.yml`, 154 paths.
+
+**154 paths. 154 POSTs. No GET anywhere.** Every operation is a POST, including
+`documents.list`, `documents.info` and `apiKeys.list`. The paths are RPC method
+names — `/documents.info`, not `/documents/{id}` — so resource and verb share one
+path segment, separated by a dot.
+
+That costs a lot that no single response reveals: nothing is cacheable, nothing
+is idempotent by method, every cross-origin call is preflighted, and a read's
+parameters live in a JSON body so a query cannot be a link or a log line.
+
+And then:
+
+```
+GET  /api/documents.list   -> 404
+     {"ok":false,"error":"not_found","status":404,"message":"Resource not found"}
+
+POST /api/nosuch.method    -> 404
+     {"ok":false,"error":"not_found","status":404,"message":"Resource not found"}
+```
+
+Byte-identical, no `Allow` header on either. So in an API where every endpoint is
+a POST, the single likeliest mistake — reaching for GET on a listing — is
+reported as **the endpoint does not exist**. The URL is right; the response says
+it is not.
+
+**This one is served rather than described.** A GET route in the Recipe answers
+the same not-found body, because that is what Outline answers, and a Recipe that
+404'd differently or 405'd politely would hide the finding behind a nicer local
+experience.
+
+### The envelope asks the same question four ways
+
+```json
+{"ok": false, "error": "authentication_required",
+ "status": 401, "message": "Authentication required"}
+```
+
+A boolean, a machine code, the HTTP status repeated in the body, and prose.
+
+And the machine code cannot tell two failures apart. Struck live, one request
+after the other: no credential answers `authentication_required` / "Authentication
+required"; a malformed token answers `authentication_required` / "Unable to
+decode token". Same code, same status. The only thing distinguishing "you sent
+nothing" from "your token is broken" is the sentence — the part that changes
+between releases and the part nobody should branch on.
+
+The Recipe declares both as separate errors sharing one code, via `absent_error`
+and `rejected_error`, so the collision is reproduced rather than smoothed.
+
+### The rest
+
+- **Paging is in the body.** `offset` and `limit` are POST body properties, so a
+  listing's position never appears in a URL, a log, or a proxy's record.
+- **Permissions travel beside the records.** `{data: [...], policies: [...]}`,
+  where `Policy.abilities` is declared with `additionalProperties` — what a
+  caller may do is untyped data arriving alongside the records, and the client
+  joins it back itself.
+- **The new filter is exclusive with four deprecated ones.** `filters` "cannot be
+  combined with the deprecated collectionId, userId, parentDocumentId or
+  statusFilter parameters". Five ways to narrow a listing, four deprecated,
+  mixing them an error rather than a merge. Recorded and not served, because the
+  document says only that they cannot be combined, not what happens if you try.
+- **Three nulls on one record mean three different things.** `publishedAt`,
+  `archivedAt`, `deletedAt` — a never-published draft has all three null and only
+  their names say which state it is in.
+- **No rate-limit headers on anything struck.**

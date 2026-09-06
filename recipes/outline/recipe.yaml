@@ -1,0 +1,502 @@
+# Outline Recipe for Cauldron
+#
+# Written against Outline's own OpenAPI 3.0 document -- github.com/outline/openapi,
+# spec3.yml, 154 paths, read on 2026-09-06 -- and struck live against
+# app.getoutline.com the same day. The live cases needed no account: every
+# observation below is a refusal, and being refused is the thing being recorded.
+#
+# **154 paths. 154 POSTs. No GET anywhere.**
+#
+# Every operation is a POST, including `documents.list`, `documents.info`,
+# `documents.search` and `apiKeys.list`. The paths are RPC method names --
+# `/documents.info`, not `/documents/{id}` -- so the resource and the verb share
+# one path segment, separated by a dot.
+#
+# What that costs, none of which any single response reveals:
+#
+#   - Nothing is cacheable. A read is a POST, so no HTTP cache, no CDN, no
+#     conditional request, no ETag flow, and no browser cache.
+#   - Nothing is idempotent by method. A client retrying after a timeout cannot
+#     tell from the method whether a repeat is safe; `documents.list` and
+#     `documents.delete` are the same verb.
+#   - Every cross-origin call is preflighted, because a POST with a JSON
+#     content type is never a simple request.
+#   - A read's parameters are in a JSON body, so a query cannot be a link, a
+#     bookmark, or a line in an access log.
+#
+# **And the one mistake this design invites is reported as a missing endpoint.**
+#
+# Struck live on 2026-09-06:
+#
+#   GET  /api/documents.list   -> 404
+#        {"ok":false,"error":"not_found","status":404,"message":"Resource not found"}
+#
+#   POST /api/nosuch.method    -> 404
+#        {"ok":false,"error":"not_found","status":404,"message":"Resource not found"}
+#
+# Byte-identical. No `Allow` header on either. So in an API where every endpoint
+# is a POST, a developer who reaches for GET on a listing -- the single likeliest
+# mistake there is -- is told the endpoint does not exist. The URL is right. The
+# response says it is not.
+#
+# **The envelope carries the status twice and a boolean besides.** Struck live:
+#
+#   {"ok": false, "error": "authentication_required",
+#    "status": 401, "message": "Authentication required"}
+#
+# `ok` is a boolean, `status` repeats the HTTP status, `error` is a machine code
+# and `message` is prose. Four ways to ask the same question.
+#
+# **And the machine code cannot tell two failures apart.** Struck live, one
+# after the other:
+#
+#   no credential      -> error "authentication_required", message "Authentication required"
+#   malformed token    -> error "authentication_required", message "Unable to decode token"
+#
+# Same code, same status. The only thing distinguishing "you sent nothing" from
+# "your token is broken" is the prose -- which is the part that changes between
+# releases and the part nobody should branch on.
+#
+# **Paging travels in the body.** `offset` and `limit` are properties of the
+# POST body, not query parameters. So a listing's position cannot be seen in a
+# URL, logged, or resumed from anything a proxy recorded.
+#
+# **Permissions travel beside the records.** A listing answers
+# `{data: [...], policies: [...]}`, where a Policy carries an `abilities` object
+# declared with `additionalProperties` -- so what a caller may do is untyped
+# data, keyed by ability name, arriving alongside the records rather than being
+# implied by them.
+#
+# **The new filter is exclusive with four deprecated ones.** `documents.list`
+# takes `filters`, whose own description says it "cannot be combined with the
+# deprecated collectionId, userId, parentDocumentId or statusFilter parameters".
+# Five ways to narrow a listing, four of them deprecated, and mixing them is an
+# error rather than a merge.
+#
+# **No rate-limit headers on anything struck.** No RateLimit, no Retry-After,
+# on a 401 or a 404.
+#
+# Known modelling limits, stated rather than discovered later:
+#
+#   - Documents, listed and fetched. 154 paths is a wiki: collections, users,
+#     groups, shares, comments, revisions, attachments, search and the whole
+#     OAuth surface each want their own evidence.
+#   - The GET-is-404 behaviour is served, because it is the finding. A route
+#     declared here for GET would have to answer something, and what Outline
+#     answers is the not-found body -- so this Recipe answers it too.
+#   - `policies` is served as a fixed array beside the data. Its abilities are
+#     the fixture's, not computed from the credential, because this Recipe has
+#     one caller.
+#   - The deprecated filters are recorded and not served. Serving them would
+#     mean deciding what happens when they are combined with `filters`, and the
+#     document says only that they cannot be.
+
+recipe: outline
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: "0.1.0"
+  docs: https://www.getoutline.com/developers
+  spec: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+  spec_hash: e96978f2ee843e6c086c154773c902dce7699241c95d23ba006aeb4274a1705d
+  spec_seen: "2026-09-06"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ol_api_cauldron000000000000000000
+  absent_error: authentication_required
+  # A token that is present and will not decode. Outline answers the same
+  # machine code as for nothing at all, and only the prose differs -- which is
+  # the finding, so both are declared and they share a code.
+  rejected_error: token_undecodable
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  success:
+    fields:
+      # On every response, beside the status. Four ways to ask whether it
+      # worked.
+      ok: true
+  error:
+    style: flat
+    message_field: message
+    code_field: error
+    fields:
+      ok: false
+
+resources:
+  document:
+    id:
+      style: uuid
+      field: id
+    fields:
+      title:
+        type: string
+        required: true
+      # The document's own address, and Outline's is the title slugged with
+      # the id's suffix appended -- so it changes when the title changes and
+      # the old one keeps working.
+      urlId:
+        type: string
+      collectionId:
+        type: string
+      # Null on a top-level document, a uuid on a nested one, and the field
+      # that makes a listing a tree.
+      parentDocumentId:
+        type: string
+      text:
+        type: string
+      # Present and null while a document has never been published, which is
+      # not the same as being archived or deleted -- both of which have their
+      # own timestamps.
+      publishedAt:
+        type: datetime
+      archivedAt:
+        type: datetime
+      deletedAt:
+        type: datetime
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /api/documents.list
+    resource: document
+    operation: list
+    fields:
+      # What a caller may do with each record, arriving beside the records
+      # rather than being implied by them. Abilities are declared with
+      # additionalProperties upstream, so the shape here is the fixture's.
+      policies:
+        - id: 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+          abilities:
+            read: true
+            update: true
+            delete: false
+            share: true
+    pagination:
+      style: offset
+      # In the body, not the query string. So a listing's position never
+      # appears in a URL, a log line, or a proxy's record of the request.
+      in: body
+      limit_param: limit
+      cursor_param: offset
+      limit: 25
+
+  - method: POST
+    path: /api/documents.info
+    resource: document
+    operation: get
+    # The identifier is a body property, because there is no path to put it
+    # in: the path is the method name.
+    id_from: body:id
+    not_found: not_found
+
+  # The finding, served. Every endpoint in this API is a POST, and a GET on a
+  # real one answers exactly what a path that does not exist answers.
+  - method: GET
+    path: /api/documents.list
+    public: true
+    status: 404
+    raw:
+      content_type: application/json; charset=utf-8
+      text: |
+        {"ok":false,"error":"not_found","status":404,"message":"Resource not found"}
+
+errors:
+  authentication_required:
+    status: 401
+    code: authentication_required
+    message: "Authentication required"
+    fields:
+      ok: false
+      status: 401
+  token_undecodable:
+    status: 401
+    # The same code as above. Only the prose differs.
+    code: authentication_required
+    message: "Unable to decode token"
+    fields:
+      ok: false
+      status: 401
+  not_found:
+    status: 404
+    code: not_found
+    message: "Resource not found"
+    fields:
+      ok: false
+      status: 404
+  validation:
+    status: 400
+    code: validation_error
+    message: "collectionId: must be a uuid"
+    fields:
+      ok: false
+      status: 400
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: "Too many requests"
+    fields:
+      ok: false
+      status: 429
+
+fixtures:
+  empty:
+    document: []
+
+  workspace:
+    document:
+      - id: 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+        title: Runbook
+        urlId: runbook-9Kx2mQ
+        collectionId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+        parentDocumentId: null
+        text: "# Runbook\n\nWhat to do at three in the morning."
+        publishedAt: "2026-04-11T09:20:00.000Z"
+        archivedAt: null
+        deletedAt: null
+        createdAt: "2026-04-11T09:02:00.000Z"
+        updatedAt: "2026-08-27T14:31:00.000Z"
+      - id: 8f7e6d5c-4b3a-4291-8d0e-1f2a3b4c5d6e
+        title: Draft notes
+        urlId: draft-notes-4Lp8vR
+        collectionId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+        parentDocumentId: 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+        text: "Nested under the runbook."
+        # Never published. Not archived and not deleted, which are separate
+        # timestamps that are also null here -- three nulls meaning three
+        # different things.
+        publishedAt: null
+        archivedAt: null
+        deletedAt: null
+        createdAt: "2026-08-30T11:00:00.000Z"
+        updatedAt: "2026-08-30T11:14:00.000Z"
+
+conformance:
+  - name: a GET on a real endpoint answers that the endpoint does not exist
+    source: https://app.getoutline.com/api/documents.list
+    verified: "2026-09-06"
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/documents.list
+    expect:
+      # Struck live. Byte-identical to a path that does not exist, and no
+      # Allow header on either -- so the likeliest mistake in an all-POST API
+      # is reported as a wrong URL when the URL is right.
+      status: 404
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body_matches: '"error":"not_found"'
+      absent_headers:
+        - Allow
+
+  - name: no credential is refused with a status in the body and a boolean
+    source: https://app.getoutline.com/api/documents.list
+    verified: "2026-09-06"
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      json:
+        limit: 1
+    expect:
+      status: 401
+      body:
+        # Struck live, all four fields. ok is a boolean, status repeats the
+        # HTTP status, error is the machine code and message is prose.
+        ok: false
+        error: authentication_required
+        status: 401
+        message: "Authentication required"
+
+  - name: a malformed token gets the same code and different prose
+    source: https://app.getoutline.com/api/documents.list
+    verified: "2026-09-06"
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_notarealtoken
+      json:
+        limit: 1
+    expect:
+      status: 401
+      body:
+        # Struck live one request after the other. Same code, same status,
+        # different sentence -- so the only thing telling "you sent nothing"
+        # from "your token is broken" is the part nobody should branch on.
+        error: authentication_required
+        message: "Unable to decode token"
+        ok: false
+
+  - name: a path that does not exist answers the same as a wrong method
+    source: https://app.getoutline.com/api/nosuch.method
+    verified: "2026-09-06"
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.info
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json:
+        id: 00000000-0000-4000-8000-000000000000
+    expect:
+      status: 404
+      body:
+        # Struck live against /api/nosuch.method, which answered exactly this.
+        ok: false
+        error: not_found
+        status: 404
+        message: "Resource not found"
+
+  - name: paging travels in the body, not the query string
+    source: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json:
+        # Properties of the POST body. A listing's position never appears in a
+        # URL, so it cannot be linked, bookmarked, or read out of a log.
+        limit: 1
+        offset: 0
+    expect:
+      status: 200
+      body:
+        'data[0].title': Runbook
+      absent:
+        - 'data[1]'
+
+  - name: the second page continues from a body offset
+    source: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json:
+        limit: 1
+        offset: 1
+    expect:
+      status: 200
+      body:
+        'data[0].title': Draft notes
+      absent:
+        - 'data[1]'
+
+  - name: permissions arrive beside the records, not inside them
+    source: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json: {}
+    expect:
+      status: 200
+      body:
+        # A separate array keyed by record id. Abilities are declared with
+        # additionalProperties upstream, so what a caller may do is untyped
+        # data rather than a shape -- and a client has to join it to the
+        # records itself.
+        'policies[0].id': 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+        'policies[0].abilities.read': true
+        'policies[0].abilities.delete': false
+        ok: true
+
+  - name: three nulls on one record mean three different things
+    source: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.info
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json:
+        id: 8f7e6d5c-4b3a-4291-8d0e-1f2a3b4c5d6e
+    expect:
+      status: 200
+      body:
+        title: Draft notes
+        # Never published, not archived, not deleted. Three separate
+        # timestamps, all null, and only their names say which state the
+        # document is in.
+        publishedAt: null
+        archivedAt: null
+        deletedAt: null
+        # And the nesting, which makes a flat listing a tree.
+        parentDocumentId: 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+        urlId: draft-notes-4Lp8vR
+        # The content, spelled text rather than body or content, and it is
+        # Markdown rather than HTML or a node tree.
+        text: "Nested under the runbook."
+
+  - name: the identifier is a body property, because the path is the method
+    source: https://raw.githubusercontent.com/outline/openapi/main/spec3.yml
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.info
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json:
+        id: 5c9b2e3f-1a4d-4b6c-8e7f-0a1b2c3d4e5f
+    expect:
+      status: 200
+      body:
+        title: Runbook
+        collectionId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+        createdAt: "2026-04-11T09:02:00.000Z"
+        updatedAt: "2026-08-27T14:31:00.000Z"
+        publishedAt: "2026-04-11T09:20:00.000Z"
+
+  - name: "a validation failure says so in these words"
+    source: "https://www.getoutline.com/developers"
+    arm: validation
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json: {}
+    expect:
+      status: 400
+      body:
+        ok: false
+        error: validation_error
+        status: 400
+        message: "collectionId: must be a uuid"
+
+  - name: "the rate limit says so in these words"
+    source: "https://www.getoutline.com/developers"
+    arm: rate_limit
+    fixture: workspace
+    request:
+      method: POST
+      path: /api/documents.list
+      headers:
+        Authorization: Bearer ol_api_cauldron000000000000000000
+      json: {}
+    expect:
+      status: 429
+      body:
+        ok: false
+        error: rate_limit_exceeded
+        status: 429
+        message: "Too many requests"
