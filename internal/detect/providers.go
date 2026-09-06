@@ -820,6 +820,11 @@ func providers() []provider {
 			npm:      []string{"etsy-ts"},
 		},
 		{
+			recipe: "authentik",
+			npm:    []string{"@goauthentik/api"},
+			gomod:  []string{"goauthentik.io/api"},
+		},
+		{
 			recipe: "gotify",
 			npm:    []string{"gotify"},
 		},

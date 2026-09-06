@@ -6633,3 +6633,70 @@ body.
   websocket stream are unexamined.
 - Per-application scoping is not modelled: upstream an app token posts only as
   its own application, and here any app token posts as the fixture's.
+
+## authentik, where a null relation means "you did not ask"
+
+Written against authentik's own generated OpenAPI 3.0.3 document —
+`goauthentik/authentik` `schema.yml`, 613 paths, version 2026.11.0-rc1, read
+2026-09-06. Self-hosted with no public instance, so nothing is struck live and
+the Recipe says so.
+
+A group carries four pairs: `parents`/`parents_obj`, `users`/`users_obj`,
+`children`/`children_obj`, `roles`/`roles_obj`. The bare name is identifiers and
+takes writes; the `_obj` name is read-only and expanded.
+
+Whether the expanded ones are filled is four query parameters that disagree
+about their defaults — `include_users` defaults **true**, and
+`include_parents`, `include_children` and `include_inherited_roles` default
+false. Three of the four `_obj` fields are `nullable: true` **and** in
+`required`, so they are always present and may be null.
+
+So on one response `group.users_obj` is a populated array and
+`group.parents_obj` is null — not because the group has no parents, but because
+nobody passed `include_parents=true`. Reading `.length` throws; reading
+truthiness decides the group is a root. Both wrong in the same direction, and
+the group may have parents.
+
+`roles_obj` is required and not nullable while `inherited_roles_obj` is required
+and nullable, in the same object, next to each other.
+
+### The rest
+
+- **Two identifiers, and the path takes the long one.** `pk` is a UUID and
+  `num_pk` is Django's integer primary key, both required, and no path takes the
+  integer. The same trap repeats a level down: a group's `users` array holds
+  integers, so members are referenced by the identifier a user's own path does
+  not take.
+- **The paging block has no URLs and no nulls.** `next` and `previous` are
+  `type: number` and both in `required`, so the usual end-of-listing test never
+  fires. What they hold on the last page the document does not say — recorded as
+  a modelling limit rather than guessed.
+- **Every listing requires a field whose schema says nothing.** `Autocomplete`
+  is declared in full as `{"type": "object", "additionalProperties": {}}`, and
+  it is required on every paginated listing in a 613-path API.
+- **`is_superuser` is on the group and is optional.** "Users added to this group
+  will be superusers", in the schema's own words, not in `required`, and
+  `undefined` is falsy.
+- **`scheme: bearer+agent`** on 33 operations — not an IANA-registered
+  authentication scheme, which OpenAPI's own wording says the value SHOULD be.
+  Always beside plain `bearer`, so it is an alternative; recorded, not served.
+- **No 401 is declared** on the group routes — 400 and 403 only, so a client
+  branching on 401 to refresh a token never refreshes.
+
+### A key that looked like the one I wanted
+
+`page_count_field` and `pages_field` are different features and I reached for
+the wrong one. `page_count_field` is "how many records are on this page", added
+for commercetools, which sends that beside the total. `pages_field` is "how many
+pages the whole set makes".
+
+The symptom was `total_pages: 2` for two records at twenty a page — the record
+count under a name that says pages, which is the exact failure `pages_field`'s
+own doc comment warns about: "a client looping while page <= totalPages asks for
+pages that do not exist and reads them as empty results rather than as a
+mistake."
+
+Worth noting because the two names are one word apart and both are plausible for
+"pages". Nothing catches this: both are valid keys, both produce a number, and
+the number is small and believable. It surfaced only because the conformance
+case asserted the value rather than the presence.
