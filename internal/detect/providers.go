@@ -886,6 +886,15 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// Circle's wallets SDK, which names api.circle.com 13 times. It is
+			// a client of a different path family on the same host with the same
+			// credential, so the mapping says this project talks to Circle --
+			// which is what detection is for -- rather than that it calls the two
+			// routes this Recipe serves.
+			recipe: "circle",
+			npm:    []string{"@circle-fin/developer-controlled-wallets"},
+		},
+		{
 			// Five clients, each checked by counting api.telegram.org in its
 			// published archive: grammy 7, node-telegram-bot-api 4, telegraf 2,
 			// the PHP SDK 3, and the Go client in 2 files.

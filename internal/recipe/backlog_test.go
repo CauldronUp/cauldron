@@ -300,7 +300,6 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 	// here must still be a candidate: an entry that stops matching is stale and
 	// fails, for the same reason the queue itself does.
 	distinct := map[string]string{
-		"Circle":                 "the stablecoin company, not CircleCI",
 		"Sage":                   "Sage Business Cloud Accounting, a separate product from Sage Intacct, which ships",
 		"Grafana Cloud":          "a stack-management API on top of the Grafana HTTP API, which is what ships",
 		"Cloudflare R2":          "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
