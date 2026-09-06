@@ -2,7 +2,7 @@
 
 Emulates the DigitalOcean API (v2), for local development and tests.
 
-**24 conformance cases, 4 checked against the live API on 2026-09-05.**
+**25 conformance cases, 4 checked against the live API on 2026-09-05.**
 
 The resource shapes cite documentation rather than an account nobody has; the refusal cases were struck live, unauthenticated, against api.digitalocean.com.
 

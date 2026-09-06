@@ -5559,7 +5559,7 @@ Where it stands now:
 by no case.
 172 of those across 86 recipe(s) no fixture sets, so the emulator never
 sends them.
-664 declared error(s) across 307 recipe(s) have no case asserting what
+635 declared error(s) across 303 recipe(s) have no case asserting what
 they say.
 ```
 
@@ -6002,3 +6002,20 @@ Recipe never repeats it.
 ran again. Every counter in this file has now been wrong at least once in the
 same direction, and every time the tell was the same: a category that could not
 reach zero, or a tool that would not converge.
+
+### The biggest group was reachable after all
+
+`parameter_missing` was 139 entries, the largest cluster left, and it looked
+untriggerable: no route in the corpus declares a required parameter. The runtime
+does not read one from a route. It reads `required: true` off the *resource*,
+which means the request that provokes the error is one every affected Recipe
+already has -- a green create, minus one field it already declares required.
+
+Box's case now posts a folder with no `name` and pins `"Bad Request: name is
+required"`, which is the error a client hits by accident on their first
+afternoon and which nothing in the file had ever seen.
+
+24 more, and 635 left. What remains is mostly what should remain: refusals with
+no natural trigger, which can only be armed, and arming a payment decline on a
+GET of a customer list would be true of the emulator and nonsense about the
+provider.
