@@ -1,0 +1,410 @@
+# Health Gorilla Recipe for Cauldron
+#
+# Written against Health Gorilla's FHIR R4 reference at
+# developer.healthgorilla.com and struck live against api.healthgorilla.com on
+# 2026-09-07 with no credential and then with a deliberately invalid one.
+#
+# **An unauthenticated 404 lists the entire API surface.** Struck live:
+#
+#   GET /fhir/R4/CauldronNope
+#   404 {"resourceType":"OperationOutcome",
+#        "issue":[{"severity":"error","code":"processing",
+#                  "diagnostics":"HAPI-0302: Unknown resource type 'CauldronNope'
+#                                 - Server knows how to handle: [AllergyIntolerance,
+#                                 Bundle, CarePlan, CodeSystem, ... ValueSet]"}]}
+#
+# **42 resource types**, in a 656-character string, to a request carrying no
+# credential at all. That is HAPI FHIR's default handler being helpful: it
+# names everything the server can serve so a caller can see what they mistyped.
+# It is also a complete map of a clinical data API, free, before authenticating.
+#
+# The mitigation elsewhere is real -- reading a Patient needs a credential --
+# so this discloses the shape rather than the data. It is still the most
+# thorough enumeration in this collection, and it arrives from a framework
+# default rather than from a decision.
+#
+# **The statuses are inverted.** Struck live:
+#
+#   (no credential)         403  a full OperationOutcome
+#   Bearer notreal          401  an empty body
+#
+# 403 for sending nothing and 401 for sending something wrong -- the opposite
+# of the convention, and the opposite way round from every other provider in
+# this collection that distinguishes them at all. And the richer response is on
+# the anonymous request: the failure with something to say is the one nobody
+# had to authenticate for, and the failure a real integration will hit has no
+# body at all.
+#
+# **The failure is a FHIR resource.** `OperationOutcome` is a resource type in
+# its own right, with a `resourceType` discriminator and an `issue` array, so
+# a client parses failures with the same code that parses records. That is the
+# best-designed error model in this collection and it is not Health Gorilla's:
+# it is the FHIR specification, and every FHIR server has it.
+#
+# **`severity` is `fatal` on the credential failure and `error` on the routing
+# one.** FHIR defines fatal, error, warning and information; a missing
+# credential being fatal and an unknown resource type being merely an error is
+# a defensible ordering and worth serving, because a client switching on
+# severity behaves differently.
+#
+# **The media type is `application/fhir+json`.** Not `application/json`, so a
+# client checking the header before parsing does not parse -- the same trap
+# [imgix](../imgix) and [terraformcloud](../terraformcloud) set with
+# `vnd.api+json`, and the third distinct `+json` suffix in this collection.
+
+recipe: healthgorilla
+capability: health
+version: 0.1.0
+
+upstream:
+  api: R4
+  docs: https://developer.healthgorilla.com/docs/fhir
+  # No spec: Health Gorilla publishes a rendered reference site. The FHIR R4
+  # specification describes the resources, and a CapabilityStatement would
+  # describe this server's own subset -- but that needs a credential.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-healthgorilla-f1xture-token
+  # Struck live: GET /fhir/R4/CauldronNope answers its 404 with no credential
+  # at all, so the route is resolved before the credential is judged. That is
+  # the opposite of most providers in this collection -- and it is what makes
+  # the 42-type enumeration reachable without authenticating.
+  after_routing: true
+  # Struck live, and the wrong way round: nothing sent is 403 and something
+  # wrong is 401.
+  absent_error: insufficient_access_rights
+  rejected_error: unauthorized
+
+responses:
+  # FHIR's registered media type, on records and failures alike.
+  content_type: application/fhir+json
+  list:
+    # A FHIR Bundle: a resource in its own right, whose entries wrap the
+    # records under `resource` and whose type says what kind of bundle it is.
+    style: wrapped
+    key: entry
+    entry_style: wrapped
+    count_field: total
+    fields:
+      resourceType: Bundle
+      type: searchset
+  error:
+    style: list
+    key: issue
+    message_field: diagnostics
+    code_field: code
+    code_type: string
+    type_field: severity
+    fields:
+      # The discriminator FHIR puts on every resource, including this one --
+      # which is what lets a client parse failures with the same code that
+      # parses records.
+      resourceType: OperationOutcome
+
+resources:
+  # Named for the wrapper rather than for the record, deliberately. A FHIR
+  # Bundle wraps every entry under the literal key `resource` whatever type it
+  # holds -- because one Bundle can hold several -- where Chargebee and Maxio
+  # wrap each item under its own type name. This format takes the wrapper key
+  # from the resource's name, so the name here is `resource` to put the right
+  # word on the wire. The records are Patients; `resourceType` on each one
+  # says so, which is how FHIR discriminates them.
+  resource:
+    id:
+      field: id
+      style: opaque
+    fields:
+      resourceType:
+        type: string
+        default: Patient
+      gender:
+        type: string
+      birthDate:
+        type: string
+      active:
+        type: boolean
+        default: true
+      name:
+        type: list
+
+routes:
+  - method: GET
+    path: /fhir/R4/Patient
+    resource: resource
+    operation: list
+    pagination:
+      # FHIR's own search parameters, both prefixed with an underscore
+      # because the rest of the query string is field names.
+      style: offset
+      limit: 20
+      limit_param: _count
+      cursor_param: _offset
+
+errors:
+  insufficient_access_rights:
+    # 403 for a request that carried nothing -- the opposite of the
+    # convention, and the response with something to say.
+    status: 403
+    code: forbidden
+    type: fatal
+    message: "Insufficient access rights to perform the operation."
+
+  unauthorized:
+    # 401 for a credential that was present and wrong, with an empty body
+    # struck live -- so the failure a real integration hits has nothing in it.
+    status: 401
+    empty: true
+
+  unknown_route:
+    status: 404
+    code: processing
+    type: error
+    # HAPI FHIR's own handler, naming 42 resource types to a request with no
+    # credential. Truncated here to the first few and the last; the full
+    # string is 656 characters and the count is what the README records.
+    message: "HAPI-0302: Unknown resource type 'CauldronNope' - Server knows how to handle: [AllergyIntolerance, Bundle, CarePlan, CodeSystem, Composition, Condition, Consent, Coverage, DeviceUseStatement, DiagnosticReport, DirectMessage, DocumentReference, RiskAssessment, ServiceRequest, StructureDefinition, Subscription, User, ValueSet]"
+
+fixtures:
+  empty:
+    resource: []
+
+  practice:
+    resource:
+      - id: 8f2c91a4b7e30d6512c4a908
+        resourceType: Patient
+        gender: female
+        birthDate: "1815-12-10"
+        active: true
+        name:
+          - use: official
+            family: Lovelace
+            given:
+              - Ada
+      - id: 3d7b0e52f14a89c6702d5b31
+        resourceType: Patient
+        gender: female
+        # A year and a month with no day: FHIR dates are deliberately
+        # partial, so birthDate is not a date and cannot be parsed as one.
+        birthDate: "1906-12"
+        active: true
+        name:
+          - use: official
+            family: Hopper
+            given:
+              - Grace
+              - Brewster
+
+conformance:
+  - name: an unauthenticated 404 lists the whole surface
+    source: https://api.healthgorilla.com/fhir/R4/CauldronNope
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/CauldronNope
+      headers: {}
+    expect:
+      status: 404
+      body:
+        # 42 resource types in the real response, in a 656-character string,
+        # to a request carrying no credential. HAPI's default handler being
+        # helpful, and a complete map of a clinical API before authenticating.
+        'issue[0].code': processing
+        'issue[0].severity': error
+      matches:
+        'issue[0].diagnostics': '^HAPI-0302: Unknown resource type .CauldronNope. - Server knows how to handle: \['
+
+  - name: no credential is 403 with a full outcome
+    source: https://api.healthgorilla.com/fhir/R4/Patient
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers: {}
+    expect:
+      # 403 for sending nothing -- the opposite of the convention, and the
+      # opposite way round from every other provider here that distinguishes
+      # the two at all.
+      status: 403
+      body:
+        'issue[0].code': forbidden
+        'issue[0].diagnostics': "Insufficient access rights to perform the operation."
+
+  - name: a wrong credential is 401 with nothing in it
+    source: https://api.healthgorilla.com/fhir/R4/Patient
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      # Struck live: an empty body. So the failure with something to say is
+      # the anonymous one, and the failure a real integration hits has no
+      # body at all.
+      status: 401
+      no_body: true
+
+  - name: the credential failure is fatal and the routing one is not
+    source: https://api.healthgorilla.com/fhir/R4/Patient
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers: {}
+    expect:
+      status: 403
+      body:
+        # FHIR defines fatal, error, warning and information. A missing
+        # credential being fatal and an unknown resource type being merely an
+        # error is a defensible ordering, and a client switching on severity
+        # behaves differently for each.
+        'issue[0].severity': fatal
+
+  - name: a failure is itself a FHIR resource
+    source: https://api.healthgorilla.com/fhir/R4/Patient
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers: {}
+    expect:
+      status: 403
+      body:
+        # OperationOutcome is a resource type with a discriminator, so a
+        # client parses failures with the same code that parses records. The
+        # best-designed error model in this collection, and it belongs to the
+        # specification rather than to this provider.
+        resourceType: OperationOutcome
+
+  - name: every response declares the FHIR media type
+    source: https://api.healthgorilla.com/fhir/R4/Patient
+    verified: "2026-09-07"
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers: {}
+    expect:
+      status: 403
+      headers:
+        # Not application/json. The third distinct +json suffix in this
+        # collection after vnd.api+json and problem+json.
+        Content-Type: application/fhir+json
+
+  - name: a search answers a Bundle whose entries wrap the records
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+    expect:
+      status: 200
+      body:
+        # A Bundle is a resource too, and each entry wraps its record under
+        # `resource` -- so a patient is three levels down and a client
+        # indexing straight into the array finds a wrapper.
+        resourceType: Bundle
+        type: searchset
+        'entry[0].resource.id': 8f2c91a4b7e30d6512c4a908
+        'entry[0].resource.resourceType': Patient
+
+  - name: a birth date can be a year and a month
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+    expect:
+      status: 200
+      body:
+        # FHIR dates are deliberately partial: a date can be YYYY, YYYY-MM or
+        # YYYY-MM-DD, so birthDate is not a date and every parser that treats
+        # it as one either throws or invents a day.
+        'entry[1].resource.birthDate': "1906-12"
+        'entry[0].resource.birthDate': "1815-12-10"
+
+  - name: a name is a list of structures rather than a string
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+    expect:
+      status: 200
+      body:
+        # A person can have several names with different uses -- official,
+        # nickname, maiden -- and given names are themselves a list. So
+        # "the patient's name" is two array indexes and a choice.
+        'entry[1].resource.name[0].family': Hopper
+        'entry[1].resource.name[0].given[0]': Grace
+        'entry[1].resource.name[0].given[1]': Brewster
+        'entry[1].resource.name[0].use': official
+
+  - name: a search pages on underscore-prefixed parameters
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+      query:
+        # FHIR's own search controls, underscored because the rest of the
+        # query string is field names -- so `_count` is a control and `count`
+        # would be a search on a field called count.
+        _count: "1"
+        _offset: "1"
+    expect:
+      status: 200
+      body:
+        'entry[0].resource.id': 3d7b0e52f14a89c6702d5b31
+        # The total is of the whole set rather than the page, which is what
+        # FHIR asks for.
+        total: 2
+
+  - name: a patient carries a gender and an active flag
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: practice
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+    expect:
+      status: 200
+      body:
+        # `active` says whether the record is in use rather than whether the
+        # person is alive -- FHIR has a separate deceased field for that, and
+        # a client reading `active` as the latter is wrong in the direction
+        # nobody checks.
+        'entry[0].resource.active': true
+        'entry[0].resource.gender': female
+
+  - name: a practice with no patients answers an empty Bundle
+    source: https://developer.healthgorilla.com/docs/fhir
+    fixture: empty
+    request:
+      method: GET
+      path: /fhir/R4/Patient
+      headers:
+        Authorization: "Bearer cauldr0n-healthgorilla-f1xture-token"
+    expect:
+      status: 200
+      body:
+        resourceType: Bundle
+        total: 0

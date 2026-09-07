@@ -1,0 +1,333 @@
+# Agicap Recipe for Cauldron
+#
+# Written against Agicap's Open API reference at openapi.agicap.com and struck
+# live against that host on 2026-09-07 with no credential and then with a
+# deliberately invalid one.
+#
+# **An unauthenticated request is a 500, and the reason is the rate limiter.**
+# Struck live:
+#
+#   GET /api/customers                        (no credential)
+#   500  Content-Type: application/problem+json
+#   {"type":"https://tools.ietf.org/html/rfc7231#section-6.6.1",
+#    "title":"An error occurred while processing your request.",
+#    "status":500,
+#    "detail":"The current request and the key build strategy can't be able to
+#              build a valid key to control rate limit", ...}
+#
+# The rate limiter partitions by client, derives its bucket key from the
+# caller's identity, and an anonymous request has none -- so building the key
+# throws, the exception escapes, and the framework's unhandled-error page comes
+# back as a problem document.
+#
+# So the first request anybody makes against this API, before they have wired
+# up a credential, is a server error. Not a refusal, not a 401 -- a 500, which
+# every retry policy in the world treats as "try again", and which will keep
+# being a 500 however many times it is tried.
+#
+# **The `type` URI points at the definition of 500.**
+# `rfc7231#section-6.6.1` is the paragraph in the HTTP specification that
+# defines the 500 status code. RFC 9457 reserves `type` for identifying the
+# *problem*; this identifies the status, which the document already carries in
+# two other fields.
+#
+# It is the third problem+json document in this collection and the third
+# different way of getting that field wrong: [triggerdev](../triggerdev) points
+# at MDN's page about the status, [revai](../revai) omits it entirely, and this
+# one points at the RFC clause that defines the status. Three providers, one
+# specification, and the field that exists to name a provider's own problems
+# has never once been used for that.
+#
+# **`detail` is the internal failure, in broken English.** "The current request
+# and the key build strategy can't be able to build a valid key to control rate
+# limit" -- a sentence about a `KeyBuilder` strategy inside the middleware,
+# printed to an anonymous caller. It names an internal component and describes
+# a code path, and it is also, unusually, *true and specific*: a reader who
+# understands it knows exactly why they got a 500.
+#
+# **A wrong credential is a 404, not a 401.** Struck live: with an
+# Authorization header the same path answers 404 with no body. So sending
+# nothing is a server error, sending something wrong is a missing endpoint, and
+# nothing this API does to a bad credential involves the 4xx status meant for
+# one.
+
+recipe: agicap
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://openapi.agicap.com/
+  # No spec: Agicap's Open API is behind an account and the reference is a
+  # rendered site.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-agicap-f1xture-token-000000
+  # Struck live, and neither is a 401: nothing sent is a 500 from the rate
+  # limiter, and something wrong is a 404.
+  absent_error: rate_limit_key_failure
+  rejected_error: not_found
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    count_field: totalCount
+  error:
+    style: flat
+    message_field: title
+    code_field: "-"
+    status_field: status
+
+resources:
+  customer:
+    id:
+      field: id
+      style: numeric
+    fields:
+      name:
+        type: string
+      externalReference:
+        type: string
+      currency:
+        type: string
+        default: EUR
+      outstandingAmount:
+        type: number
+        default: 0
+
+routes:
+  - method: GET
+    path: /api/customers
+    resource: customer
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      limit_param: pageSize
+      cursor_param: pageNumber
+
+errors:
+  rate_limit_key_failure:
+    # 500 for a request that carried no credential -- so the first call
+    # anybody makes against this API, before wiring one up, is a server error
+    # that every retry policy treats as transient and that will never clear.
+    status: 500
+    message: "An error occurred while processing your request."
+    headers:
+      Content-Type: application/problem+json
+    fields:
+      # The paragraph of RFC 7231 that defines the 500 status code, in the
+      # field RFC 9457 reserves for identifying the problem.
+      type: "https://tools.ietf.org/html/rfc7231#section-6.6.1"
+      # The internal failure, named and described: a KeyBuilder strategy in
+      # the rate-limiting middleware that cannot derive a bucket key from an
+      # anonymous request. True, specific, and about a code path.
+      detail: "The current request and the key build strategy can't be able to build a valid key to control rate limit"
+
+  not_found:
+    # A wrong credential answers 404 with no body, so a bad token is reported
+    # as a missing endpoint.
+    status: 404
+    empty: true
+
+fixtures:
+  empty:
+    customer: []
+
+  company:
+    customer:
+      - id: 4821903
+        name: Northwind Traders
+        externalReference: CUST-0041
+        currency: EUR
+        outstandingAmount: 12495.50
+      - id: 4821904
+        name: Contoso Ltd
+        # No reference from the accounting system it was imported from, so the
+        # only handle is Agicap's own id and the record cannot be matched back.
+        currency: GBP
+        outstandingAmount: 0
+
+conformance:
+  - name: an unauthenticated request is a server error
+    source: https://openapi.agicap.com/api/customers
+    verified: "2026-09-07"
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers: {}
+    expect:
+      # Struck live. Not a refusal and not a 401 -- a 500, which every retry
+      # policy treats as transient and which will keep being a 500 however
+      # many times it is tried.
+      status: 500
+      body:
+        title: "An error occurred while processing your request."
+        status: 500
+
+  - name: the reason is the rate limiter failing to build a key
+    source: https://openapi.agicap.com/api/customers
+    verified: "2026-09-07"
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers: {}
+    expect:
+      status: 500
+      body:
+        # The rate limiter partitions by client, derives its bucket key from
+        # the caller's identity, and an anonymous request has none -- so
+        # building the key throws and the exception escapes. Named, described,
+        # and printed to whoever asked.
+        detail: "The current request and the key build strategy can't be able to build a valid key to control rate limit"
+
+  - name: the problem type points at the definition of the status
+    source: https://openapi.agicap.com/api/customers
+    verified: "2026-09-07"
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers: {}
+    expect:
+      status: 500
+      body:
+        # RFC 7231 section 6.6.1 is the paragraph defining 500. RFC 9457
+        # reserves this field for identifying the problem; this identifies the
+        # status, which the document already carries twice.
+        type: "https://tools.ietf.org/html/rfc7231#section-6.6.1"
+
+  - name: the failure declares problem+json
+    source: https://openapi.agicap.com/api/customers
+    verified: "2026-09-07"
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers: {}
+    expect:
+      status: 500
+      headers:
+        Content-Type: application/problem+json
+
+  - name: a wrong credential is a missing endpoint
+    source: https://openapi.agicap.com/api/customers
+    verified: "2026-09-07"
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      # 404 with no body. So sending nothing is a server error, sending
+      # something wrong is a missing endpoint, and nothing this API does to a
+      # bad credential involves the status meant for one.
+      status: 404
+      no_body: true
+
+  - name: customers are wrapped in items with a total
+    source: https://openapi.agicap.com/
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+    expect:
+      status: 200
+      body:
+        'items[0].name': Northwind Traders
+        totalCount: 2
+
+  - name: a customer imported without a reference cannot be matched back
+    source: https://openapi.agicap.com/
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+    expect:
+      status: 200
+      body:
+        'items[0].externalReference': CUST-0041
+      absent:
+        # The only handle that means anything in the accounting system this
+        # came from, and it is optional -- so a client keying on it drops
+        # rows and a client keying on Agicap's id cannot join.
+        - 'items[1].externalReference'
+
+  - name: currency is per customer rather than per company
+    source: https://openapi.agicap.com/
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+    expect:
+      status: 200
+      body:
+        # Two customers, two currencies, on a cash-flow product -- so summing
+        # outstandingAmount across a listing adds euros to pounds unless the
+        # client groups first.
+        'items[0].currency': EUR
+        'items[1].currency': GBP
+
+  - name: money is a bare JSON number
+    source: https://openapi.agicap.com/
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+    expect:
+      status: 200
+      body:
+        # 12495.50 as a double, on a cash-flow API whose whole job is adding
+        # these up.
+        'items[0].outstandingAmount': 12495.50
+        'items[1].outstandingAmount': 0
+
+  - name: customers page on a number and a size
+    source: https://openapi.agicap.com/
+    fixture: company
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+      query:
+        # pageNumber and pageSize rather than page and limit -- .NET's own
+        # convention, and the pair is one-based, so a client starting at zero
+        # is served the first page twice.
+        pageNumber: "2"
+        pageSize: "1"
+    expect:
+      status: 200
+      body:
+        'items[0].id': 4821904
+        totalCount: 2
+
+  - name: a company with no customers answers an empty array
+    source: https://openapi.agicap.com/
+    fixture: empty
+    request:
+      method: GET
+      path: /api/customers
+      headers:
+        Authorization: "Bearer cauldr0n-agicap-f1xture-token-000000"
+    expect:
+      status: 200
+      body:
+        items: []
+        totalCount: 0

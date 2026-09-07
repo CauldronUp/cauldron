@@ -42,6 +42,7 @@ var (
 		"flags", "ci", "vcs", "issues", "docs",
 		"calendar", "files", "media", "ai", "signing",
 		"scheduling", "hr", "forms", "cms", "infrastructure",
+		"health",
 	}
 	validDeletedBody = []string{"", "receipt", "record", "flagged", "id", "empty"}
 	validCursorURL   = []string{"", "absolute", "path"}
