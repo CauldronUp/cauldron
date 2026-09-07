@@ -485,7 +485,7 @@ $ cauldron drift
   adyen                    unchanged since 2026-08-30
   ...
 
-89 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 421 with no description to check.
+209 unchanged, 0 moved, 1 unreachable, 0 in a format this cannot read, 0 unrecorded, 517 with no description to check.
 A Recipe with no description this can read is not verified by this. It is unexamined.
 ```
 
@@ -502,6 +502,35 @@ methods the Recipe declares routes for, the response codes those operations
 answer with, and the types of the fields the Recipe itself names. A path
 appearing that the Recipe says nothing about does not move it. A field the
 Recipe claims changing type does.
+
+**A moved fingerprint says what moved.** A hash is not something a reader can
+act on, and the cheapest response to a line nobody can read is to re-record it
+-- which is how a drift scan turns into a weekly rubber stamp. So a `moved`
+Recipe also prints the claims the description no longer backs:
+
+```
+  customerio               MOVED since 2026-09-01
+                             https://docs.customer.io/files/journeys-app.json
+                             not backed: the description does not declare POST /api/v1/customers/{identifier}/events
+                             not backed: no operation the Recipe routes to answers 401, which authentication_error declares
+```
+
+Those two questions are separate and can disagree in both directions. A move
+can have no gap at all -- a provider adding a `429` to an operation moves the
+hash and takes nothing away. And a gap can be far older than the move that
+surfaced it: Basiq splits its published description across eleven files by
+product, `GET /institutions` is in none of them, and that has been true since
+the Recipe was written while its fingerprint stayed stable throughout. Both
+Recipes say so in as many words, because a scan that reports something
+permanent as though it were news is the same switched-off-scanner failure the
+checksum would have been.
+
+The gaps print only for `moved` and `unrecorded`, where somebody is already
+being asked to look. They are also suppressed where every field a Recipe names
+is absent at once, which is not a fact about the provider: the reader merges
+`allOf` and stops at the success schema's top level, so for an API answering
+`{"data": {...}}` the only property is `data`. Vercel alone would otherwise
+print forty lines a week reporting that this parser did not open an envelope.
 
 Six states, and only one of them fails a build:
 

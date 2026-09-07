@@ -65,9 +65,73 @@ import (
 // switched-off-scanner failure the paragraph above is about. Worth doing
 // deliberately, on its own, rather than as a side effect.
 func Fingerprint(r *recipe.Recipe, doc *Document, basePath string) string {
+	claims := claimsFor(r, doc, basePath)
+
+	texts := make([]string, 0, len(claims))
+	for _, c := range claims {
+		texts = append(texts, c.text)
+	}
+
+	sort.Strings(texts)
+
+	sum := sha256.Sum256([]byte(strings.Join(texts, "\n")))
+
+	return hex.EncodeToString(sum[:])
+}
+
+// Unbacked names the claims a Recipe makes that the description does not
+// support: a path it does not declare, a field its success schema does not
+// have, a status none of the Recipe's operations answers with.
+//
+// It exists because "MOVED" on its own is not actionable. The fingerprint is a
+// hash of the claim list below, so a moved hash says that something in that
+// list changed and nothing about what -- and the cheapest response to a line
+// nobody can read is to re-record it, which is precisely the reflex that turns
+// this check into a weekly rubber stamp. An absence is the half a reader can
+// act on, and it is computable from the document in hand without keeping any
+// history of previous ones.
+//
+// This is deliberately not the same question as "did it move", and the two
+// answers can disagree in both directions. A gap can be old: a Recipe pinned to
+// one of several reference files a provider splits its API across has had a
+// route missing from that document since the day it was written, and its
+// fingerprint has been stable throughout. A move can have no gap at all: a
+// provider adding a 429 to an operation moves the hash and takes nothing away.
+// Both are worth printing, and only at the moment somebody is already being
+// asked to look.
+func Unbacked(r *recipe.Recipe, doc *Document, basePath string) []string {
+	var gaps []string
+
+	for _, c := range claimsFor(r, doc, basePath) {
+		if c.gap != "" {
+			gaps = append(gaps, c.gap)
+		}
+	}
+
+	sort.Strings(gaps)
+
+	return gaps
+}
+
+// claim is one line of the fingerprint, and what is missing when the
+// description does not back it.
+//
+// The text is carried rather than reconstructed because the recorded
+// fingerprints of every Recipe that names a description are hashes of these
+// exact strings. Recovering the gaps by parsing them back out would work until
+// somebody reworded one, and rewording one moves every recorded hash in the
+// collection at once.
+type claim struct {
+	text string
+	// gap is empty when the description backs the claim, and a sentence
+	// naming what is missing when it does not.
+	gap string
+}
+
+func claimsFor(r *recipe.Recipe, doc *Document, basePath string) []claim {
 	index := indexPaths(doc, basePath)
 
-	var claims []string
+	var claims []claim
 
 	for _, route := range r.Routes {
 		claims = append(claims, routeClaims(doc, index, r, route)...)
@@ -78,18 +142,28 @@ func Fingerprint(r *recipe.Recipe, doc *Document, basePath string) string {
 		// description declares them per operation, so the claim recorded is
 		// whether any operation the Recipe routes to answers with it.
 		status := strconv.Itoa(r.Errors[name].Status)
-		claims = append(claims, "status "+status+" "+strconv.FormatBool(anyOperationAnswers(doc, index, r, status)))
+		answered := anyOperationAnswers(doc, index, r, status)
+
+		gap := ""
+		if !answered {
+			// Named, because two of a Recipe's errors can share a status and
+			// the claim texts for those are identical by design. Without the
+			// name the report prints the same sentence twice and reads like a
+			// bug in the reporter.
+			gap = "no operation the Recipe routes to answers " + status + ", which " + name + " declares"
+		}
+
+		claims = append(claims, claim{
+			text: "status " + status + " " + strconv.FormatBool(answered),
+			gap:  gap,
+		})
 	}
 
-	sort.Strings(claims)
-
-	sum := sha256.Sum256([]byte(strings.Join(claims, "\n")))
-
-	return hex.EncodeToString(sum[:])
+	return claims
 }
 
 // routeClaims renders one route's share of the fingerprint.
-func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.Route) []string {
+func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.Route) []claim {
 	method := routeMethod(route)
 
 	match, ok := index.find(route.Path, method, doc)
@@ -97,17 +171,23 @@ func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.
 		// A path the description does not have is itself a claim, and one
 		// that has to survive the provider adding it later, so the absence is
 		// recorded rather than skipped.
-		return []string{"absent " + method + " " + route.Path}
+		return []claim{{
+			text: "absent " + method + " " + route.Path,
+			gap:  "the description does not declare " + method + " " + route.Path,
+		}}
 	}
 
 	op := operationFor(doc.Paths[match.template], method)
 	if op == nil {
-		return []string{"absent " + method + " " + match.template}
+		return []claim{{
+			text: "absent " + method + " " + match.template,
+			gap:  "the description does not declare " + method + " " + match.template,
+		}}
 	}
 
 	prefix := method + " " + match.template
 
-	claims := []string{prefix}
+	claims := []claim{{text: prefix}}
 
 	success, _ := doc.Success(op)
 
@@ -120,12 +200,44 @@ func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.
 	// contradiction of anything the Recipe says, and calling it one is the
 	// same noise as checksumming the file. An empty type is the field being
 	// absent from the schema, which is a claim worth moving on.
-	for _, field := range sortedFieldNames(r.Resources[route.Resource].Fields) {
-		claims = append(claims, prefix+" field "+field+" "+declared[field])
+	fields := sortedFieldNames(r.Resources[route.Resource].Fields)
+
+	// Whether this reading got inside the response at all. Document.Properties
+	// merges allOf and stops at the top level, so for a provider that wraps
+	// its records -- {"data": {...}} -- the only property here is data, every
+	// field the Recipe names is absent, and none of those absences is a fact
+	// about the provider. Nine shipped Recipes are in that position, and the
+	// header of this file names them.
+	//
+	// The claims are still recorded, because a Recipe adding or removing a
+	// field must still move its fingerprint. What is suppressed is calling
+	// them gaps: a reader told that Vercel's description declares none of the
+	// forty fields across its seven routes learns only that this parser did
+	// not open the envelope, and a report that says that every week is a
+	// report nobody finishes reading.
+	inside := false
+
+	for _, field := range fields {
+		if _, named := declared[field]; named {
+			inside = true
+
+			break
+		}
+	}
+
+	for _, field := range fields {
+		kind, named := declared[field]
+
+		gap := ""
+		if !named && inside {
+			gap = prefix + ": the success schema does not declare " + field
+		}
+
+		claims = append(claims, claim{text: prefix + " field " + field + " " + kind, gap: gap})
 	}
 
 	for _, code := range sortedCodes(op.Responses) {
-		claims = append(claims, prefix+" answers "+code)
+		claims = append(claims, claim{text: prefix + " answers " + code})
 	}
 
 	return claims

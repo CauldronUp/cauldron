@@ -64,6 +64,11 @@ type DriftReport struct {
 	Status string
 	// Err is why an unreachable description could not be read.
 	Err error
+	// Gaps names the claims this Recipe makes that the description does not
+	// back, from Unbacked. Empty when the description covers everything the
+	// Recipe says, which is the usual case and the one worth being able to
+	// tell apart from the rest.
+	Gaps []string
 }
 
 // Moved reports whether this is the one status that should fail a build.
@@ -157,7 +162,10 @@ func driftOf(r *recipe.Recipe, fetch func(url string) ([]byte, error)) DriftRepo
 	// route fingerprints as absent, and the result is a stable value that says
 	// nothing -- which would report unchanged forever whatever the provider
 	// did to the paths the Recipe actually uses.
-	report.Now = Fingerprint(r, doc, BasePath(doc))
+	base := BasePath(doc)
+
+	report.Now = Fingerprint(r, doc, base)
+	report.Gaps = Unbacked(r, doc, base)
 
 	switch {
 	case report.Recorded == "":

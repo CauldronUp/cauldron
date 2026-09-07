@@ -143,6 +143,19 @@ func reportDrift(ctx *context, reports []openapi.DriftReport, record, quiet bool
 			fmt.Fprintf(ctx.stdout, "  %-24s   %s\n", "", report.Spec)
 		}
 
+		// Only where somebody is already being asked to look. A gap is often
+		// older than the move that surfaced it -- a Recipe pinned to one of
+		// several reference files a provider splits its API across has had a
+		// route missing from that document since it was written -- so printing
+		// these on every unchanged line would be a permanent paragraph nobody
+		// reads, and printing none of them leaves "MOVED" as a hash that says
+		// only that a hash changed.
+		if len(report.Gaps) > 0 && (report.Status == openapi.Moved || report.Status == openapi.Unrecorded) {
+			for _, gap := range report.Gaps {
+				fmt.Fprintf(ctx.stdout, "  %-24s   not backed: %s\n", "", gap)
+			}
+		}
+
 		if record && report.Now != "" && report.Status != openapi.Unchanged {
 			// Printed rather than written. Editing a Recipe in place would
 			// have to preserve the comments, which are most of what a Recipe
