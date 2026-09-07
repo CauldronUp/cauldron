@@ -1,0 +1,312 @@
+# Pipefy Recipe for Cauldron
+#
+# Written against Pipefy's API reference at developers.pipefy.com and struck
+# live against api.pipefy.com on 2026-09-07 with no credential and then with a
+# deliberately invalid one.
+#
+# **Two specifications, one endpoint, and which you get depends on which
+# mistake you made.** Struck live:
+#
+#   POST /graphql                            (no credential)
+#   401 {"errors":[{"title":"Unauthorized",
+#                   "detail":"You are not authorized to access this page"}]}
+#
+#   POST /graphql                            Authorization: Bearer notreal
+#   401 {"error":"invalid_token",
+#        "error_description":"The access token is invalid",
+#        "state":"unauthorized"}
+#
+# The first is JSON:API: an `errors` array of objects with `title` and
+# `detail`. The second is OAuth 2.0's bearer-token error response from RFC
+# 6750: `error`, `error_description`, and a `state` that RFC 6749 defines for
+# the authorization *request* rather than for an error.
+#
+# So one route answers two documents from two unrelated specifications, and a
+# client cannot write one parser for a 401 from it. [triggerdev](../triggerdev)
+# has the same split and at least keeps both halves in-house; here the two
+# halves belong to two different standards bodies.
+#
+# **The OAuth half is missing its header.** RFC 6750 says a bearer-token error
+# belongs in `WWW-Authenticate`, and the body is optional. Pipefy sends the
+# body and no header -- so the machine-readable channel the specification
+# defines is empty and the optional one carries everything.
+#
+# **"You are not authorized to access this page."** A page. On a GraphQL
+# endpoint that has never rendered one -- Rails' own phrasing for a failed
+# `authorize` filter, reaching an API client through shared middleware. The
+# same shape [grafanacloud](../grafanacloud)'s "Login Required" has.
+#
+# **A GraphQL API that answers 401.** GraphQL's own convention is 200 with an
+# `errors` array, because a GraphQL response can be partly successful. Pipefy
+# uses HTTP statuses for authentication and the GraphQL envelope for
+# everything else, which is the pragmatic choice and means a client has three
+# shapes to handle rather than one.
+
+recipe: pipefy
+capability: issues
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.pipefy.com/reference/
+  # No spec: the API is GraphQL, so its schema is introspectable rather than
+  # published as OpenAPI -- and introspection needs a credential.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig
+  # Two documents from two specifications, struck live.
+  absent_error: unauthorized_page
+  rejected_error: invalid_token
+
+responses:
+  list:
+    # GraphQL's own envelope: everything under data, and the field name in
+    # the query decides the key.
+    style: wrapped
+    key: data.cards
+  error:
+    style: list
+    key: errors
+    message_field: detail
+    code_field: "-"
+    type_field: title
+
+resources:
+  card:
+    id:
+      field: id
+      style: digits
+    fields:
+      title:
+        type: string
+      done:
+        type: boolean
+        default: false
+      due_date:
+        type: datetime
+      current_phase_name:
+        type: string
+
+routes:
+  # A read that is a POST, because GraphQL. The whole API is one route.
+  - method: POST
+    path: /graphql
+    resource: card
+    operation: list
+    pagination:
+      style: none
+
+errors:
+  unauthorized_page:
+    status: 401
+    type: Unauthorized
+    # Rails' phrasing for a failed authorize filter, reaching an API client
+    # through shared middleware. There is no page: this endpoint is GraphQL
+    # and has never rendered one.
+    message: "You are not authorized to access this page"
+
+  invalid_token:
+    status: 401
+    # RFC 6750's bearer-token error response -- in the body, where the
+    # specification puts it in WWW-Authenticate and makes the body optional.
+    # So the channel the standard defines is empty and the optional one
+    # carries everything.
+    style: flat
+    message_field: error_description
+    code_field: error
+    type_field: "-"
+    message: "The access token is invalid"
+    code: invalid_token
+    fields:
+      # RFC 6749 defines `state` for the authorization request, to be echoed
+      # back for CSRF protection. Here it is a word on an error.
+      state: unauthorized
+
+fixtures:
+  empty:
+    card: []
+
+  organization:
+    card:
+      - id: "1094882731"
+        title: Migrate the billing worker
+        done: false
+        due_date: "2026-09-15T00:00:00-03:00"
+        current_phase_name: In progress
+      - id: "1094882732"
+        title: Retire the old export
+        # Done, and still carrying a due date that has passed -- so a board
+        # counting overdue cards has to check two fields, and only one of them
+        # is called done.
+        done: true
+        due_date: "2026-08-30T00:00:00-03:00"
+        current_phase_name: Done
+
+conformance:
+  - name: no credential answers a JSON:API document
+    source: https://api.pipefy.com/graphql
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # An errors array of objects with title and detail -- JSON:API's
+        # shape, on a GraphQL endpoint.
+        'errors[0].title': Unauthorized
+        'errors[0].detail': "You are not authorized to access this page"
+
+  - name: a wrong credential answers an OAuth document
+    source: https://api.pipefy.com/graphql
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # RFC 6750's bearer-token error response. One route, two documents,
+        # two unrelated specifications -- so a client cannot write one parser
+        # for a 401 from it.
+        error: invalid_token
+        error_description: "The access token is invalid"
+      absent:
+        - errors
+
+  - name: the OAuth half carries a state field on an error
+    source: https://api.pipefy.com/graphql
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # RFC 6749 defines `state` for the authorization request, echoed back
+        # for CSRF protection. Here it is a word on an error, and the word is
+        # the status phrase.
+        state: unauthorized
+
+  - name: the bearer error is in the body and not the header
+    source: https://api.pipefy.com/graphql
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      absent_headers:
+        # RFC 6750 puts a bearer-token error in WWW-Authenticate and makes
+        # the body optional. Pipefy sends the body and no header, so the
+        # channel the specification defines is empty.
+        - WWW-Authenticate
+
+  - name: the page in the sentence does not exist
+    source: https://api.pipefy.com/graphql
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers: {}
+    expect:
+      status: 401
+      matches:
+        # Rails' phrasing for a failed authorize filter, on a GraphQL
+        # endpoint that has never rendered a page -- the same shape Grafana
+        # Cloud's "Login Required" has.
+        'errors[0].detail': 'this page$'
+
+  - name: a GraphQL read is a POST and the whole API is one route
+    source: https://developers.pipefy.com/reference/
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig"
+    expect:
+      status: 200
+      body:
+        # Everything under data, and the key is the field name from the
+        # query -- so the response shape is chosen by the caller and no two
+        # clients see the same envelope.
+        'data.cards[0].title': Migrate the billing worker
+        'data.cards[0].id': "1094882731"
+
+  - name: a done card can still be overdue
+    source: https://developers.pipefy.com/reference/
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig"
+    expect:
+      status: 200
+      body:
+        # done is true and the due date has passed, so a board counting
+        # overdue cards has to check two fields and only one of them is
+        # called done.
+        'data.cards[1].done': true
+        'data.cards[1].due_date': "2026-08-30T00:00:00-03:00"
+
+  - name: the phase is a name rather than an identifier
+    source: https://developers.pipefy.com/reference/
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig"
+    expect:
+      status: 200
+      body:
+        # Renaming a phase changes every record that reports it, and two
+        # pipes with a phase called Done are indistinguishable.
+        'data.cards[0].current_phase_name': In progress
+        'data.cards[1].current_phase_name': Done
+
+  - name: dates carry Brazil's offset rather than UTC
+    source: https://developers.pipefy.com/reference/
+    fixture: organization
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig"
+    expect:
+      status: 200
+      body:
+        # -03:00, so a due date at midnight local is 03:00 UTC and a client
+        # comparing to a UTC midnight is three hours out on every card.
+        'data.cards[0].due_date': "2026-09-15T00:00:00-03:00"
+
+  - name: an organization with no cards answers an empty array
+    source: https://developers.pipefy.com/reference/
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: "Bearer eyJ0eXAiOiJKV1QifQ.eyJ1c2VyIjoiY2F1bGRyb24ifQ.cauldronfixturesig"
+    expect:
+      status: 200
+      body:
+        'data.cards': []

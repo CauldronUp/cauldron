@@ -2499,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These fifty are left, and every one of them has now been looked for
+another. These fifty-six are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2535,6 +2535,12 @@ than a client for its API.
 | Hightouch | No official client found |
 | incident.io | No official Node or Go client found |
 | Kustomer | Community clients |
+| Postman | Used through its app and its CLI rather than a client library; nothing on any registry calls api.getpostman.com under an obvious name, checked 2026-09-07 |
+| Affinity | No client on npm, Packagist or the Go module proxy under any obvious name, checked 2026-09-07 |
+| Tinybird | Used through its CLI and a query URL rather than a client library, checked 2026-09-07 |
+| E2B | The SDKs drive sandboxes over a websocket rather than this REST surface, and are named for the company rather than the API |
+| Pipefy | Called through a generic GraphQL client and a URL, which no dependency name distinguishes |
+| Userlist | No client on any registry under an obvious name, checked 2026-09-07 |
 | ~~Health Gorilla~~ | Shipped -- see the row above |
 | ~~Metriport~~ | Shipped -- see the row above |
 | eightbyeight | No client on npm, Packagist or the Go module proxy under any obvious name, checked 2026-09-07 |
