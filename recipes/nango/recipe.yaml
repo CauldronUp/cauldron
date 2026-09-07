@@ -1,0 +1,315 @@
+# Nango Recipe for Cauldron
+#
+# Written against Nango's API reference at docs.nango.dev and struck live
+# against api.nango.dev on 2026-09-07 with no credential and then with a
+# deliberately invalid one.
+#
+# **An unknown API path answers 200 with an HTML page, and the page carries an
+# engineering note about token leakage.** Struck live:
+#
+#   GET /cauldron-nope
+#   200  Content-Type: text/html
+#
+# 3043 bytes of application shell, with a 200 on it. Not a 404 -- a success --
+# so a client that checks the status before the body concludes its request
+# worked, and one that calls `.json()` throws on a page that HTTP told it was
+# fine.
+#
+# Inside that page, as an HTML comment:
+#
+#   Auth urls carry tokens in the path. Cloud serves this from a CDN, so the
+#   server's Referrer-Policy header doesn't apply. Must stay above any
+#   request-initiating tag.
+#
+# It is a note from Nango's own engineers explaining a real mitigation: their
+# OAuth callback URLs carry tokens as path segments, a path segment lands in
+# the `Referer` header of any subresource the page loads, the CDN in front of
+# the app does not pass the server's `Referrer-Policy` through, and so a
+# `<meta name="referrer">` tag has to come before anything that makes a
+# request.
+#
+# The mitigation is correct and carefully reasoned. The comment is also a
+# description of exactly where the soft spot is, served with a 200 to anybody
+# who mistypes a path -- and the same reasoning tells a reader that any tag
+# which sneaks above it, in any future edit, undoes it silently.
+#
+# **The refusal says what shape the credential should have.** Struck live:
+#
+#   (no header)          401 {"error":{"message":"Authentication failed. The request is missing the Authorization header.","code":"missing_auth_header","payload":{}}}
+#   Bearer notreal       401 {"error":{"message":"Authentication failed. The provided secret key is not a UUID v4.","code":"invalid_secret_key_format","payload":{}}}
+#
+# Two codes, two accurate sentences, and the second names the format --
+# **UUID v4**, specifically, not just "a UUID". That is the most precise
+# credential-shape message in this collection: a caller who has pasted a
+# public key, an old key or a truncated one is told which check failed.
+#
+# **`payload` is always an empty object.** A third field on every failure,
+# reserved for structured detail, carrying none -- the same shape
+# [confluent](../confluent)'s `source: {}` has.
+
+recipe: nango
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.nango.dev/reference/api/connection/list
+  # No spec: Nango publishes a rendered reference site.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  # A UUID v4, and the refusal says so in as many words -- which is why the
+  # shape gate is here rather than in prose.
+  shape: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  keys:
+    - 7f3a9c21-4d68-4e05-b917-2c6a8f350d14
+  absent_error: missing_auth_header
+  shape_error: invalid_secret_key_format
+  rejected_error: invalid_secret_key_format
+
+responses:
+  list:
+    style: wrapped
+    key: connections
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    code_type: string
+    type_field: "-"
+    fields:
+      # A third field on every failure, reserved for structured detail and
+      # carrying none.
+      error.payload: {}
+
+resources:
+  connection:
+    id:
+      field: connection_id
+      style: opaque
+    fields:
+      provider_config_key:
+        type: string
+      provider:
+        type: string
+      created:
+        type: datetime
+      metadata:
+
+routes:
+  - method: GET
+    path: /connection
+    resource: connection
+    operation: list
+    pagination:
+      style: none
+
+errors:
+  missing_auth_header:
+    status: 401
+    code: missing_auth_header
+    # Accurate about the case it describes, which is rarer here than it should
+    # be: three providers in the previous batch alone answered "invalid key"
+    # to a request that carried none.
+    message: "Authentication failed. The request is missing the Authorization header."
+
+  invalid_secret_key_format:
+    status: 401
+    code: invalid_secret_key_format
+    # UUID v4 specifically, not "a UUID" -- so a caller who pasted a public
+    # key, an old key or a truncated one is told which check failed. The most
+    # precise credential-shape message in this collection.
+    message: "Authentication failed. The provided secret key is not a UUID v4."
+
+  # Not a failure at all, as far as HTTP is concerned. Struck live: an
+  # unknown path under api.nango.dev is answered by the application shell with
+  # a 200 on it, so this is declared as an error only because that is where
+  # this format puts a response for a route it does not serve.
+  unknown_route:
+    status: 200
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |-
+      <!doctype html><html lang="en">
+          <head>
+              <meta charset="utf-8" />
+              <!-- Auth urls carry tokens in the path. Cloud serves this from a CDN, so the server's
+                   Referrer-Policy header doesn't apply. Must stay above any request-initiating tag. -->
+              <meta name="referrer" content="no-referrer" />
+          </head>
+          <body></body>
+      </html>
+
+fixtures:
+  empty:
+    connection: []
+
+  account:
+    connection:
+      - connection_id: user-4821
+        provider_config_key: github
+        provider: github
+        created: "2026-07-14T09:12:44.000Z"
+        metadata:
+          installation_id: 51203841
+      - connection_id: user-4822
+        provider_config_key: salesforce-sandbox
+        # The config key and the provider are different strings: one names
+        # this workspace's integration and the other names the vendor, so two
+        # connections to two Salesforce orgs share a provider and not a key.
+        provider: salesforce
+        created: "2026-08-02T16:40:09.000Z"
+        metadata: {}
+
+conformance:
+  - name: no credential names the header that is missing
+    source: https://api.nango.dev/connection
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Accurate about the case it describes, which several providers in
+        # this collection are not.
+        'error.message': "Authentication failed. The request is missing the Authorization header."
+        'error.code': missing_auth_header
+
+  - name: a wrong credential names the format it expected
+    source: https://api.nango.dev/connection
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # UUID v4, specifically. A caller who pasted a public key, an old key
+        # or a truncated one learns which check failed.
+        'error.message': "Authentication failed. The provided secret key is not a UUID v4."
+        'error.code': invalid_secret_key_format
+
+  - name: the payload field is always empty
+    source: https://api.nango.dev/connection
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Reserved for structured detail and carrying none, on every failure
+        # -- the same shape Confluent's source: {} has.
+        'error.payload': {}
+
+  - name: an unknown path is a 200 with an HTML page
+    source: https://api.nango.dev/cauldron-nope
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /cauldron-nope
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      # Struck live: 200, text/html, 3043 bytes of application shell. Not a
+      # 404 -- a success -- so a client checking the status concludes its
+      # request worked and one calling .json() throws on a page HTTP said was
+      # fine.
+      status: 200
+      headers:
+        Content-Type: text/html
+      body_matches: '<!doctype html>'
+
+  - name: connections are wrapped under their own plural
+    source: https://docs.nango.dev/reference/api/connection/list
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      status: 200
+      body:
+        # The path is singular and the key is plural, so the route and the
+        # envelope disagree about how many things this is.
+        'connections[0].connection_id': user-4821
+        'connections[0].provider': github
+
+  - name: the config key and the provider are different strings
+    source: https://docs.nango.dev/reference/api/connection/list
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      status: 200
+      body:
+        # One names this workspace's integration and the other names the
+        # vendor, so two connections to two Salesforce orgs share a provider
+        # and not a key -- and a client keying on `provider` merges them.
+        'connections[1].provider_config_key': salesforce-sandbox
+        'connections[1].provider': salesforce
+
+  - name: metadata is whatever the integration put there
+    source: https://docs.nango.dev/reference/api/connection/list
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      status: 200
+      body:
+        # An untyped object with no schema, holding whatever the connection
+        # needed -- and an empty object rather than null when it needed
+        # nothing, so two connections have the same field with no common
+        # shape.
+        'connections[0].metadata.installation_id': 51203841
+        'connections[1].metadata': {}
+
+  - name: the identifier is the customer's own user reference
+    source: https://docs.nango.dev/reference/api/connection/list
+    fixture: account
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      status: 200
+      body:
+        # Nango mints none of its own: connection_id is whatever the
+        # integrating application called the user, so it is unvalidated and
+        # has to be URL-safe by luck.
+        'connections[1].connection_id': user-4822
+        'connections[0].created': "2026-07-14T09:12:44.000Z"
+
+  - name: an account with no connections answers an empty array
+    source: https://docs.nango.dev/reference/api/connection/list
+    fixture: empty
+    request:
+      method: GET
+      path: /connection
+      headers:
+        Authorization: "Bearer 7f3a9c21-4d68-4e05-b917-2c6a8f350d14"
+    expect:
+      status: 200
+      body:
+        connections: []

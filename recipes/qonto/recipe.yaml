@@ -1,0 +1,350 @@
+# Qonto Recipe for Cauldron
+#
+# Written against Qonto's API reference at api-doc.qonto.com and struck live
+# against thirdparty.qonto.com on 2026-09-07 with no credential and then with a
+# deliberately invalid one.
+#
+# **The two credential failures have different statuses, different serialisers
+# and different field sets.** Struck live:
+#
+#   GET /v2/transactions                    (no credential)
+#   400  {
+#          "errors": [
+#            {
+#              "code": "bad_request",
+#              "detail": "Authorization field missing"
+#            }
+#          ]
+#        }
+#
+#   GET /v2/transactions                    Authorization: Bearer notreal
+#   401  {"errors":[{"code":"unauthorized","detail":"Invalid credentials"}],"trace_id":"4e46fda1e9d798acd0891294e56cd139"}
+#
+# Three differences in one pair. The status moves from 400 to 401 -- which is
+# the right way round and almost unique in this collection, where most
+# providers answer one status to both and several answer 400 to neither
+# correctly. The first is pretty-printed and the second is compact, so two
+# serialisers. And the second carries a `trace_id` the first does not, so the
+# failure a caller is more likely to hit anonymously is the one with nothing to
+# quote.
+#
+# **A missing credential is `bad_request`.** Which is defensible: nothing was
+# sent, so nothing was rejected, and the request was malformed rather than
+# refused. It is also the reading that sends a developer to look at their
+# request body.
+#
+# **An unknown path is JSON declared as `text/plain`.** Struck live:
+#
+#   GET /v2/cauldron-nope
+#   404  Content-Type: text/plain
+#   {"errors":[{"code":"not_found","detail":"Not found"}]}
+#
+# The same mislabel [wrike](../wrike) has, and in the same direction: real JSON
+# under a header that says text, so a client checking the type before parsing
+# skips a parse it could have done. Here it is on one route family rather than
+# on the ones that exist, which makes it the quieter version.
+#
+# **The envelope is consistent across all three.** `errors` is always an array
+# of `{code, detail}` objects, on 400, 401 and 404 alike -- so one parser reads
+# every failure, and only the wrapper's extra fields and the content type move.
+
+recipe: qonto
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://api-doc.qonto.com/docs/business-api
+  # No spec: Qonto publishes a rendered reference site.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-org:f1xture-secret-000000000000
+  # Different statuses for the two failures, which is the right way round and
+  # rare here.
+  absent_error: authorization_field_missing
+  rejected_error: invalid_credentials
+
+responses:
+  list:
+    style: wrapped
+    key: transactions
+    fields:
+      meta:
+        current_page: 1
+        next_page: null
+        prev_page: null
+        total_pages: 1
+        total_count: 2
+        per_page: 100
+  error:
+    style: list
+    key: errors
+    message_field: detail
+    code_field: code
+    code_type: string
+    type_field: "-"
+
+resources:
+  transaction:
+    id:
+      field: transaction_id
+      style: opaque
+    fields:
+      amount:
+        type: number
+        default: 0
+      amount_cents:
+        type: integer
+        default: 0
+      currency:
+        type: string
+        default: EUR
+      side:
+        type: string
+        default: debit
+      operation_type:
+        type: string
+        default: card
+      status:
+        type: string
+        default: completed
+      # Untyped, so a transaction that has not settled omits it rather than
+      # being given a zero date that would read as settled at the epoch.
+      settled_at:
+      emitted_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/transactions
+    resource: transaction
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 100
+      limit_param: per_page
+      cursor_param: current_page
+
+errors:
+  authorization_field_missing:
+    # 400, not 401: nothing was sent, so nothing was rejected. Defensible, and
+    # also the reading that sends a developer to look at their request body.
+    status: 400
+    code: bad_request
+    message: "Authorization field missing"
+
+  invalid_credentials:
+    # 401 for a credential that was present and wrong -- the right way round,
+    # and almost unique in this collection.
+    status: 401
+    code: unauthorized
+    message: "Invalid credentials"
+    # trace_id is recorded and not served. It sits beside the errors array
+    # rather than inside an entry, and it is on this failure and not on the
+    # 400 -- and for a list-shaped envelope this format places a named error's
+    # fields inside the entry, so there is no way to put one field beside the
+    # array for one error only. Serving it on both would erase the finding and
+    # serving it inside the entry would put it somewhere Qonto does not.
+
+  unknown_route:
+    status: 404
+    code: not_found
+    message: "Not found"
+    headers:
+      # Real JSON under a header that says text -- the same mislabel Wrike
+      # has, in the same direction.
+      Content-Type: text/plain
+
+fixtures:
+  empty:
+    transaction: []
+
+  organization:
+    transaction:
+      - transaction_id: cauldron-org-transaction-9f2c
+        amount: 210.0
+        amount_cents: 21000
+        currency: EUR
+        side: debit
+        operation_type: card
+        status: completed
+        settled_at: "2026-09-03T10:15:02.000Z"
+        emitted_at: "2026-09-03T10:14:58.000Z"
+      - transaction_id: cauldron-org-transaction-7b41
+        amount: 49.99
+        amount_cents: 4999
+        currency: EUR
+        side: debit
+        operation_type: direct_debit
+        # Pending, and already emitted: the money has left and not settled, so
+        # a balance computed from settled transactions and one computed from
+        # emitted transactions disagree by this amount.
+        status: pending
+        emitted_at: "2026-09-06T08:02:11.000Z"
+
+conformance:
+  - name: a missing credential is 400
+    source: https://thirdparty.qonto.com/v2/transactions
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers: {}
+    expect:
+      # Nothing was sent, so nothing was rejected. Defensible, and the reading
+      # that sends a developer to look at their request body.
+      status: 400
+      body:
+        'errors[0].code': bad_request
+        'errors[0].detail': "Authorization field missing"
+
+  - name: a wrong credential is 401
+    source: https://thirdparty.qonto.com/v2/transactions
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      # Two failures, two statuses, the right way round -- almost unique in
+      # this collection.
+      status: 401
+      body:
+        'errors[0].code': unauthorized
+        'errors[0].detail': "Invalid credentials"
+
+  - name: the two failures are serialised differently
+    source: https://thirdparty.qonto.com/v2/transactions
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # Struck live, the 400 above arrives pretty-printed and this one
+        # compact -- two serialisers for two failures on one route -- and this
+        # one carries a trace_id the other does not, so the failure a caller
+        # is more likely to hit anonymously is the one with nothing to quote.
+        # The trace itself is recorded rather than served; see the note in the
+        # errors table.
+        'errors[0].code': unauthorized
+
+  - name: an unknown path is JSON declared as text
+    source: https://thirdparty.qonto.com/v2/cauldron-nope
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/cauldron-nope
+      headers:
+        Authorization: "Bearer cauldron-org:f1xture-secret-000000000000"
+    expect:
+      status: 404
+      headers:
+        # The same mislabel Wrike has: real JSON under a header saying text,
+        # so a client checking the type before parsing skips a parse it could
+        # have done.
+        Content-Type: text/plain
+      body:
+        'errors[0].code': not_found
+
+  - name: every failure shares one envelope
+    source: https://thirdparty.qonto.com/v2/transactions
+    verified: "2026-09-07"
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers: {}
+    expect:
+      status: 400
+      body:
+        # An array of {code, detail} on 400, 401 and 404 alike, so one parser
+        # reads every failure and only the wrapper's extras and the content
+        # type move.
+        'errors[0].code': bad_request
+
+  - name: money arrives twice in two types
+    source: https://api-doc.qonto.com/docs/business-api/
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer cauldron-org:f1xture-secret-000000000000"
+    expect:
+      status: 200
+      body:
+        # 210.0 as a float and 21000 as an integer of cents, on the same
+        # record. The float is the one a careless client reads and the
+        # integer is the one that is exact.
+        'transactions[0].amount': 210.0
+        'transactions[0].amount_cents': 21000
+        'transactions[0].currency': EUR
+        'transactions[0].side': debit
+        'transactions[0].operation_type': card
+        'transactions[0].settled_at': "2026-09-03T10:15:02.000Z"
+
+  - name: a pending transaction has left and not settled
+    source: https://api-doc.qonto.com/docs/business-api/
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer cauldron-org:f1xture-secret-000000000000"
+    expect:
+      status: 200
+      body:
+        # emitted_at present, settled_at absent. A balance summed over settled
+        # transactions and one summed over emitted transactions disagree by
+        # this amount, and neither is wrong.
+        'transactions[1].status': pending
+        'transactions[1].emitted_at': "2026-09-06T08:02:11.000Z"
+      absent:
+        - 'transactions[1].settled_at'
+
+  - name: the paging block reports six numbers
+    source: https://api-doc.qonto.com/docs/business-api/
+    fixture: organization
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer cauldron-org:f1xture-secret-000000000000"
+      query:
+        per_page: "100"
+        current_page: "1"
+    expect:
+      status: 200
+      body:
+        # next_page and prev_page are present and null rather than absent, so
+        # a client testing for the key finds it and has to test the value.
+        'meta.next_page': null
+        'meta.prev_page': null
+        'meta.total_count': 2
+
+  - name: an organization with no transactions answers an empty array
+    source: https://api-doc.qonto.com/docs/business-api/
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/transactions
+      headers:
+        Authorization: "Bearer cauldron-org:f1xture-secret-000000000000"
+    expect:
+      status: 200
+      body:
+        transactions: []
