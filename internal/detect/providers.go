@@ -886,6 +886,50 @@ func providers() []provider {
 			npm:    []string{"gotify"},
 		},
 		{
+			// Two small community wrappers, 5KB and 2.8KB, each naming wrike.com/api.
+			// Wrike publishes no client of its own on any registry.
+			recipe: "wrike",
+			npm:    []string{"wrike-sdk", "wrike-api"},
+		},
+		{
+			// The official Node SDK, which names api.trigger.dev 42 times.
+			recipe: "triggerdev",
+			npm:    []string{"@trigger.dev/sdk"},
+		},
+		{
+			// Iterable's own JavaScript SDK, which names api.iterable.com.
+			recipe: "iterable",
+			npm:    []string{"@iterable/web-sdk"},
+		},
+		{
+			// The notifier names both hosts: api.honeybadger.io seven times for
+			// reporting and app.honeybadger.io six times for reading, which is the
+			// surface this Recipe serves.
+			recipe:   "honeybadger",
+			composer: []string{"honeybadger-io/honeybadger-php"},
+			npm:      []string{"@honeybadger-io/js"},
+			gomod:    []string{"github.com/honeybadger-io/honeybadger-go"},
+		},
+		{
+			// The evaluation SDKs, which name statsigapi.net and never console/v1:
+			// same host, different surface, and a different key family -- a secret-
+			// key is refused by the Console API exactly like no key at all. Mapped
+			// because the question detection answers is whether a project talks to
+			// Statsig, the same call the Circle wallets SDK gets.
+			recipe:   "statsig",
+			composer: []string{"statsig/statsigsdk"},
+			npm:      []string{"statsig-node"},
+			gomod:    []string{"github.com/statsig-io/go-sdk"},
+		},
+		{
+			// Both are named for Chargify, which is what the hostname still says.
+			// The PHP SDK names chargify.com 27 times; the npm package names it
+			// three and has been a release candidate since 2021.
+			recipe:   "maxio",
+			composer: []string{"chargely/chargify-sdk-php"},
+			npm:      []string{"chargify"},
+		},
+		{
 			// The official JavaScript SDK, which names app.loops.so 26 times.
 			recipe: "loops",
 			npm:    []string{"loops"},
