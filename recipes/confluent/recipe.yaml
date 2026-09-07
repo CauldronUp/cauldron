@@ -1,0 +1,350 @@
+# Confluent Cloud Recipe for Cauldron
+#
+# Written against Confluent's API reference at docs.confluent.io and struck live
+# against api.confluent.cloud on 2026-09-07 with no credential and then with a
+# deliberately invalid one.
+#
+# **The correlation id is on every failure except the one you would report.**
+# Struck live:
+#
+#   GET /iam/v2/service-accounts             (no credential)
+#   401 {"errors":[{"id":"669d33df1e10bc2b5da9b0ef951d74f4",
+#                   "status":"401","detail":"Unauthorized","source":{}}]}
+#
+#   GET /iam/v2/service-accounts             notakey:notasecret
+#   401 {"errors":[{"id":"aed98f10db87efc5c4cce5f6962e6f20",
+#                   "status":"401","detail":"invalid API key: ..."}]}
+#
+#   GET /iam/v2/cauldron-nope                notakey:notasecret
+#   404 {"errors":[{"status":"404","code":"route_not_found",
+#                   "detail":"Route not found","source":{}}]}
+#
+# The two credential failures carry a fresh 32-hex `id`. The routing failure
+# does not -- and it gains a `code` the other two do not have. So the entry's
+# shape depends on which failure it is: three fields are optional, no two of
+# these responses have the same key set, and the one field a support ticket
+# needs is missing from the failure most likely to produce one.
+#
+# **`source` is always an empty object.** JSON:API defines `source` as a
+# pointer to the part of the request that caused the problem -- a JSON Pointer,
+# a parameter name, a header name. Confluent sends `{}` on every failure a
+# public probe can reach, so the field that exists to say *where* says nothing
+# and still costs a key.
+#
+# **`status` is a string and there is no `title`.** JSON:API asks for the
+# status as a string, which this does; it also defines `title` as the
+# human-readable summary and `detail` as the specific explanation, and here
+# only `detail` arrives. So the short form a client would show in a list has to
+# be derived from the long one.
+#
+# **The wrong-key message is a tutorial about key types.** "invalid API key:
+# make sure you're using a Cloud or Global API Key, and not a Cluster API Key"
+# -- which is genuinely the mistake people make, because Confluent issues three
+# kinds of key that look identical and only one opens this surface. Serving
+# that sentence is the useful half of this Recipe: a fake that answered
+# "Unauthorized" to a Cluster key would let somebody spend an afternoon on it.
+
+recipe: confluent
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.confluent.io/cloud/current/api.html
+  # No spec: Confluent publishes per-service OpenAPI documents behind its
+  # documentation site rather than at a single stable URL that drift could
+  # fingerprint.
+
+auth:
+  # A Cloud API key and secret as Basic credentials. A Cluster key is the same
+  # shape and is refused, which is what the rejected sentence is about.
+  scheme: basic
+  keys:
+    - CAULDRONFIXTUREKEY00
+  absent_error: unauthorized
+  rejected_error: invalid_api_key
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    cursor_field: metadata.next
+  error:
+    style: list
+    key: errors
+    message_field: detail
+    # Dropped: status_field emits a number and JSON:API asks for a string, so
+    # each entry carries its own below.
+    status_field: ""
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  service_account:
+    id:
+      field: id
+      style: prefixed
+      prefix: sa-
+    fields:
+      display_name:
+        type: string
+      description:
+        type: string
+      kind:
+        type: string
+        default: ServiceAccount
+      api_version:
+        type: string
+        default: iam/v2
+
+routes:
+  - method: GET
+    path: /iam/v2/service-accounts
+    resource: service_account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+      max_limit: 100
+      limit_param: page_size
+      cursor_param: page_token
+
+errors:
+  unauthorized:
+    status: 401
+    # A word, where the sibling failure is four sentences.
+    message: "Unauthorized"
+    fields:
+      status: "401"
+      # A fresh 32-hex value on every real response, fixed here: what the case
+      # pins is that it exists on this failure and not on the 404.
+      id: 669d33df1e10bc2b5da9b0ef951d74f4
+      # JSON:API's pointer to the part of the request at fault, and it is
+      # empty on everything a public probe can reach.
+      source: {}
+
+  invalid_api_key:
+    status: 401
+    # Struck live, and worth serving verbatim: Confluent issues three kinds of
+    # key that look identical and only one opens this surface, so this
+    # sentence is the answer to the mistake people actually make.
+    message: "invalid API key: make sure you're using a Cloud or Global API Key, and not a Cluster API Key"
+    fields:
+      status: "401"
+      id: aed98f10db87efc5c4cce5f6962e6f20
+      source: {}
+
+  unknown_route:
+    status: 404
+    message: "Route not found"
+    fields:
+      status: "404"
+      # No id. The field a support ticket needs is missing from the failure
+      # most likely to produce one -- and this entry gains a code the two
+      # above do not have, so no two failures here share a key set.
+      code: route_not_found
+      source: {}
+
+fixtures:
+  empty:
+    service_account: []
+
+  environment:
+    service_account:
+      - id: sa-4x9k2m
+        display_name: connector-runner
+        description: Runs the Postgres source connector
+        kind: ServiceAccount
+        api_version: iam/v2
+      - id: sa-7p1w8n
+        display_name: metrics-reader
+        # An empty description rather than a missing one, which is the third
+        # way this API has of meaning nothing after {} and an absent key.
+        description: ""
+        kind: ServiceAccount
+        api_version: iam/v2
+
+conformance:
+  - name: a credential failure carries a correlation id
+    source: https://api.confluent.cloud/iam/v2/service-accounts
+    verified: "2026-09-07"
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers: {}
+    expect:
+      status: 401
+      body:
+        'errors[0].detail': Unauthorized
+        # 32 hex characters, fresh on every real call.
+        'errors[0].id': 669d33df1e10bc2b5da9b0ef951d74f4
+        # A string, beside an HTTP status that is a number.
+        'errors[0].status': "401"
+
+  - name: the routing failure does not
+    source: https://api.confluent.cloud/iam/v2/cauldron-nope
+    verified: "2026-09-07"
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/cauldron-nope
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+    expect:
+      status: 404
+      body:
+        'errors[0].detail': "Route not found"
+        # And it gains a code the credential failures do not have, so the key
+        # set depends on the failure.
+        'errors[0].code': route_not_found
+      absent:
+        # The one field a support ticket needs, missing from the failure most
+        # likely to produce one.
+        - 'errors[0].id'
+
+  - name: the source pointer is always empty
+    source: https://api.confluent.cloud/iam/v2/service-accounts
+    verified: "2026-09-07"
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # JSON:API defines source as a pointer to the part of the request that
+        # caused the problem. Every failure a public probe can reach sends an
+        # empty object, so the field that exists to say where says nothing.
+        'errors[0].source': {}
+
+  - name: a wrong key is answered with a lesson about key types
+    source: https://api.confluent.cloud/iam/v2/service-accounts
+    verified: "2026-09-07"
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        # notakey:notasecret
+        Authorization: "Basic bm90YWtleTpub3Rhc2VjcmV0"
+    expect:
+      status: 401
+      body:
+        # Confluent issues three kinds of key that look identical and only one
+        # opens this surface. A fake answering "Unauthorized" here would let
+        # somebody spend an afternoon on the wrong hypothesis.
+        'errors[0].detail': "invalid API key: make sure you're using a Cloud or Global API Key, and not a Cluster API Key"
+
+  - name: there is no title beside the detail
+    source: https://api.confluent.cloud/iam/v2/service-accounts
+    verified: "2026-09-07"
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers: {}
+    expect:
+      status: 401
+      absent:
+        # JSON:API defines title as the short human-readable summary and
+        # detail as the specific explanation. Only the long one arrives, so a
+        # client showing failures in a list has to derive the short form.
+        - 'errors[0].title'
+
+  - name: service accounts are wrapped in data
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+    expect:
+      status: 200
+      body:
+        'data[0].id': sa-4x9k2m
+        'data[0].display_name': connector-runner
+
+  - name: every record names its own kind and version
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+    expect:
+      status: 200
+      body:
+        # Kubernetes' shape: a record says what it is and which schema version
+        # it is in, so a client can dispatch on the record rather than on the
+        # route it came from.
+        'data[0].kind': ServiceAccount
+        'data[0].api_version': iam/v2
+
+  - name: a description can be an empty string
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+    expect:
+      status: 200
+      body:
+        'data[1].description': ""
+        'data[1].display_name': metrics-reader
+
+  - name: the cursor is nested under metadata
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+      query:
+        page_size: "1"
+    expect:
+      status: 200
+      body:
+        'data[0].id': sa-4x9k2m
+      matches:
+        # Not a top-level next: a metadata object holding it, so a client
+        # looking for the cursor where every other JSON:API-shaped provider
+        # puts it -- links.next -- finds nothing and reads the page as final.
+        'metadata.next': '.'
+
+  - name: the last page carries no cursor forward
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: environment
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+      query:
+        page_size: "1"
+        page_token: sa-4x9k2m
+    expect:
+      status: 200
+      body:
+        'data[0].id': sa-7p1w8n
+      absent:
+        - 'metadata.next'
+
+  - name: an environment with no service accounts answers an empty array
+    source: https://docs.confluent.io/cloud/current/api.html
+    fixture: empty
+    request:
+      method: GET
+      path: /iam/v2/service-accounts
+      headers:
+        Authorization: "Basic Q0FVTERST05GSVhUVVJFS0VZMDA6c2VjcmV0"
+    expect:
+      status: 200
+      body:
+        data: []
