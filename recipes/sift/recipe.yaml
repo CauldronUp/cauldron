@@ -1,0 +1,270 @@
+# Sift Recipe for Cauldron
+#
+# Written against Sift's API reference at developers.sift.com and struck live
+# against api.sift.com on 2026-09-07 with no credential.
+#
+# **Everything is HTTP 400 and the real status is a small integer in the body.**
+# Struck live, four requests:
+#
+#   GET  /v205/events           400 {"status": 50, "error_message": "Invalid request: HTTP method GET is not supported by this URL", "time": 1788814232}
+#   POST /v205/events    {}     400 {"status":51,"error_message":"Invalid API Key. Please check your credentials and try again.","time":1788814232,"request":"{}"}
+#   GET  /v205/users/abc/score  400 {"status": 51, "error_message": "Invalid API Key. ...", "time": 1788814232}
+#   GET  /v205/cauldron-nope    400 {"status": 50, "error_message": "Invalid request: Not Found", "time": 1788814233}
+#
+# A wrong verb, a missing credential, a wrong credential and an unknown path
+# all answer 400. The HTTP status carries no information at all; `status` in
+# the body does, and it is 50 or 51 -- Sift's own numbering, unrelated to HTTP
+# and unrelated to anything else. So every branch a client writes has to read
+# the body first, and a proxy or a retry policy keying on the status sees one
+# value for four different problems.
+#
+# 50 is "invalid request", which covers both a verb this URL does not take and
+# a URL that does not exist. 51 is "invalid API key". Those two numbers are the
+# whole vocabulary a public probe can reach.
+#
+# **`time` is a Unix timestamp on every response**, seconds, as a number. Which
+# is genuinely useful -- it is the server's clock, so a client can measure its
+# own skew from a failure -- and it is the only provider in this collection
+# that offers one.
+#
+# **The POST echoed the request body back.** `"request":"{}"` -- the body
+# exactly as sent, as a *string*, in the failure. An empty object was sent here
+# on purpose. Sift's events API takes the API key as a body field
+# (`$api_key`), so a request that gets this far with a real key has that key
+# echoed into a response the caller will very likely log.
+#
+# **Two serialisers.** The GET responses are spaced -- `{"status": 50, ...}` --
+# and the POST response is compact. Same API, same version, same failure
+# vocabulary, two JSON writers, and only the byte-for-byte reader notices.
+
+recipe: sift
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: v205
+  docs: https://developers.sift.com/docs/curl/apis-overview
+  # No spec: Sift publishes a rendered reference site.
+
+auth:
+  # The events API takes the key as a body field rather than a header, which
+  # is why a failing request can echo it back. The score API takes it as a
+  # query parameter; this Recipe models the score side, where the credential
+  # is at least not in a body Sift repeats.
+  scheme: query
+  param: api_key
+  keys:
+    - cauldr0nsiftf1xturekey0000000000
+  absent_error: invalid_api_key
+  rejected_error: invalid_api_key
+
+responses:
+  list:
+    style: wrapped
+    key: scores
+    fields:
+      # Sift's own status, on success as well as failure: 0 means OK.
+      status: 0
+      error_message: OK
+  error:
+    style: flat
+    message_field: error_message
+    # Not the HTTP status. Sift's own small-integer vocabulary, in the field a
+    # client has to read because the status line says 400 for everything.
+    code_field: status
+    code_type: number
+
+resources:
+  score:
+    id:
+      field: user_id
+      style: opaque
+    fields:
+      # The path segment and the record's own identifier are the same value,
+      # so the scope names a field that is also the id.
+      user_id:
+        type: string
+      payment_abuse_score:
+        type: number
+        default: 0
+      account_abuse_score:
+        type: number
+        default: 0
+      latest_label_type:
+        type: string
+
+routes:
+  - method: GET
+    path: /v205/users/{user_id}/score
+    resource: score
+    operation: list
+    scope: [user_id]
+    pagination:
+      style: none
+
+errors:
+  invalid_api_key:
+    # Not 401. Struck live for a request with no key and for one with a wrong
+    # key alike, and for a wrong verb and an unknown path, all 400.
+    status: 400
+    code: "51"
+    message: "Invalid API Key. Please check your credentials and try again."
+    fields:
+      # The server's clock, seconds since the epoch, on every response. The
+      # only provider in this collection that sends one, and it is the one
+      # thing here a client can use without reading prose.
+      time: 1788814232
+
+  unknown_route:
+    status: 400
+    # 50 covers a verb this URL does not take and a URL that does not exist,
+    # so the two are one number and the sentence after the colon is what
+    # separates them.
+    code: "50"
+    message: "Invalid request: Not Found"
+    fields:
+      time: 1788814233
+
+fixtures:
+  empty:
+    score: []
+
+  account:
+    score:
+      - user_id: billy_jones_301
+        # Sift's scores are 0 to 1 with many places, and there is one per
+        # abuse type: a user can be clean for payments and not for account
+        # takeover, so "the score" is a choice a client makes.
+        payment_abuse_score: 0.898391
+        account_abuse_score: 0.472103
+        latest_label_type: payment_abuse
+
+conformance:
+  - name: a missing credential is 400 with 51 in the body
+    source: https://api.sift.com/v205/users/abc/score
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query: {}
+    expect:
+      # Struck live. The HTTP status says 400 for a credential problem, so
+      # every branch a client writes has to read the body first.
+      status: 400
+      body:
+        status: 51
+        error_message: "Invalid API Key. Please check your credentials and try again."
+
+  - name: a wrong credential is the same number
+    source: https://api.sift.com/v205/users/abc/score
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query:
+        api_key: not-a-real-key
+    expect:
+      status: 400
+      body:
+        status: 51
+
+  - name: an unknown path is 400 with 50
+    source: https://api.sift.com/v205/cauldron-nope
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /v205/cauldron-nope
+      query:
+        api_key: cauldr0nsiftf1xturekey0000000000
+    expect:
+      # Not 404. 50 is "invalid request", which also covers a verb this URL
+      # does not take -- so one number for two problems, separated by the
+      # sentence after the colon.
+      status: 400
+      body:
+        status: 50
+        error_message: "Invalid request: Not Found"
+
+  - name: every failure carries the server's clock
+    source: https://api.sift.com/v205/users/abc/score
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query: {}
+    expect:
+      status: 400
+      body:
+        # Seconds since the epoch, as a number, on every response including
+        # this one. Useful, and unique in this collection: a client can
+        # measure its own clock skew from a failure.
+        time: 1788814232
+
+  - name: a success carries the same two fields as a failure
+    source: https://developers.sift.com/docs/curl/score-api/score-api
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query:
+        api_key: cauldr0nsiftf1xturekey0000000000
+    expect:
+      status: 200
+      body:
+        # status 0 and error_message "OK" on a successful response, so the
+        # envelope is uniform and a client checks the same field either way --
+        # which is the good half of a scheme whose HTTP status never varies.
+        status: 0
+        error_message: OK
+
+  - name: a user has one score per abuse type
+    source: https://developers.sift.com/docs/curl/score-api/score-api
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query:
+        api_key: cauldr0nsiftf1xturekey0000000000
+    expect:
+      status: 200
+      body:
+        # Clean for account takeover and not for payments, on one user. There
+        # is no single number, so "the score" is a choice the client makes and
+        # a dashboard showing one has picked a side.
+        'scores[0].payment_abuse_score': 0.898391
+        'scores[0].account_abuse_score': 0.472103
+
+  - name: the identifier is whatever the customer calls the user
+    source: https://developers.sift.com/docs/curl/score-api/score-api
+    fixture: account
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query:
+        api_key: cauldr0nsiftf1xturekey0000000000
+    expect:
+      status: 200
+      body:
+        # Sift mints no id of its own: the path segment is the customer's own
+        # user id, so it is unvalidated, unbounded and has to be URL-safe by
+        # luck.
+        'scores[0].user_id': billy_jones_301
+        'scores[0].latest_label_type': payment_abuse
+
+  - name: a user with no score answers an empty array
+    source: https://developers.sift.com/docs/curl/score-api/score-api
+    fixture: empty
+    request:
+      method: GET
+      path: /v205/users/billy_jones_301/score
+      query:
+        api_key: cauldr0nsiftf1xturekey0000000000
+    expect:
+      status: 200
+      body:
+        scores: []
+        status: 0

@@ -307,7 +307,6 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 		"Stripe Tax":             "a specialised extension of Stripe, as the row itself says",
 		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
 		"Wise Business":          "the business banking product, where wise is the transfers API",
-		"Codat":                  "accounting-data aggregation, an unrelated company that shares four letters with Coda",
 		"Coinbase Commerce":      "the crypto-payments product, where coinbase is the exchange and market-data API",
 	}
 

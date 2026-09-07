@@ -440,7 +440,7 @@ the header says so.
 | ~~Brevo~~ | Shipped. It **distinguishes a missing key from a wrong one and only one can be served**: both are 401 with the same `code` of `unauthorized`, differing only in prose, so the field a machine would switch on is identical while the sentence is not. **Its published description is itself behind the credential** -- fetching `swagger_definition.yml` without a key answers 401 -- so the document explaining how to authenticate cannot be read without authenticating, and no `upstream.spec` is recorded. Documented and not called: the transactional send returns a `messageId` shaped like a mail Message-ID rather than a bare token, and the matching webhook field is spelled `message-id` with a hyphen, unreachable with a dot in most languages |
 | ~~Kit (ConvertKit)~~ | Shipped as `recipes/kit`. Listed twice under two spellings of one company, which the rename made easy to do; see the other row for what it found |
 | Attentive | Assess — SMS subscribers and consent state, where consent is legally load-bearing |
-| Beehiiv | Assess — publications, posts, subscribers |
+| ~~Beehiiv~~ | Shipped as `beehiiv`. **"The api key is not valid" is the answer to sending no api key** -- the third provider here to describe the wrong failure that way, after Loops and Helicone, and the `code` INVALID_API_KEY repeats the mistake in the field a client branches on. The status appears three times: as the HTTP status, as a number, and as the reason phrase lower-cased. **The `errors` array is the good part** -- objects with a message and a code each, so a request failing several ways gets an entry per way: the shape Gong reaches for and misses by putting strings in it, and Honeybadger misses by putting a string where the array goes. Three providers, one idea, and beehiiv is the one that got it right. An unknown path is an empty HTML response. A listing reports four numbers about itself at the top level beside data, so a record field called `page` would collide with the envelope |
 | ~~Loops~~ | Shipped. **A 404 is invisible until something is in the Authorization header** -- anything, valid or not: with no header an unknown path is reported as "Invalid API key", so a typo in a URL sends the reader to the wrong file. **The two failures have different envelopes**: the auth one is `{success, message, error}` and the not-found is `{message}` alone, so a client testing `body.success === false` reads undefined on the 404 and treats it as fine. `message` and `error` carry the same string, and there is no code anywhere. A missing key and a wrong key are one response whose sentence describes only the second. Success has no envelope at all, so the shape depends on whether it worked |
 
 ## Social and content platforms
@@ -465,7 +465,7 @@ the header says so.
 | ~~Veriff~~ | Shipped. The signature is never examined until the client identifier passes |
 | Middesk | Assess — business verification and its partial matches |
 | ~~Alloy~~ | Shipped. Three unauthenticated failures across two statuses |
-| Sift | Assess — scores, decisions, the workflow that runs server side |
+| ~~Sift~~ | Shipped. **Everything is HTTP 400 and the real status is a small integer in the body**: a wrong verb, a missing credential, a wrong credential and an unknown path all answer 400, with `status` 50 or 51 in Sift's own numbering. So the status line carries nothing, every branch has to read the body, and a proxy or retry policy keyed on the status sees one value for four problems. **`time` is the server's clock on every response**, seconds, which is genuinely useful and unique here: a client can measure its own skew from a rejection, and this is an API whose events are timestamped by the caller. **A failing POST echoed the request body back** as a string -- and the events API takes the key as a body field, so a real key would be echoed into a response the caller logs; this Recipe models the score API instead. Two serialisers, spaced on GET and compact on POST. A user has one score per abuse type, so there is no single number. The identifier is the customer's own unvalidated user string |
 
 ## Travel
 
@@ -522,7 +522,7 @@ the header says so.
 | ~~Orb~~ | Shipped. An invoice is not final until the period closes |
 | ~~Metronome~~ | Shipped, written against the OpenAPI document Metronome publishes at docs.metronome.com/openapi.json. The row below asked what would earn it a place and this is the answer, on the row's own terms and one step further: POST /v1/ingest carries every billable event in the system and its whole published response is "200: Success" -- no schema, no body -- while its own description says "Duplicate events are automatically detected and ignored (34-day deduplication window)", so an event that was counted and an event that was thrown away answer identically. The endpoint that could tell you is documented as not being for that: "Do not use this endpoint to check every event in your system" |
 | ~~Lago~~ | Shipped, written against the OpenAPI document Lago publishes. An event whose code names no active billable metric is accepted and, in the document's own word, ignored: the request succeeds, the event is stored and returned, and no fee is ever produced. The self-hosted/cloud difference this row predicted is in the schema -- lago_id is "not guaranteed to be a UUID; on organizations using the ClickHouse events store it is a composite string". Also: the schema and its own description disagree about whether the timestamp is ISO or Unix seconds, and a field named cents holds '1234.56' |
-| Zuora | Assess — very large, and the object model predates REST conventions |
+| ~~Zuora~~ | Shipped. **One code, two sentences, and the key order changes between them**: 90000011 for both a missing credential and a wrong one, with different prose and with `code` first on one response and `message` first on the other. So the field that exists to be branched on cannot separate the two failures and the prose can, which is the wrong way round -- and the ordering makes every recorded fixture and snapshot test unstable. The code is eight digits in a string, so `code === 90000011` is false and whatever category lives inside the digits is undocumented. The success flag rides the failure, which is the good half and the third name for that idea here. The field is called `reasons`, which is a better name than `errors` for what it holds. An account owing money is still Active, because status is the subscription lifecycle rather than the dunning state. Money is a bare double on a billing API |
 | ~~Maxio~~ | Shipped. **The header says `application/json` and the body is a bare sentence** -- `HTTP Basic: Access denied.`, not even a quoted string -- so every client doing the correct thing parses it and throws. Worse than Statsig's refusal, which sends no Content-Type and is honest about being unparseable, and worse than Wrike's, which is real JSON mislabelled as text: three providers, three ways of getting one header wrong, and this is the only one where believing the header is what breaks you. The sentence is Rack's, answering above the application, so Maxio's own `errors` envelope is never reached. The product was renamed and the hostname is still `chargify.com`; paths carry `.json` as an extension. Every record is wrapped under its own singular name, so an id is two levels down. A cancelling subscription still reads `active`. Timestamps carry the site's own fixed offset rather than UTC |
 
 ## Paging parameter names, closed
@@ -2278,7 +2278,7 @@ transfers alone, and say so in the header.
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
 | ~~Brevo~~ | Shipped, and this row's own correction still stands: the premise about limits was wrong and is kept here so it is not re-derived. What the Recipe found instead is that **Brevo's published description is behind the credential** -- fetching `swagger_definition.yml` without a key answers 401 -- so the document explaining how to authenticate cannot be read without authenticating, and no `upstream.spec` is recorded. It also distinguishes a missing key from a wrong one in prose while giving both the identical `code` of `unauthorized`, so the field a machine switches on cannot tell them apart |
 | ~~Kit~~ | Shipped. The rename is not a migration: **api.convertkit.com and api.kit.com both serve both /v3 and /v4 identically**, one backend with two doorbells, and the two versions take incompatible credentials -- v3 reads `api_secret` from the query string and ignores an Authorization header entirely, v4 reads `X-Kit-Api-Key` or an OAuth bearer, and each scheme is blind to the other's. Kit's own upgrade guide says outright that V4 keys are not compatible with V3. The live 401 still carries `WWW-Authenticate: Bearer realm="ConvertKit API"`, the retired brand, in a header a client is meant to parse. On unsubscribing: one-way. The unsubscribe route is the only one that writes `state: cancelled`, the upsert says it cannot, and the update schema has no `state` property |
-| Beehiiv | Assess — publications, posts, subscribers |
+| ~~Beehiiv~~ | Shipped -- see the row above |
 
 ### Identity and risk
 
@@ -2289,7 +2289,7 @@ transfers alone, and say so in the header.
 | ~~Kinde~~ | Shipped, and the assessment it was queued for came out sharper than expected. Kinde **tells three credential failures apart under one status** -- a missing header, a bearer that is not JWT-shaped, and a JWT whose kid was never issued -- which is the first Recipe here to use all three of the credential verdicts the runtime learned this week. Auth resolves before routing, confirmed on `kinde.kinde.com`, Kinde's own tenant. The finding that was not anticipated is the contrast inside one hostname: the management API answers in rich JSON and `POST /oauth2/token`, the surface that exists to handle credentials, collapses every malformed request into ten bytes of plain text -- `not_found`. On the per-customer-hostname question this was grouped to answer, Kinde avoids the failure the Make Recipe records |
 | ~~Persona~~ | Shipped. completed is not approved, needs_review is neither, and nothing is at the top level because it is JSON:API |
 | ~~Onfido~~ | Shipped. complete is not clear, consider is neither a pass nor a failure, and the reason lives on the report rather than the check |
-| Sift | Blocked on documentation, not on interest. The premise holds and the shape is good, and the public docs do not publish a score response body: the pages describe the 0-100 scale in prose while the API is widely reported to send decimals, and that number is the one every integration branches on. Building it would mean guessing the scale, which is the one thing a Recipe must not do. Worth revisiting with an account, where a single real response settles it |
+| ~~Sift~~ | Shipped -- see the row above |
 
 ### Storage and media
 
@@ -2376,8 +2376,8 @@ An order is not a fill, and the gap between them is where the bugs live.
 |---|---|
 | ~~TrueLayer~~ | Shipped. Consent expires ninety days from when it was granted rather than from last use, expired and revoked are both 403 with different fixes, pending and settled are two lists with different ids for the same money, and a balance never reconciles to either |
 | ~~GoCardless Bank Account Data~~ | Shipped. Booked and pending are two arrays in one response, the same purchase moves from one to the other and changes its transactionId, the amount is a signed decimal string nested under transactionAmount, and a requisition status is a two-letter code that explains nothing |
-| Salt Edge | A refresh is asynchronous and the connection reports success before the new transactions exist |
-| Codat | Sync status and data are separate reads, so data is queryable while the sync that would change it is still running |
+| ~~Salt Edge~~ | Shipped. **The documentation link points at the anchor for that exact error** -- `#errors-app_id_not_provided`, not the front page and not a generic errors section. The best `documentation_url` in the collection: several providers send one and every other points at a page a reader still has to search. `class` is the exception class in PascalCase, which is a stable machine-readable code and also a name from the codebase. **A credential failure is 400**, so retry, re-authenticate and "my payload is wrong" are one status. The two halves of the credential fail differently -- AppIdNotProvided against ApiKeyNotFound -- with their own anchors, which is rarer here than it should be. An unknown path answers the credential failure. The customer secret is in the listing. A blocked customer is marked by a date rather than a flag, and the paging block is nulls rather than absences |
+| ~~Codat~~ | Shipped. **The failure tells you whether to retry and the answer is "Unknown"** -- a tri-state sent as a string, and the only one of the three reachable without an account, so a client written against this API has an untested branch for the other two. The three-valued design is right and most providers here offer nothing like it. `detailedErrorCode` is 0 on everything; `service` names the deployment that answered on a request with no account behind it. **The 404 keeps every field including the correlation id**, which is exactly what Confluent gets wrong on the same failure. There is no message field anywhere, so the only prose is the status phrase in PascalCase. Timestamps carry seven decimal places, .NET's round-trip format, and a parser expecting milliseconds either truncates or refuses. A company can exist before anything is connected to it, so a listing of companies is not a listing of data sources |
 
 ### Unified APIs
 
@@ -2410,7 +2410,7 @@ what normalisation does not fix.
 |---|---|
 | ~~Xendit~~ | Shipped. A virtual account number exists in the 201 and does not work at the bank for minutes, so the customer is told it does not exist by their own bank; a closed account accepts one exact amount and a short payment bounces days later; amounts are integer rupiah with no subunit at all |
 | ~~Midtrans~~ | Shipped. transaction_status and fraud_status are two fields and a payment is only safe when both agree; capture plus challenge means the card was charged and the funds are held; a bank transfer never passes through capture at all |
-| PayU | The same merchant has different endpoints per country and the response fields differ between them |
+| ~~PayU~~ | Shipped. **Four fields for one failure and three of them say the same thing**: `statusCode` a word, `code` the HTTP status as a string, `codeLiteral` a screaming-snake constant and `statusDesc` prose -- inside an object called `status` whose statusCode is not a code and whose code is not a status. The only informative one is `codeLiteral`, `INVALID_OR_MISSING_ACCESS_TOKEN`, which names both cases: the same honest ambiguity Pulumi writes as a sentence. **An unknown path is a 302** to the merchant panel login, so a client following redirects ends up with an HTML sign-in page carrying a 200 -- the worst not-found in this collection, because OpenPhone and Trigger.dev at least keep the status honest. The `status` key carries the success too, which is the good half. Money is minor units in a string, and there are three ways of not being finished with only one meaning somebody has to act |
 | ~~Gorgias~~ | Shipped. A ticket and its messages are two paginated endpoints read at different moments, so the count on one disagrees with the array on the other; from_agent is true for automated replies; and a reopened ticket keeps its closing time with nothing marking the reopening |
 | ~~Kustomer~~ | Shipped. A conversation is a customer timeline carrying every channel they ever used, assignment is on the conversation rather than any message, status and queue are unrelated, and everything is JSON:API so nothing a client wants is at the top level |
 | ~~Jotform~~ | Shipped, and the premise was wrong in the useful direction: an answer embeds the question's own text and type inline, so a Jotform submission is the one in this group that survives its form being edited. Its not-found echoes the path parameter's name rather than the value |
@@ -2499,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These thirty-two are left, and every one of them has now been looked for
+another. These thirty-eight are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2535,6 +2535,12 @@ than a client for its API.
 | Hightouch | No official client found |
 | incident.io | No official Node or Go client found |
 | Kustomer | Community clients |
+| ~~Sift~~ | Shipped -- see the row above |
+| ~~Salt Edge~~ | Shipped -- see the row above |
+| ~~Codat~~ | Shipped -- see the row above |
+| ~~PayU~~ | Shipped -- see the row above |
+| ~~Zuora~~ | Shipped -- see the row above |
+| beehiiv | No client on any registry under an obvious name, checked 2026-09-07 |
 | Confluent | The published clients are Kafka clients rather than clients of the control plane this Recipe serves; nothing on npm, Packagist or the Go module proxy calls api.confluent.cloud, checked 2026-09-07 |
 | Terraform Cloud | The Terraform CLI is not a client of this API in the sense detection means, and no library on any registry calls app.terraform.io under an obvious name, checked 2026-09-07 |
 | Pulumi | The CLI and the language SDKs build infrastructure rather than calling this REST surface, and nothing on any registry calls api.pulumi.com, checked 2026-09-07 |
@@ -2997,7 +3003,7 @@ per row.
 |---|---|---|---|
 | Logiwa | Marketing pages, a webhooks blog post | Every endpoint reference. The developer centre needs a purchased API user seat | An account, or a customer's copy of the reference |
 | Intelcom / Dragonfly | The introduction page at developers.intelcomexpress.com, which names six APIs and their required call order | Every reference page under it: `/reference/tracking-api` and friends 404, and the site's own `llms.txt` answers 200 with the ReadMe shell | A partner login, or one captured response per endpoint |
-| Sift | Prose describing a 0-100 score | The score response body. The scale is decimals on the wire and prose in the docs, and that number is what every integration branches on | One real response |
+| ~~Sift~~ | Shipped -- see the row above |
 | Klarna | Navigation | Every schema. The portal renders through JavaScript | An account or a published spec |
 
 Render was on this row too, on the same complaint -- `api-docs.render.com`
