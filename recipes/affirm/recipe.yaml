@@ -1,0 +1,482 @@
+# Affirm Recipe for Cauldron
+#
+# Written against Affirm's API reference at docs.affirm.com and struck live
+# against api.affirm.com on 2026-09-07 with no credential, with a deliberately
+# invalid one, with and without the required query parameter, and on a path
+# that does not exist.
+#
+# **The parameter check runs before the credential check.** Struck live, with
+# no Authorization header at all:
+#
+#   GET /api/v1/transactions
+#   400 application/problem+json
+#   {
+#     "detail": "Missing query parameter 'transaction_type'",
+#     "status": 400,
+#     "title": "Bad Request",
+#     "type": "about:blank"
+#   }
+#
+# So the first thing an unauthenticated caller learns from this API is the name
+# of a query parameter it did not send. Add the parameter and the same
+# credential-less request becomes a 401. A wrong credential without the
+# parameter is the same 400, byte for byte.
+#
+# **And the parameter it is telling you about has one legal value.** Affirm's
+# own description of `transaction_type` is `string enum required` with
+# `Allowed: charge` -- one member. It is mandatory, it can only be sent one
+# way, and it therefore carries no information: the only thing it distinguishes
+# is a request that remembered it from a request that did not. Which is the
+# request above, answered before authentication.
+#
+# **One API, two error models, and `type` means something different in each.**
+#
+#   400  {"detail": ..., "status": 400, "title": "Bad Request", "type": "about:blank"}
+#   401  {"status_code": 401, "type": "unauthorized", "code": "api-key-pair-not-found",
+#         "message": "You did not provide an API key pair."}
+#
+# The 400 is RFC 9457: `type` is a URI, and `about:blank` is the specification's
+# own value for "no more semantics than the status code". The 401 four bytes
+# later has a `type` that is a bare word, a `code` that is a slug, a
+# `status_code` where the other has `status`, and a `message` where the other
+# has `detail`. Not one field name is shared. A client wanting to read the
+# reason out of a failed request to this endpoint needs two parsers and a
+# branch on the status to pick between them.
+#
+# `about:blank` is the fifth problem document in this collection and the only
+# one that declares itself empty. [postman](../postman) points `type` at a
+# Postman problem, [triggerdev](../triggerdev) at MDN's page about the status,
+# [agicap](../agicap) at the RFC clause defining 500, and [revai](../revai)
+# omits it -- so the five uses are: right, a documentation link, a
+# specification link, absent, and explicitly nothing.
+#
+# **The two credential failures are told apart, and both sentences are true.**
+# `api-key-pair-not-found` / "You did not provide an API key pair." for a
+# request carrying none, and `api-key-pair-invalid` / "You have provided an
+# invalid API key pair." for one carrying a wrong one. After seven providers
+# here that answer "invalid key" to a request with no key, this one gets both
+# halves right and names the credential's actual shape -- a pair, not a token.
+#
+# **An unknown path is HTML.** `<title>404 - Wrong Page</title>`, a styled page
+# with a navbar and a webfont, on an API host. So one endpoint has three
+# content types across three failures: problem+json, json, and a web page.
+
+recipe: affirm
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.affirm.com/developers/reference/list_transactions
+  # No spec: there is an OpenAPI document, and it is embedded inside the
+  # rendered reference page rather than served at an address, so there is
+  # nothing stable to record a hash of.
+
+auth:
+  # Public key as the username and private key as the password -- a pair,
+  # which is what the refusals below call it.
+  scheme: basic
+  keys:
+    - "cauldr0naffirmpublickey"
+  # Two verdicts, two codes, two accurate sentences.
+  absent_error: api_key_pair_not_found
+  rejected_error: api_key_pair_invalid
+  # An unknown path answers the web page below whether or not a credential
+  # came with it, so the router runs first here too.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: transactions
+    # A boolean saying more exists, and nothing to ask for it with: the
+    # response carries no cursor at all, so a caller has to take the last
+    # record's id and send it back as `before`.
+    has_more_field: has_next
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    code_type: string
+    type_field: type
+    # Two models want two different names for the status, and there is one
+    # setting -- so both carry it as a declared field instead.
+    status_field: ""
+
+resources:
+  transaction:
+    id:
+      field: id
+      style: opaque
+    fields:
+      # Cents as an integer, which is exact, in a field with no unit in its
+      # name -- the currency is a sibling.
+      amount:
+        type: integer
+      amount_refunded:
+        type: integer
+      currency:
+        type: string
+      checkout_id:
+        type: string
+      order_id:
+        type: string
+      # Documented as a string in the reference's own attribute table and as
+      # an integer in the schema behind the same page. It arrives as a
+      # number.
+      provider_id:
+        type: integer
+      status:
+        type: string
+      created:
+        type: datetime
+      authorization_expiration:
+        type: datetime
+      events:
+        type: list
+
+routes:
+  # The route that serves the listing exists only when the one-member enum is
+  # present, because that is the only way the provider answers it.
+  - method: GET
+    path: /api/v1/transactions
+    resource: transaction
+    operation: list
+    matches_query:
+      transaction_type: charge
+    pagination:
+      # `before` and `after` take an ARI -- an Affirm resource identifier,
+      # which is the id of a record you already hold. Mutually exclusive with
+      # each other, and neither is echoed back.
+      style: cursor
+      limit: 20
+      limit_param: limit
+      cursor_param: before
+
+  # And the same path without it answers the validation failure, to anybody,
+  # credential or no credential.
+  - method: GET
+    path: /api/v1/transactions
+    public: true
+    error: missing_transaction_type
+
+errors:
+  missing_transaction_type:
+    status: 400
+    # RFC 9457, and the one field a client would branch on says there is
+    # nothing to branch on: about:blank is the specification's value for "no
+    # semantics beyond the status code".
+    type: about:blank
+    message_field: detail
+    code_field: "-"
+    message: "Missing query parameter 'transaction_type'"
+    headers:
+      Content-Type: application/problem+json
+    fields:
+      # The status a second time, in the field this model calls status where
+      # the model four bytes away calls it status_code.
+      status: 400
+      title: Bad Request
+
+  api_key_pair_not_found:
+    status: 401
+    type: unauthorized
+    code: api-key-pair-not-found
+    # True about the request that gets it, which after seven providers here
+    # answering "invalid key" to a request carrying none is worth saying.
+    message: "You did not provide an API key pair."
+    fields:
+      status_code: 401
+
+  api_key_pair_invalid:
+    status: 401
+    type: unauthorized
+    code: api-key-pair-invalid
+    message: "You have provided an invalid API key pair."
+    fields:
+      status_code: 401
+
+  unknown_route:
+    status: 404
+    # A styled web page with a navbar and a webfont, on an API host -- so one
+    # endpoint answers three content types across three failures.
+    style: text
+    message: "<!DOCTYPE html><html lang=\"en\"><head><title>404 - Wrong Page</title></head></html>"
+    headers:
+      Content-Type: text/html
+
+fixtures:
+  empty:
+    transaction: []
+
+  merchant:
+    transaction:
+      - id: 8W2K-4RQD
+        amount: 6100
+        amount_refunded: 0
+        currency: USD
+        checkout_id: A1B2C3D4E5F6G7H8
+        order_id: JKLM4321
+        provider_id: 1
+        status: authorized
+        created: "2026-08-14T11:02:41.000Z"
+        authorization_expiration: "2026-09-13T11:02:41.000Z"
+        events:
+          - id: I9J0K1L2M3N4O5P6
+            type: auth
+            currency: USD
+            created: "2026-08-14T11:02:41.000Z"
+      - id: LS-7P3M9XB2
+        amount: 24000
+        # A partial refund, so the two amounts disagree and neither field
+        # name says which is the one still owed.
+        amount_refunded: 5000
+        currency: USD
+        checkout_id: Z9Y8X7W6V5U4T3S2
+        order_id: order_125
+        # 2 is Katapult rather than Affirm, so a listing from one merchant
+        # spans two lenders and the field that says which is a bare integer.
+        provider_id: 2
+        status: partially_refunded
+        created: "2026-07-02T16:45:09.000Z"
+        authorization_expiration: "2026-08-01T16:45:09.000Z"
+        events: []
+
+conformance:
+  - name: a request with no credential is refused for the query string
+    source: https://api.affirm.com/api/v1/transactions
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers: {}
+    expect:
+      # The first thing an unauthenticated caller learns is the name of a
+      # parameter it did not send.
+      status: 400
+      headers:
+        Content-Type: application/problem+json
+      body:
+        detail: "Missing query parameter 'transaction_type'"
+        status: 400
+        title: Bad Request
+
+  - name: the problem type declares that it has no semantics
+    source: https://api.affirm.com/api/v1/transactions
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers: {}
+    expect:
+      status: 400
+      body:
+        # RFC 9457's own value for "nothing beyond the status code", in the
+        # field a client would branch on.
+        type: about:blank
+
+  - name: a wrong credential without the parameter is the same 400
+    source: https://api.affirm.com/api/v1/transactions
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        # notreal:notreal
+        Authorization: "Basic bm90cmVhbDpub3RyZWFs"
+    expect:
+      # Byte for byte, so the credential is not looked at until the query
+      # string passes.
+      status: 400
+      body:
+        detail: "Missing query parameter 'transaction_type'"
+        title: Bad Request
+
+  - name: adding the one legal value turns the 400 into a 401
+    source: https://api.affirm.com/api/v1/transactions?transaction_type=charge
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers: {}
+      query:
+        # The enum has exactly one member, so this parameter distinguishes
+        # nothing except a request that remembered it.
+        transaction_type: charge
+    expect:
+      status: 401
+      body:
+        # Not one field name is shared with the 400 above.
+        status_code: 401
+        type: unauthorized
+        code: api-key-pair-not-found
+        message: "You did not provide an API key pair."
+
+  - name: a wrong credential has its own code and its own sentence
+    source: https://api.affirm.com/api/v1/transactions?transaction_type=charge
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic bm90cmVhbDpub3RyZWFs"
+      query:
+        transaction_type: charge
+    expect:
+      status: 401
+      body:
+        # Both halves true, and the credential named as a pair rather than a
+        # token -- which is what it is.
+        code: api-key-pair-invalid
+        message: "You have provided an invalid API key pair."
+
+  - name: an unknown path is a styled web page
+    source: https://api.affirm.com/api/v1/cauldron-nope
+    verified: "2026-09-07"
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/cauldron-nope
+      headers: {}
+      query:
+        transaction_type: charge
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html
+      body_matches: '404 - Wrong Page'
+
+  - name: transactions are wrapped under their own plural
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+    expect:
+      status: 200
+      body:
+        'transactions[0].id': 8W2K-4RQD
+        'transactions[0].status': authorized
+        'transactions[0].checkout_id': A1B2C3D4E5F6G7H8
+
+  - name: money is an integer in the smallest currency unit
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+    expect:
+      status: 200
+      body:
+        # Cents as a number, which is exact -- and the field names carry no
+        # unit, so the currency beside them is the only label.
+        'transactions[0].amount': 6100
+        'transactions[0].currency': USD
+        'transactions[1].amount': 24000
+        'transactions[1].amount_refunded': 5000
+
+  - name: the lender is a bare integer on the record
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+    expect:
+      status: 200
+      body:
+        # 1 is Affirm and 2 is Katapult, so a merchant's listing spans two
+        # lenders and the field saying which is a number the reference's own
+        # attribute table calls a string.
+        'transactions[0].provider_id': 1
+        'transactions[1].provider_id': 2
+        'transactions[1].status': partially_refunded
+
+  - name: the events array is empty rather than absent
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+    expect:
+      status: 200
+      body:
+        'transactions[0].events[0].type': auth
+        'transactions[0].created': "2026-08-14T11:02:41.000Z"
+        'transactions[0].authorization_expiration': "2026-09-13T11:02:41.000Z"
+        'transactions[0].order_id': JKLM4321
+        'transactions[1].events': []
+
+  - name: the listing says more exists and gives nothing to ask with
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        'transactions[0].id': 8W2K-4RQD
+        # A boolean and no cursor: the caller has to take the last record's
+        # own id and send it back as `before`, so paging depends on reading
+        # the page rather than on the envelope.
+        has_next: true
+
+  - name: transactions page on an identifier the caller already holds
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: merchant
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+        limit: "1"
+        before: 8W2K-4RQD
+    expect:
+      status: 200
+      body:
+        'transactions[0].id': LS-7P3M9XB2
+        has_next: false
+
+  - name: a merchant with no transactions answers an empty array
+    source: https://docs.affirm.com/developers/reference/list_transactions
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/transactions
+      headers:
+        Authorization: "Basic Y2F1bGRyMG5hZmZpcm1wdWJsaWNrZXk6Y2F1bGRyb24="
+      query:
+        transaction_type: charge
+    expect:
+      status: 200
+      body:
+        transactions: []
+        has_next: false

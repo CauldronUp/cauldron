@@ -1,0 +1,331 @@
+# Buffer Recipe for Cauldron
+#
+# The legacy REST API at api.bufferapp.com, struck live on 2026-09-07 with no
+# credential, with a deliberately invalid one, and on a path that does not
+# exist.
+#
+# **The two halves of one failure travel on two different channels.** Struck
+# live:
+#
+#   GET /1/profiles.json                        (no token)
+#   401  Content-Type: text/html; charset=UTF-8
+#   WWW-Authenticate: OAuth realm='Service', error='invalid_request',
+#     error_description='The request is missing a required parameter, includes
+#     an unsupported parameter or parameter value, repeats the same parameter,
+#     uses more than one method for including an access token, or is otherwise
+#     malformed.'
+#   <empty body>
+#
+#   GET /1/profiles.json?access_token=notreal
+#   401  Content-Type: application/json;charset=UTF-8
+#   {"error":"The provided access token is invalid","code":401,"deprecation":{...}}
+#   (no WWW-Authenticate)
+#
+# A missing credential says everything in the header and nothing in the body. A
+# wrong one says everything in the body and sends no header at all. So a client
+# that reads only the body sees an empty 401 for the commonest mistake there
+# is, and a client that reads only the header sees nothing for the second
+# commonest. It is the mirror image of [pipefy](../pipefy), which puts its
+# OAuth error in the body and leaves the header empty -- Buffer does both, one
+# each, and neither request gets both.
+#
+# **The header is single-quoted, which makes it unparseable.** RFC 9110
+# requires an auth-param value to be a token or a quoted-string, and a
+# quoted-string uses double quotes. `realm='Service'` is neither: the value
+# begins with an apostrophe, which is not a legal token character, so a
+# conforming parser rejects the whole challenge. All three parameters are
+# quoted this way.
+#
+# **And the error code is the wrong one.** RFC 6750 section 3.1 says that when
+# a request carries no authentication information at all the resource server
+# SHOULD NOT include an error code; `invalid_request` is defined for a
+# malformed request. This request was not malformed, it was empty.
+#
+# **The description is the specification's own definition, pasted whole.** The
+# 240-character sentence above is RFC 6750's text for `invalid_request`, listing
+# five ways a request can be malformed. None of them is what happened.
+#
+# **Content-Type: text/html on zero bytes.** The header names a media type for
+# a body that is not there.
+#
+# **The retirement notice rides on the failure.** The wrong-credential body
+# carries a `deprecation` object with a sentence, a `sunset` date of
+# 2027-02-01, and a link -- so the announcement that this whole API is going
+# away is delivered to callers who got their credential wrong, and to nobody
+# else. RFC 8594 defines a `Sunset` **header** for exactly this and it is not
+# sent. The date is in a body a successful request never sees.
+#
+# **The documentation is gone.** developers.buffer.com now describes the
+# GraphQL API only; the single page about this surface is the migration guide
+# the failure above links to. So the record shape below is what that guide's
+# own field mapping names, and no more -- see the modelling limits in the
+# README.
+
+recipe: buffer
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://developers.buffer.com/guides/rest-migration.html
+  # No spec: and no reference either. See the note above.
+
+auth:
+  # In the query string, which puts the credential in every access log and
+  # every Referer header -- and is what the migration guide's own
+  # before-and-after example shows.
+  scheme: query
+  param: access_token
+  keys:
+    - 1/cauldr0nbufferf1xturet0ken
+  # Two failures, two channels, and no request gets both.
+  absent_error: invalid_request
+  rejected_error: invalid_token
+  # An unknown path is a 404 with no token at all, so the router runs before
+  # the credential does and the endpoint below is reachable anonymously.
+  after_routing: true
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: code
+
+resources:
+  profile:
+    id:
+      field: id
+      style: opaque
+    fields:
+      service:
+        type: string
+      avatar:
+        type: string
+
+routes:
+  - method: GET
+    path: /1/profiles.json
+    resource: profile
+    operation: list
+    pagination:
+      style: none
+
+errors:
+  invalid_request:
+    status: 401
+    # Nothing in the body at all: the whole failure is in the header below.
+    empty: true
+    headers:
+      # Single-quoted, so a conforming parser rejects the challenge -- and
+      # RFC 6750 says a request carrying no credential should get no error
+      # code, where this one gets the code for a malformed request and the
+      # specification's own description of it, pasted whole.
+      WWW-Authenticate: "OAuth realm='Service', error='invalid_request', error_description='The request is missing a required parameter, includes an unsupported parameter or parameter value, repeats the same parameter, uses more than one method for including an access token, or is otherwise malformed.'"
+      # A media type for zero bytes.
+      Content-Type: text/html; charset=UTF-8
+
+  invalid_token:
+    status: 401
+    code: "401"
+    message: "The provided access token is invalid"
+    fields:
+      # The announcement that this API retires, on the failure path only.
+      # RFC 8594 defines a Sunset header for this and it is not sent, so the
+      # date lives in a body a successful request never sees.
+      deprecation:
+        message: "The Buffer legacy REST API is deprecated and will be retired on 1 February 2027. Please migrate to the GraphQL API before then."
+        sunset: "2027-02-01"
+        link: https://developers.buffer.com/guides/rest-migration.html
+
+  unknown_route:
+    status: 404
+    code: "404"
+    message: "The endpoint you requested was not found."
+
+fixtures:
+  empty:
+    profile: []
+
+  account:
+    profile:
+      - id: 6b71f4e2c9d80a3517460b28
+        service: linkedin
+        avatar: https://static.buffer.com/avatars/6b71f4e2c9d80a3517460b28.png
+      - id: 91c3d7b60fa254e8c1937d4a
+        service: mastodon
+        avatar: https://static.buffer.com/avatars/91c3d7b60fa254e8c1937d4a.png
+
+conformance:
+  - name: a missing token answers an empty body
+    source: https://api.bufferapp.com/1/profiles.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      headers: {}
+    expect:
+      status: 401
+      # So a client reading response.error for the commonest mistake there is
+      # finds an empty string.
+      no_body: true
+
+  - name: the whole failure is in the challenge header
+    source: https://api.bufferapp.com/1/profiles.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      headers: {}
+    expect:
+      status: 401
+      header_matches:
+        # Single-quoted: RFC 9110 wants a token or a double-quoted string, and
+        # an apostrophe is neither, so a conforming parser rejects this.
+        WWW-Authenticate: "realm='Service'"
+
+  - name: the error code is the one for a malformed request
+    source: https://api.bufferapp.com/1/profiles.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      headers: {}
+    expect:
+      status: 401
+      header_matches:
+        # RFC 6750 section 3.1: a request carrying no authentication
+        # information should get no error code at all, and invalid_request is
+        # defined for a request that is malformed. This one was empty.
+        WWW-Authenticate: "error='invalid_request'"
+
+  - name: the description is the specification's own text
+    source: https://api.bufferapp.com/1/profiles.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      headers: {}
+    expect:
+      status: 401
+      header_matches:
+        # RFC 6750's definition of invalid_request, pasted whole -- five ways
+        # to be malformed, none of which happened.
+        WWW-Authenticate: "repeats the same parameter"
+
+  - name: the empty body still declares a media type
+    source: https://api.bufferapp.com/1/profiles.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # text/html for zero bytes, on a JSON API.
+        Content-Type: text/html; charset=UTF-8
+
+  - name: a wrong token answers a body and no header
+    source: https://api.bufferapp.com/1/profiles.json?access_token=notreal
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      query:
+        access_token: notreal
+    expect:
+      status: 401
+      body:
+        error: "The provided access token is invalid"
+        code: 401
+      absent_headers:
+        # The other half of the same failure, on the other channel -- so
+        # neither request gets both.
+        - WWW-Authenticate
+
+  - name: the retirement notice rides on the failure
+    source: https://api.bufferapp.com/1/profiles.json?access_token=notreal
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      query:
+        access_token: notreal
+    expect:
+      status: 401
+      body:
+        # A sunset date in a body, where RFC 8594 defines a header -- and on
+        # the failure path, so a caller whose credential works is never told
+        # the API is going away.
+        'deprecation.sunset': "2027-02-01"
+        'deprecation.link': https://developers.buffer.com/guides/rest-migration.html
+
+  - name: an unknown path is JSON with the status repeated
+    source: https://api.bufferapp.com/1/cauldron-nope.json
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: GET
+      path: /1/cauldron-nope.json
+      headers: {}
+    expect:
+      status: 404
+      body:
+        error: "The endpoint you requested was not found."
+        code: 404
+
+  - name: profiles are a bare array
+    source: https://developers.buffer.com/guides/rest-migration.html
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      query:
+        access_token: 1/cauldr0nbufferf1xturet0ken
+    expect:
+      status: 200
+      body:
+        # No envelope, no count, no paging -- the migration guide's own table
+        # says the replacement is cursor-based and this was `page` and
+        # `count`, neither of which this endpoint takes.
+        '[0].id': 6b71f4e2c9d80a3517460b28
+        '[0].service': linkedin
+
+  - name: the identifier is a hex string rather than a number
+    source: https://developers.buffer.com/guides/rest-migration.html
+    fixture: account
+    request:
+      method: GET
+      path: /1/profiles.json
+      query:
+        access_token: 1/cauldr0nbufferf1xturet0ken
+    expect:
+      status: 200
+      body:
+        # Twenty-four hex characters, which is a MongoDB ObjectId -- so the
+        # storage layer's identifier is the public one, and a client that
+        # parses it as a number loses it.
+        '[1].id': 91c3d7b60fa254e8c1937d4a
+        '[1].service': mastodon
+        '[1].avatar': https://static.buffer.com/avatars/91c3d7b60fa254e8c1937d4a.png
+
+  - name: an account with no profiles answers an empty array
+    source: https://developers.buffer.com/guides/rest-migration.html
+    fixture: empty
+    request:
+      method: GET
+      path: /1/profiles.json
+      query:
+        access_token: 1/cauldr0nbufferf1xturet0ken
+    expect:
+      status: 200
+      body_matches: '^\[\s*\]\s*$'

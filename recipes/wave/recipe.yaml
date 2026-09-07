@@ -1,0 +1,438 @@
+# Wave Recipe for Cauldron
+#
+# Written against Wave's GraphQL reference at developer.waveapps.com and struck
+# live against gql.waveapps.com on 2026-09-07 with no credential, with a
+# deliberately invalid one, with a query that inlines an argument, and on a
+# path that does not exist.
+#
+# **The code is right and the sentence is wrong twice.** Struck live, with no
+# Authorization header at all:
+#
+#   POST /graphql/public  { businesses { edges { node { id name } } } }
+#   200 OK
+#   {"errors":[{"extensions":{"code":"UNAUTHENTICATED",
+#                             "id":"803193d3-38e9-477d-860b-680e8d91eea7"},
+#               "message":"Invalid request, authentication expired.",
+#               "locations":[{"line":1,"column":3}],"path":["businesses"]}],
+#    "data":{"businesses":null}}
+#
+# `UNAUTHENTICATED` is exactly the right code, which after several providers in
+# this collection that answer INTERNAL_SERVER_ERROR or nothing at all is worth
+# saying. The sentence beside it makes two claims and neither is true: the
+# request was not invalid, and nothing expired, because nothing was sent. A
+# caller reading it goes looking for a token that has timed out when what they
+# have is no token.
+#
+# **`data` is `{"businesses": null}` rather than `null`.** So the failing field
+# is nulled and the document around it is not. [railway](../railway) nulls the
+# whole document for the same failure at the same status, so `data.projects` is
+# `undefined` there and `data.businesses` is `null` here -- two GraphQL APIs,
+# one status, and the same client code reading two different things. Both are
+# permitted by the specification, which is what makes the difference expensive:
+# neither is a bug to report.
+#
+# **Inline arguments are refused outright.**
+#
+#   { __type(name: "Query") { fields { name } } }
+#   200 OK  "Inline argument of type String is not allowed. Provide data using
+#            GraphQL variables."
+#
+# Every literal in a query document is rejected, so every example anybody
+# copies out of a GraphQL tutorial fails against this API, and introspection
+# cannot be written the way the specification's own examples write it. The
+# policy is defensible -- it makes injection through string interpolation
+# impossible and query documents cacheable -- and no error message says any of
+# that, so what a caller learns is that their query is not allowed.
+#
+# That refusal arrives as `GRAPHQL_VALIDATION_FAILED` at **HTTP 200**, where
+# Railway sends the same code with a 400. So the two GraphQL APIs written up
+# together in this batch disagree about the status of a validation failure as
+# well as about the shape of `data`.
+#
+# **Every error carries a fresh UUID inside `extensions`.** Not beside them,
+# and not in a header: `extensions.id`, new on every request, which is the
+# thing to quote to support and the last place a client would look for it.
+#
+# **An unrouted path is Express's own error page.** `<pre>Cannot POST
+# /graphql/cauldron-nope</pre>` under `text/html`, so the framework beneath the
+# GraphQL server answers when the GraphQL server does not.
+
+recipe: wave
+capability: accounting
+version: 0.1.0
+
+upstream:
+  api: public
+  docs: https://developer.waveapps.com/hc/en-us/articles/360019968212
+  # No spec: the API is GraphQL, so its description is a schema.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0nwavef1xturet0ken00000000
+  # One answer to both, at HTTP 200.
+  absent_error: unauthenticated
+  rejected_error: unauthenticated
+  # An unrouted path is Express's 404 with no credential at all.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      data:
+        # The field is nulled and the document is not, which is the opposite
+        # of what Railway does for the same failure at the same status.
+        businesses: null
+
+resources:
+  business:
+    collection: data.businesses.edges
+    id:
+      field: node.id
+      style: opaque
+    fields:
+      name:
+        type: string
+        in: node
+        as: name
+      # Non-null in the schema, so a sole trader's own bookkeeping and a
+      # limited company arrive in one listing told apart by a boolean.
+      isPersonal:
+        type: boolean
+        in: node
+        as: isPersonal
+      # Nullable in the schema, so the field describing what kind of entity
+      # this is may not be there at all.
+      organizationalType:
+        in: node
+        as: organizationalType
+      currency:
+        type: map
+        in: node
+      timezone:
+        in: node
+        as: timezone
+
+routes:
+  - method: POST
+    path: /graphql/public
+    resource: business
+    operation: list
+    selects: businesses
+    pagination:
+      # page and pageSize, in the request body under variables. The
+      # connection is Relay-shaped -- edges and node -- and pages by number,
+      # so it looks like a cursor connection and is not one.
+      style: page
+      limit: 10
+      limit_param: variables.pageSize
+      cursor_param: variables.page
+      in: body
+    fields:
+      # currentPage is non-null in the schema and totalPages and totalCount
+      # are not, so a client always knows where it is and may never learn how
+      # far the listing goes.
+      data.businesses.pageInfo.currentPage: 1
+      data.businesses.pageInfo.totalPages: 1
+      data.businesses.pageInfo.totalCount: 2
+
+  # A document that inlines a literal never reaches a resolver, and is
+  # refused before the credential is looked at.
+  - method: POST
+    path: /graphql/public
+    public: true
+    selects: __type
+    error: inline_argument
+
+errors:
+  unauthenticated:
+    # A transport success carrying a field-level failure, which is GraphQL's
+    # model -- and the code is the right one.
+    status: 200
+    fields:
+      extensions:
+        code: UNAUTHENTICATED
+        # A fresh UUID on every request, inside extensions rather than beside
+        # them: the identifier to quote to support, in the last place a
+        # client would look.
+        id: 803193d3-38e9-477d-860b-680e8d91eea7
+      path:
+        - businesses
+      locations:
+        - line: 1
+          column: 3
+    # Two claims, neither true: the request was well formed, and nothing
+    # expired because nothing was sent.
+    message: "Invalid request, authentication expired."
+
+  inline_argument:
+    status: 200
+    message: "Inline argument of type String is not allowed. Provide data using GraphQL variables."
+    fields:
+      extensions:
+        # The same code Railway sends with a 400.
+        code: GRAPHQL_VALIDATION_FAILED
+        id: 24798976-f4ee-4372-9071-8da10269a78d
+      locations:
+        - line: 1
+          column: 15
+
+  unknown_route:
+    status: 404
+    # The framework beneath the GraphQL server, answering in HTML.
+    style: text
+    message: "<!DOCTYPE html><html lang=\"en\"><head><title>Error</title></head><body><pre>Cannot POST /graphql/cauldron-nope</pre></body></html>"
+    headers:
+      Content-Type: text/html; charset=utf-8
+
+fixtures:
+  empty:
+    business: []
+
+  account:
+    business:
+      - id: QnVzaW5lc3M6ZjJlNGE5YzEtNzgzYi00
+        name: Cauldron Consulting
+        isPersonal: false
+        organizationalType: SOLE_PROPRIETORSHIP
+        currency:
+          code: CAD
+          symbol: $
+        timezone: America/Toronto
+      - id: QnVzaW5lc3M6YTgxZDNjNTYtMGY5ZS00
+        name: Personal
+        # A sole trader's own bookkeeping, in the same listing.
+        isPersonal: true
+        currency:
+          code: CAD
+          symbol: $
+        timezone: America/Toronto
+
+conformance:
+  - name: a missing credential is answered at HTTP 200
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers: {}
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # The right code, which several providers in this collection do not
+        # manage.
+        'errors[0].extensions.code': UNAUTHENTICATED
+
+  - name: the sentence says the credential expired
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers: {}
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # To a request that sent none. Two claims and neither is true.
+        'errors[0].message': "Invalid request, authentication expired."
+
+  - name: the failing field is nulled and the document is not
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers: {}
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # Railway nulls the whole document for the same failure, so the same
+        # client code reads undefined there and null here.
+        'data.businesses': null
+
+  - name: the identifier to quote is inside extensions
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers: {}
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      matches:
+        # Fresh on every request, beside the code rather than beside the
+        # error.
+        'errors[0].extensions.id': '^[0-9a-f]{8}-[0-9a-f]{4}-'
+
+  - name: a wrong credential is the same response
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer notreal"
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        'errors[0].extensions.code': UNAUTHENTICATED
+        'errors[0].path[0]': businesses
+
+  - name: a query that inlines a literal is refused
+    source: https://gql.waveapps.com/graphql/public
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers: {}
+      json:
+        # Written the way the GraphQL specification's own introspection
+        # examples write it.
+        query: '{ __type(name: "Query") { fields { name } } }'
+    expect:
+      # A validation failure at 200, where Railway sends 400 for the same
+      # code.
+      status: 200
+      body:
+        'errors[0].message': "Inline argument of type String is not allowed. Provide data using GraphQL variables."
+        'errors[0].extensions.code': GRAPHQL_VALIDATION_FAILED
+
+  - name: an unrouted path is the framework's HTML page
+    source: https://gql.waveapps.com/graphql/cauldron-nope
+    verified: "2026-09-07"
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/cauldron-nope
+      headers: {}
+      json:
+        query: "{ businesses { edges { node { id } } } }"
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: 'Cannot POST /graphql/cauldron-nope'
+
+  - name: businesses arrive as edges and nodes
+    source: https://developer.waveapps.com/hc/en-us/articles/360019968212
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer cauldr0nwavef1xturet0ken00000000"
+      json:
+        query: "{ businesses { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # data.businesses is an object, .edges is the array, and the record
+        # is at edges[i].node -- so code that maps over data.businesses gets
+        # nothing.
+        'data.businesses.edges[0].node.name': Cauldron Consulting
+        'data.businesses.edges[0].node.id': QnVzaW5lc3M6ZjJlNGE5YzEtNzgzYi00
+
+  - name: a personal business is in the same listing
+    source: https://developer.waveapps.com/hc/en-us/articles/360019968212
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer cauldr0nwavef1xturet0ken00000000"
+      json:
+        query: "{ businesses { edges { node { id isPersonal organizationalType } } } }"
+    expect:
+      status: 200
+      body:
+        # One boolean tells a sole trader's own bookkeeping from a company,
+        # and the field that would say what kind of company is absent on the
+        # personal one rather than null.
+        'data.businesses.edges[0].node.isPersonal': false
+        'data.businesses.edges[0].node.organizationalType': SOLE_PROPRIETORSHIP
+        'data.businesses.edges[1].node.isPersonal': true
+      absent:
+        - 'data.businesses.edges[1].node.organizationalType'
+
+  - name: the currency is an object rather than a code
+    source: https://developer.waveapps.com/hc/en-us/articles/360019968212
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer cauldr0nwavef1xturet0ken00000000"
+      json:
+        query: "{ businesses { edges { node { currency { code symbol } timezone } } } }"
+    expect:
+      status: 200
+      body:
+        # So reading the currency is two hops, and a query that asks for
+        # `currency` without naming a subfield is not a valid document at
+        # all.
+        'data.businesses.edges[0].node.currency.code': CAD
+        'data.businesses.edges[0].node.timezone': America/Toronto
+
+  - name: the Relay connection pages by number
+    source: https://developer.waveapps.com/hc/en-us/articles/360019968212
+    fixture: account
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer cauldr0nwavef1xturet0ken00000000"
+      json:
+        query: "query B($page: Int, $pageSize: Int) { businesses(page: $page, pageSize: $pageSize) { edges { node { name } } pageInfo { currentPage totalCount } } }"
+        variables:
+          page: 2
+          pageSize: 1
+    expect:
+      status: 200
+      body:
+        # edges and node, which is Relay's cursor shape, with a page number
+        # in the request and no cursor anywhere in the response.
+        'data.businesses.edges[0].node.name': Personal
+        'data.businesses.pageInfo.currentPage': 1
+        'data.businesses.pageInfo.totalCount': 2
+
+  - name: an account with no businesses answers an empty edge list
+    source: https://developer.waveapps.com/hc/en-us/articles/360019968212
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql/public
+      headers:
+        Authorization: "Bearer cauldr0nwavef1xturet0ken00000000"
+      json:
+        query: "{ businesses { edges { node { id } } } }"
+    expect:
+      status: 200
+      body:
+        'data.businesses.edges': []

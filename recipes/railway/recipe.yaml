@@ -1,0 +1,461 @@
+# Railway Recipe for Cauldron
+#
+# Written against Railway's public GraphQL API at backboard.railway.app and
+# struck live on 2026-09-07 with no credential, with a deliberately invalid
+# one, with a query naming a field that does not exist, and on a path that does
+# not exist.
+#
+# **A refusal is HTTP 200 and a typo is HTTP 400.** Struck live, with no
+# Authorization header:
+#
+#   POST /graphql/v2  { projects { edges { node { id name } } } }
+#   200 OK
+#   {"errors":[{"message":"Not Authorized","locations":[{"line":1,"column":3}],
+#               "path":["projects"],"extensions":{"code":"INTERNAL_SERVER_ERROR"},
+#               "traceId":"909477571025499935"}],"data":null}
+#
+#   POST /graphql/v2  { nope }
+#   400 Bad Request
+#   {"errors":[{"message":"Cannot query field \"nope\" on type \"Query\".", ...
+#               "extensions":{"code":"GRAPHQL_VALIDATION_FAILED"}, ...}]}
+#
+# So the request that will never succeed until the caller finds a token comes
+# back 200, and the request with a typo in it comes back 400. GraphQL-over-HTTP
+# permits the 200 -- a transport-level success carrying a field-level error is
+# the specification's own model -- but Railway does not apply it consistently,
+# and the inconsistent half is the one a client's retry logic reads first.
+#
+# **`INTERNAL_SERVER_ERROR` is the code for "Not Authorized".** That is
+# Apollo's default when a resolver throws something carrying no code of its
+# own, so the refusal is an unhandled exception wearing a response's clothes.
+# The consequence is not cosmetic: every retry policy ever written treats
+# INTERNAL_SERVER_ERROR as transient and a missing token as permanent, and a
+# client reading `extensions.code` will retry this one forever. The message
+# beside it is right, and it is the half no machine reads.
+#
+# The validation failure four bytes away gets `GRAPHQL_VALIDATION_FAILED`,
+# which is correct and specific. So the API has an accurate code for the
+# mistake a developer makes once and a wrong one for the mistake every
+# integration makes on its first request.
+#
+# **One service, two identifier names in two formats.** The GraphQL errors
+# carry `traceId`, an eighteen-or-nineteen-digit number sent as a string -- a snowflake,
+# which a client that parses it to a number loses the tail of. The REST 404 on
+# an unrouted path carries `requestId`, a UUID. Neither response mentions the
+# other's field, so quoting an identifier to support means knowing which half
+# of the service answered.
+#
+# **`data` is null on the 200 and absent from the 400.** `"data" in body` is
+# true for the failure that arrived as a success and false for the one that
+# arrived as a failure, which is backwards from how a client would guess.
+#
+# **Introspection is open to anonymous callers.** `__type(name: "Query")` with
+# no credential returns the whole schema, `adminVolumeInstancesForVolume`,
+# `apiTokens`, `auditLogs`, `botScopeBindings`, `bucketS3Credentials` and
+# `complianceAgreements` included. So an unauthenticated request cannot read
+# one field and can read the name of every field there is.
+
+recipe: railway
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.railway.com/reference/public-api
+  # No spec: the API is GraphQL, so its description is a schema rather than an
+  # OpenAPI document -- and that schema is served to anybody who asks for it.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-r41lway-f1xture-t0ken-00000000
+  # One answer to both, at HTTP 200.
+  absent_error: not_authorized
+  rejected_error: not_authorized
+  # An unrouted path is a 404 with no credential at all, and its shape is not
+  # GraphQL's.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      # Null beside the array on the 200, which is the GraphQL contract. The
+      # 400 omits the key entirely and this format has one envelope for all
+      # of a Recipe's errors, so that difference is recorded rather than
+      # served -- see the README.
+      data: null
+
+resources:
+  project:
+    collection: data.projects.edges
+    id:
+      field: node.id
+      style: uuid
+    fields:
+      # The cursor belongs to the edge rather than to the project, which is
+      # the whole reason an edge is a separate object.
+      cursor:
+        type: string
+      name:
+        type: string
+        in: node
+        as: name
+      # Null on a project nobody wrote one for, which is most of them.
+      description:
+        in: node
+        as: description
+      createdAt:
+        type: datetime
+        in: node
+        as: createdAt
+      isPublic:
+        type: boolean
+        in: node
+        as: isPublic
+      # Set when a trial project has been reaped, and null until then -- so
+      # the field that says a project is gone is on the project, and a
+      # listing carries both kinds.
+      deletedAt:
+        in: node
+        as: deletedAt
+
+routes:
+  - method: POST
+    path: /graphql/v2
+    resource: project
+    operation: list
+    selects: projects
+    pagination:
+      # first and after, in the request body under variables, which is where
+      # a client passing them as GraphQL variables puts them. Nothing here
+      # parses the query document, so a query inlining its arguments still
+      # answers the whole fixture.
+      style: cursor
+      limit_param: variables.first
+      cursor_param: variables.after
+      in: body
+    fields:
+      # Beside the edges rather than inside them, so a client reading
+      # hasNextPage off an edge finds undefined and stops after one page.
+      data.projects.pageInfo.hasNextPage: false
+      data.projects.pageInfo.endCursor: YXJyYXljb25uZWN0aW9uOjE=
+
+  # A document naming a field the schema does not have never reaches a
+  # resolver, so it is refused before the credential is looked at -- and,
+  # unlike the refusal above, with a 400.
+  - method: POST
+    path: /graphql/v2
+    public: true
+    selects: nope
+    error: validation_failed
+
+errors:
+  not_authorized:
+    # A transport success carrying a field-level failure, which is GraphQL's
+    # own model -- and the same service sends 400 for a typo.
+    status: 200
+    message: Not Authorized
+    fields:
+      extensions:
+        # Apollo's default for a resolver that threw without a code, so the
+        # machine-readable half of a permanent failure says the server broke
+        # and every retry policy treats it as transient.
+        code: INTERNAL_SERVER_ERROR
+      # The field the query asked for, which is the useful part.
+      path:
+        - projects
+      locations:
+        - line: 1
+          column: 3
+      # Nineteen digits as a string. A client that parses it to a number
+      # loses the last few.
+      traceId: "909477571025499935"
+
+  validation_failed:
+    status: 400
+    message: 'Cannot query field "nope" on type "Query".'
+    fields:
+      extensions:
+        # Correct and specific, for the mistake a developer makes once.
+        code: GRAPHQL_VALIDATION_FAILED
+      locations:
+        - line: 1
+          column: 3
+      traceId: "8072426501861940592"
+
+  unknown_route:
+    status: 404
+    # Not GraphQL's shape at all: a flat object with the other identifier
+    # field, in the other format.
+    style: flat
+    message_field: message
+    code_field: "-"
+    message: Not Found
+    fields:
+      requestId: 7b46b820-314e-4f7e-850b-f9bce2c9ff0f
+
+fixtures:
+  empty:
+    project: []
+
+  workspace:
+    project:
+      - id: 4a1f7c93-6d20-4b85-9e07-c3f81a5d2b64
+        cursor: YXJyYXljb25uZWN0aW9uOjA=
+        name: cauldron-api
+        description: null
+        createdAt: "2026-03-18T09:14:52.000Z"
+        isPublic: false
+        deletedAt: null
+      - id: e97b25d1-8fa4-4c60-b731-05de6c14a983
+        cursor: YXJyYXljb25uZWN0aW9uOjE=
+        name: cauldron-docs
+        description: Static site for the documentation
+        createdAt: "2026-06-02T17:41:08.000Z"
+        isPublic: true
+        # Reaped, and still in the listing.
+        deletedAt: "2026-08-29T02:10:00.000Z"
+
+conformance:
+  - name: a missing credential is answered at HTTP 200
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers: {}
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      # The request that cannot succeed until a token is found comes back a
+      # success, and the typo below comes back a failure.
+      status: 200
+      body:
+        'errors[0].message': Not Authorized
+
+  - name: the machine-readable code says the server broke
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers: {}
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # Apollo's default for a resolver that threw without a code. Every
+        # retry policy treats this as transient; a missing token is not.
+        'errors[0].extensions.code': INTERNAL_SERVER_ERROR
+
+  - name: a wrong credential is the same response
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer notreal"
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        'errors[0].message': Not Authorized
+        'errors[0].extensions.code': INTERNAL_SERVER_ERROR
+
+  - name: data is null beside the array
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers: {}
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # Present and null on the failure that arrived as a success.
+        data: null
+
+  - name: the trace identifier is a long number sent as text
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers: {}
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      status: 200
+      matches:
+        # Eighteen or nineteen digits, quoted, so parsing it to a number
+        # loses the tail.
+        'errors[0].traceId': '^[0-9]{15,20}$'
+
+  - name: an unrouted path is a flat object with a UUID instead
+    source: https://backboard.railway.app/graphql/cauldron-nope
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/cauldron-nope
+      headers: {}
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      # One service, two identifier names, two formats -- and neither
+      # response mentions the other's.
+      status: 404
+      body:
+        message: Not Found
+      matches:
+        requestId: '^[0-9a-f]{8}-[0-9a-f]{4}-'
+
+  - name: projects arrive as edges and nodes
+    source: https://docs.railway.com/reference/public-api
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "{ projects { edges { node { id name } } } }"
+    expect:
+      status: 200
+      body:
+        # data.projects is an object, data.projects.edges is the array, and
+        # the record is at edges[i].node. Code that maps over data.projects
+        # gets nothing.
+        'data.projects.edges[0].node.name': cauldron-api
+        'data.projects.edges[0].node.id': 4a1f7c93-6d20-4b85-9e07-c3f81a5d2b64
+
+  - name: the cursor is on the edge and not on the project
+    source: https://docs.railway.com/reference/public-api
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "{ projects { edges { cursor node { id } } } }"
+    expect:
+      status: 200
+      body:
+        # Which is the whole reason an edge exists as a separate object, and
+        # the reason a client cannot page from the records alone.
+        'data.projects.edges[0].cursor': YXJyYXljb25uZWN0aW9uOjA=
+        'data.projects.pageInfo.hasNextPage': false
+
+  - name: a deleted project is still in the listing
+    source: https://docs.railway.com/reference/public-api
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "{ projects { edges { node { id deletedAt isPublic } } } }"
+    expect:
+      status: 200
+      body:
+        # deletedAt is null until it is not, and the record stays where it
+        # was -- so a client counting projects counts the reaped ones unless
+        # it checks a field the query has to ask for.
+        'data.projects.edges[0].node.deletedAt': null
+        'data.projects.edges[1].node.deletedAt': "2026-08-29T02:10:00.000Z"
+        'data.projects.edges[1].node.isPublic': true
+
+  - name: a project without a description sends null
+    source: https://docs.railway.com/reference/public-api
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "{ projects { edges { node { description createdAt } } } }"
+    expect:
+      status: 200
+      body:
+        'data.projects.edges[0].node.description': null
+        'data.projects.edges[0].node.createdAt': "2026-03-18T09:14:52.000Z"
+        'data.projects.edges[1].node.description': Static site for the documentation
+
+  - name: projects page on first and after in the variables
+    source: https://docs.railway.com/reference/public-api
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "query P($first: Int, $after: String) { projects(first: $first, after: $after) { edges { node { name } } } }"
+        variables:
+          first: 1
+          # The record's own identifier rather than the edge's opaque
+          # cursor. Railway's `after` takes the base64 above; this emulator
+          # positions on the id, which is stated rather than hidden -- see
+          # the README.
+          after: 4a1f7c93-6d20-4b85-9e07-c3f81a5d2b64
+    expect:
+      status: 200
+      body:
+        'data.projects.edges[0].node.name': cauldron-docs
+
+  - name: a query naming a field that does not exist is a 400
+    source: https://backboard.railway.app/graphql/v2
+    verified: "2026-09-07"
+    fixture: workspace
+    request:
+      method: POST
+      path: /graphql/v2
+      headers: {}
+      json:
+        query: "{ nope }"
+    expect:
+      # A typo is a transport failure and a missing credential is a
+      # transport success, which is the inversion this Recipe is about.
+      status: 400
+      body:
+        'errors[0].message': 'Cannot query field "nope" on type "Query".'
+        'errors[0].extensions.code': GRAPHQL_VALIDATION_FAILED
+
+  - name: a workspace with no projects answers an empty edge list
+    source: https://docs.railway.com/reference/public-api
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql/v2
+      headers:
+        Authorization: "Bearer cauldr0n-r41lway-f1xture-t0ken-00000000"
+      json:
+        query: "{ projects { edges { node { id } } } }"
+    expect:
+      status: 200
+      body:
+        'data.projects.edges': []
