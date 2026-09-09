@@ -463,7 +463,7 @@ the header says so.
 | ~~Persona~~ | Shipped. The decision arrives by webhook minutes after the inquiry is created |
 | ~~Onfido~~ | Shipped. A check is complete and its report can still be consider rather than clear |
 | ~~Veriff~~ | Shipped. The signature is never examined until the client identifier passes |
-| Middesk | Assess — business verification and its partial matches |
+| ~~Middesk~~ | Shipped. **The published OpenAPI document declares one response and it is the success** -- `GET /v1/businesses` lists only `200`, no 401, no 404, nothing -- on an API that answers 401 to every request arriving without a credential. So the response every new integration meets first is the one the specification does not mention, and a generated client has no failure type at all. With Attentive declaring five statuses and no bodies and Close typing three as "Any type", the collection now covers that spectrum end to end. **The security scheme is defined and never applied**, the same malpractice Close has and found the same day: `bearer_auth` under components, `security` null everywhere, and a hand-rolled `Authorization` header parameter instead. **`data` is not required and `object` is**, so a conforming listing must say it is a list and need not contain records. The failure itself is `{"errors":[{"message":"Unauthorized"}]}` -- an array of one, one field, the reason phrase, answering a missing credential, a wrong one and a schemeless one alike. An unknown path declares `text/html` and sends zero bytes. And **`GET /` answers 204 to a request with no credential**, so the cheapest health check anybody writes reports this API healthy and authenticated when it is neither |
 | ~~Alloy~~ | Shipped. Three unauthenticated failures across two statuses |
 | ~~Sift~~ | Shipped. **Everything is HTTP 400 and the real status is a small integer in the body**: a wrong verb, a missing credential, a wrong credential and an unknown path all answer 400, with `status` 50 or 51 in Sift's own numbering. So the status line carries nothing, every branch has to read the body, and a proxy or retry policy keyed on the status sees one value for four problems. **`time` is the server's clock on every response**, seconds, which is genuinely useful and unique here: a client can measure its own skew from a rejection, and this is an API whose events are timestamped by the caller. **A failing POST echoed the request body back** as a string -- and the events API takes the key as a body field, so a real key would be echoed into a response the caller logs; this Recipe models the score API instead. Two serialisers, spaced on GET and compact on POST. A user has one score per abuse type, so there is no single number. The identifier is the customer's own unvalidated user string |
 
@@ -2499,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These seventy-one are left, and every one of them has now been looked for
+another. These seventy-two are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2555,6 +2555,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| Middesk | No client for this API on npm, Packagist or the Go module proxy under an obvious name, checked 2026-09-09. The npm results for the name are unrelated middleware helpers matched on the first six letters |
 | Close | No client for this API on npm, Packagist or the Go module proxy under an obvious name, checked 2026-09-09. The npm results for the word are overwhelmingly lifecycle helpers -- things that close a stream, a modal or a connection -- so a name match would be wrong about nearly every project that has one |
 | ~~Health Gorilla~~ | Shipped -- see the row above |
 | ~~Metriport~~ | Shipped -- see the row above |
