@@ -67,7 +67,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Provider | Why |
 |---|---|
 | ~~PayPal~~ | Shipped. APPROVED is not paid, the links array is the flow, a capture can succeed without settling, and the fee comes out of the middle |
-| Braintree | Transactions, customers, payment methods |
+| ~~Braintree~~ | Shipped, as the GraphQL API rather than the older REST one. **`extensions` appears twice in one response and means two different things**: the top-level one carries a request id, the one inside the error carries a taxonomy, and nothing they hold overlaps -- so `body.extensions` and `body.errors[0].extensions` are unrelated reads and merging them loses one. GraphQL defines both, so the collision is the specification's; it is still where a reader gets lost, and this is the first response here to carry both. Inside the inner one are **two taxonomies for one failure in two casings**, `errorClass: AUTHENTICATION` beside `errorType: developer_error`. **Authentication runs before the query is parsed**, so `{ nope }` gets the auth error and an unauthenticated caller can learn nothing about the schema -- the exact opposite of Railway, whose whole schema including its admin fields is introspectable anonymously and whose authorisation failure is reported as INTERNAL_SERVER_ERROR. The required `Braintree-Version` header is invisible the same way. Both credential sentences are true and the missing one names the header. **`edges` is nullable and `pageInfo` is not**, the same envelope-guaranteed-contents-optional trade Middesk makes in REST. Every transaction carries `id` and `legacyId`, both non-null and not interchangeable. And **money names its currency twice** -- `currencyIsoCode` beside `currencyCode`, same type, descriptions saying the same thing -- with a value the schema permits three decimal places in |
 | ~~Mollie~~ | Shipped. The webhook is an id and nothing else, open is not pending, the checkout link disappears |
 | Wise Business | Transfers, recipients, balances, settlement states |
 | ~~GoCardless~~ | Shipped, written against GoCardless's own API reference. **The envelope key is plural even when it holds one object** -- fetching one mandate answers `{"mandates": {...}}`, so `body.mandates[0]` works on the listing and is undefined on the get while `body.mandate` is undefined on both. The `errors` array changes its keys by failure type: `validation_failed` entries carry `field` and `request_pointer`, everything else carries `reason`, so rendering `errors[0].field` against a form gets nothing on a 409. `type` is the discriminator and the status is not -- `invalid_api_usage` alone covers nine statuses. A mandate has ten states, six terminal, and `suspended_by_payer` is neither cancelled by the merchant nor failed at the bank. `GoCardless-Version: 2015-07-06` is required on every request and refused rather than defaulted when absent |
@@ -2499,7 +2499,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These seventy-two are left, and every one of them has now been looked for
+another. These seventy-three are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2555,6 +2555,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| Braintree | The published SDKs -- braintree on npm and Packagist, braintree_python, the Java and .NET libraries -- target Braintree's older REST and server-to-server APIs rather than the GraphQL surface this Recipe describes. A project holding one is talking to a different endpoint with a different credential shape, so a name match would offer a GraphQL emulator to code that never sends a query. Checked 2026-09-09 |
 | Middesk | No client for this API on npm, Packagist or the Go module proxy under an obvious name, checked 2026-09-09. The npm results for the name are unrelated middleware helpers matched on the first six letters |
 | Close | No client for this API on npm, Packagist or the Go module proxy under an obvious name, checked 2026-09-09. The npm results for the word are overwhelmingly lifecycle helpers -- things that close a stream, a modal or a connection -- so a name match would be wrong about nearly every project that has one |
 | ~~Health Gorilla~~ | Shipped -- see the row above |

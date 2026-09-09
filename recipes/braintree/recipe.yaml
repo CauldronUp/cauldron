@@ -1,0 +1,447 @@
+# Braintree Recipe for Cauldron
+#
+# The GraphQL API, written against Braintree's reference at
+# graphql.braintreepayments.com and struck live against
+# payments.sandbox.braintree-api.com on 2026-09-09 with no credential, with a
+# deliberately invalid one, with a query naming a field that does not exist,
+# and with the required version header left off.
+#
+# **`extensions` appears twice in one response and means two different things.**
+# Struck live:
+#
+#   POST /graphql   { ping }        (no credential)
+#   200 OK
+#   {"extensions":{"requestId":"45d995dd-84a3-40ca-ae78-d67cc7d02c43"},
+#    "data":null,
+#    "errors":[{"message":"Authentication credentials are missing. Authorization
+#                          header is required and must contain a value.",
+#               "extensions":{"errorClass":"AUTHENTICATION",
+#                             "errorType":"developer_error"}}]}
+#
+# The top-level `extensions` carries a request id. The `extensions` inside the
+# error carries a taxonomy. Same key, two levels, no overlap in what they hold
+# -- so a client reading `body.extensions` and a client reading
+# `body.errors[0].extensions` are reading unrelated things, and code that
+# merges them loses one.
+#
+# GraphQL's specification defines both: a top-level `extensions` for the
+# response and an `extensions` on each error. Braintree uses both correctly and
+# the collision is the specification's, not Braintree's. It is still the place
+# a reader gets lost.
+#
+# **And there are two taxonomies inside the inner one.** `errorClass` is
+# `AUTHENTICATION` and `errorType` is `developer_error`. One says what went
+# wrong and the other says whose fault it is, both about the same failure, in
+# two different casings -- screaming snake beside lower snake, in one object.
+#
+# **Authentication runs before the query is parsed.** `{ nope }`, naming a
+# field the schema does not have, answers the authentication error rather than
+# a validation error. So an unauthenticated caller cannot tell a typo from a
+# missing credential, and cannot discover anything about the schema by asking.
+# [railway](../railway) is the opposite: its schema is fully introspectable
+# without a credential, and its authorisation failure is reported as a server
+# error.
+#
+# **The version header is invisible until you authenticate too.** Braintree
+# requires a `Braintree-Version` header on every request; leaving it off
+# answers the same authentication error, so the requirement cannot be
+# discovered by omitting it.
+#
+# **Both sentences are true, and the first one names the header.**
+# "Authentication credentials are missing. Authorization header is required and
+# must contain a value." for a request carrying none, and "Authentication
+# credentials are invalid." for one carrying a wrong one. Two branches, both
+# accurate, and the missing case says where the credential goes.
+#
+# **`edges` is nullable and `pageInfo` is not.** `TransactionConnection` types
+# them `[TransactionConnectionEdge]` and `PageInfo!`, so a conforming response
+# must carry the paging metadata and need not carry any transactions. It is the
+# same trade [middesk](../middesk) makes in REST, where `object` and `has_more`
+# are required and `data` is not: in both, the envelope is guaranteed and the
+# contents are optional.
+#
+# **Every transaction has two identifiers.** `id: ID!` is the GraphQL global
+# one and `legacyId: ID!` is the old REST one, both non-null, neither
+# interchangeable with the other. A client holding a legacyId cannot pass it
+# where an id belongs, and the schema does not say which is which beyond the
+# word "legacy".
+#
+# **And money carries its currency twice.** `MonetaryAmount` is
+# `{value, currencyIsoCode, currencyCode}` -- two fields of the same type whose
+# descriptions say the same thing in different words: "The ISO code for the
+# money's currency" and "The currency code for the monetary amount". `value` is
+# documented as "either a whole number or a number with up to 3 decimal
+# places", so a money field in a payments API has three decimal places and two
+# permitted shapes.
+#
+# **The listing cannot be asked for everything.** `transactions` takes
+# `input: TransactionSearchInput!` -- non-null -- so there is no form of this
+# query that means "all of them"; a search filter is mandatory before anything
+# comes back.
+
+recipe: braintree
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: "2019-01-01"
+  docs: https://graphql.braintreepayments.com/reference/
+  # No spec: the API is GraphQL, so its description is a schema -- and this one
+  # cannot be introspected without a credential, because authentication runs
+  # before the document is parsed.
+
+auth:
+  scheme: basic
+  keys:
+    - cauldr0nbra1ntreepubl1ckey
+  # Two branches, two sentences, both true.
+  absent_error: authentication_missing
+  rejected_error: authentication_invalid
+  # A Bearer prefix on an API that takes Basic is unreadable rather than
+  # wrong, and live it gets the same "credentials are invalid" sentence.
+  malformed_error: authentication_invalid
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      # Null beside the array, and beside the top-level extensions below.
+      data: null
+
+resources:
+  transaction:
+    collection: data.search.transactions.edges
+    id:
+      field: node.id
+      style: opaque
+    fields:
+      # Belongs to the edge rather than to the transaction, which is why an
+      # edge is a separate object at all.
+      cursor:
+        type: string
+      # The old REST identifier, non-null, beside the global one and not
+      # interchangeable with it.
+      legacyId:
+        type: string
+        in: node
+        as: legacyId
+      status:
+        type: string
+        in: node
+        as: status
+      createdAt:
+        type: datetime
+        in: node
+        as: createdAt
+      # An object, and one that names its currency twice.
+      amount:
+        type: map
+        in: node
+      merchantId:
+        type: string
+        in: node
+        as: merchantId
+
+routes:
+  - method: POST
+    path: /graphql
+    resource: transaction
+    operation: list
+    selects: transactions
+    pagination:
+      # first and after, in the request body under variables. Nothing here
+      # parses the query document.
+      style: cursor
+      limit_param: variables.first
+      cursor_param: variables.after
+      in: body
+    fields:
+      # Non-null in the schema where the edges beside it are not.
+      data.search.transactions.pageInfo.hasNextPage: false
+      data.search.transactions.pageInfo.endCursor: eyJvZmZzZXQiOjF9
+      # The response-level extensions, which holds a request id and nothing
+      # a client would branch on.
+      extensions.requestId: 45d995dd-84a3-40ca-ae78-d67cc7d02c43
+
+errors:
+  authentication_missing:
+    # A transport success carrying a field-level failure, which is GraphQL's
+    # own model.
+    status: 200
+    # Accurate, and it names the header rather than the key.
+    message: "Authentication credentials are missing. Authorization header is required and must contain a value."
+    fields:
+      extensions:
+        # Two taxonomies for one failure, in two casings.
+        errorClass: AUTHENTICATION
+        errorType: developer_error
+
+  authentication_invalid:
+    status: 200
+    message: "Authentication credentials are invalid."
+    fields:
+      extensions:
+        errorClass: AUTHENTICATION
+        errorType: developer_error
+
+fixtures:
+  empty:
+    transaction: []
+
+  merchant:
+    transaction:
+      - id: dHJhbnNhY3Rpb25fN2sybTRy
+        cursor: eyJvZmZzZXQiOjB9
+        legacyId: 7k2m4rqd
+        status: SETTLED
+        createdAt: "2026-08-14T11:02:41.000Z"
+        amount:
+          value: "61.00"
+          currencyIsoCode: USD
+          # The same fact under a second name, which is what the schema
+          # declares.
+          currencyCode: USD
+        merchantId: cauldr0nmerchant
+      - id: dHJhbnNhY3Rpb25fOXAzbTl4
+        cursor: eyJvZmZzZXQiOjF9
+        legacyId: 9p3m9xb2
+        status: AUTHORIZED
+        createdAt: "2026-09-02T16:45:09.000Z"
+        amount:
+          # Three decimal places, which the Amount scalar permits and two-place
+          # money code truncates.
+          value: "240.500"
+          currencyIsoCode: USD
+          currencyCode: USD
+        merchantId: cauldr0nmerchant
+
+conformance:
+  - name: a missing credential is answered at HTTP 200
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        # Names the header a caller has to fix, which most providers here do
+        # not.
+        'errors[0].message': "Authentication credentials are missing. Authorization header is required and must contain a value."
+
+  - name: the error carries two taxonomies in two casings
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        # One says what went wrong, the other whose fault it is, about the
+        # same failure.
+        'errors[0].extensions.errorClass': AUTHENTICATION
+        'errors[0].extensions.errorType': developer_error
+
+  - name: extensions appears at two levels holding different things
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        # The response's extensions holds a request id; the error's holds a
+        # taxonomy. Same key, two levels, nothing in common.
+        'errors[0].extensions.errorClass': AUTHENTICATION
+        data: null
+
+  - name: a wrong credential has its own sentence
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Bearer notreal"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        # Two branches, both true about the request that earned them.
+        'errors[0].message': "Authentication credentials are invalid."
+
+  - name: a query naming a field that does not exist is the auth error
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+      json:
+        # `transactions` is in the document so this route answers it. Live,
+        # `{ nope }` gets this same body: authentication runs before the
+        # query is parsed, so a typo and a missing key are one failure.
+        query: "{ search { transactions(input: {}) { nope } } }"
+    expect:
+      status: 200
+      body:
+        'errors[0].message': "Authentication credentials are missing. Authorization header is required and must contain a value."
+
+  - name: leaving the version header off is the auth error too
+    source: https://payments.sandbox.braintree-api.com/graphql
+    verified: "2026-09-09"
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      # No Braintree-Version at all, which is a documented requirement and
+      # cannot be discovered by omitting it.
+      headers: {}
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        'errors[0].message': "Authentication credentials are missing. Authorization header is required and must contain a value."
+
+  - name: transactions arrive as edges and nodes
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id legacyId } } } } }"
+    expect:
+      status: 200
+      body:
+        'data.search.transactions.edges[0].node.id': dHJhbnNhY3Rpb25fN2sybTRy
+        'data.search.transactions.edges[0].node.status': SETTLED
+
+  - name: every transaction carries a second legacy identifier
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id legacyId } } } } }"
+    expect:
+      status: 200
+      body:
+        # Both non-null, neither interchangeable, and only the word "legacy"
+        # says which is which.
+        'data.search.transactions.edges[0].node.legacyId': 7k2m4rqd
+        'data.search.transactions.edges[1].node.legacyId': 9p3m9xb2
+
+  - name: money names its currency twice
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { amount { value currencyIsoCode currencyCode } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Two fields of the same type saying the same thing, and a value the
+        # schema permits three decimal places in.
+        'data.search.transactions.edges[0].node.amount.currencyIsoCode': USD
+        'data.search.transactions.edges[0].node.amount.currencyCode': USD
+        'data.search.transactions.edges[1].node.amount.value': "240.500"
+
+  - name: the page info is guaranteed where the edges are not
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "{ search { transactions(input: {}) { pageInfo { hasNextPage } edges { cursor } } } }"
+    expect:
+      status: 200
+      body:
+        # PageInfo! against [TransactionConnectionEdge] -- the metadata is
+        # non-null and the records are not.
+        'data.search.transactions.pageInfo.hasNextPage': false
+        'data.search.transactions.edges[0].cursor': eyJvZmZzZXQiOjB9
+        'data.search.transactions.edges[0].node.createdAt': "2026-08-14T11:02:41.000Z"
+        'data.search.transactions.edges[0].node.merchantId': cauldr0nmerchant
+
+  - name: transactions page on first and after in the variables
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: merchant
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "query T($first: Int, $after: String) { search { transactions(input: {}, first: $first, after: $after) { edges { node { legacyId } } } } }"
+        variables:
+          first: 1
+          after: dHJhbnNhY3Rpb25fN2sybTRy
+    expect:
+      status: 200
+      body:
+        'data.search.transactions.edges[0].node.legacyId': 9p3m9xb2
+
+  - name: a merchant with no transactions answers an empty edge list
+    source: https://graphql.braintreepayments.com/reference/
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Braintree-Version: "2019-01-01"
+        Authorization: "Basic Y2F1bGRyMG5icmExbnRyZWVwdWJsMWNrZXk6"
+      json:
+        query: "{ search { transactions(input: {}) { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        'data.search.transactions.edges': []
