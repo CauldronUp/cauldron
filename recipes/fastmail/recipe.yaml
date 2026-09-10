@@ -1,0 +1,408 @@
+# Fastmail JMAP Recipe for Cauldron
+#
+# JMAP -- RFC 8620 -- rather than REST or GraphQL, written against the RFC and
+# Fastmail's own published metadata, and struck live against api.fastmail.com
+# on 2026-09-10 with no credential, with a deliberately invalid one, and on a
+# path that does not exist.
+#
+# **The challenge header does the whole job, and it is the only one in this
+# collection that does.** Struck live:
+#
+#   GET /jmap/session     (no credential)
+#   401 Content-Type: text/plain
+#   WWW-Authenticate: Bearer resource_metadata=
+#     "https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session"
+#
+# That is RFC 9728, OAuth 2.0 Protected Resource Metadata. The URL resolves,
+# and it answers:
+#
+#   {"resource": "https://api.fastmail.com/jmap/session",
+#    "authorization_servers": ["https://api.fastmail.com"],
+#    "scopes_supported": ["urn:ietf:params:oauth:scope:mail",
+#                         "urn:ietf:params:oauth:scope:contacts",
+#                         "urn:ietf:params:oauth:scope:calendars",
+#                         "offline_access"],
+#    "bearer_methods_supported": ["header"],
+#    "resource_name": "Fastmail JMAP API",
+#    "resource_documentation": "https://www.fastmail.com/dev/"}
+#
+# So an unauthenticated caller is told, mechanically: which authorisation
+# server to go to, which scopes exist, that the token belongs in a header, what
+# this resource is called, and where the documentation is.
+#
+# Three Recipes shipped in the last two days get exactly this wrong.
+# [cloudamqp](../cloudamqp) sends no challenge at all to the caller with no
+# credential. [airship](../airship) sends one filled with whichever scheme the
+# caller already tried. [cloudsmith](../cloudsmith) sends one naming a scheme
+# that does not work. Fastmail is the fourth in that series and the one that
+# works, and it is worth recording that the correct answer exists, is
+# standardised, and costs one header.
+#
+# **And then the body is a bare sentence in text/plain.**
+#
+#   (no credential)   No Authorization header
+#   Bearer notreal    Invalid Authorization bearer parameters, not valid format
+#
+# No JSON, no code, no field name, no envelope. The machine-readable half of
+# this failure is the best in the collection and the human-readable half is a
+# string. They are on the same response.
+#
+# Both sentences are true, and the second one is unusually precise: it says the
+# **format** is wrong rather than the key. `notreal` is a syntactically valid
+# bearer token by RFC 6750's grammar, so this is Fastmail saying its own tokens
+# have a shape and that was not one -- a distinction almost nothing else here
+# draws.
+#
+# **The standard's own example does not parse.** RFC 8620 section 2.1 prints a
+# Session object containing:
+#
+#     "urn:ietf:params:jmap:mail": {}
+#     "urn:ietf:params:jmap:contacts": {},
+#
+# There is no comma after the first `{}`. The example JSON in a Standards Track
+# RFC, describing a JSON protocol, is not valid JSON. Anyone copying it into a
+# fixture -- which is exactly what this Recipe was about to do -- gets a parse
+# error, and the reason is in the specification rather than in their editor.
+#
+# **`accounts` is a map and finding your own is two lookups.** The session
+# carries `accounts`, keyed by opaque account id, and `primaryAccounts`, keyed
+# by capability URN and valued by account id. So "the account I read mail with"
+# is `accounts[session.primaryAccounts["urn:ietf:params:jmap:mail"]]` -- a
+# lookup through one map to get a key for another.
+#
+# **The object keys are URNs, and one of them is a URL.** `capabilities` is
+# keyed by `urn:ietf:params:jmap:core` and friends, and a vendor extension is
+# keyed by a full `https://` address. Namespaced identifiers as JSON object
+# keys, which is correct and which no JSON-to-struct mapping enjoys.
+#
+# **`downloadUrl` is not a URL.** It is an RFC 6570 URI Template:
+# `.../download/{accountId}/{blobId}/{name}?accept={type}`. A field ending
+# `Url` holding something that has to be expanded before it can be fetched --
+# the same shape [matrix](../matrix) has with `mxc://`, arrived at differently:
+# Matrix's is a scheme no client implements, this one is an address with holes
+# in it.
+#
+# **An unknown path is a 302.** Not a 404: a mistyped JMAP path redirects, and
+# a client following redirects lands on an HTML page and parses it as JSON.
+
+recipe: fastmail
+capability: email
+version: 0.1.0
+
+upstream:
+  api: "8620"
+  docs: https://www.fastmail.com/dev/
+  # No spec: JMAP is defined by RFC 8620 and RFC 8621 as prose and examples
+  # rather than as a machine-readable description, and Fastmail publishes no
+  # OpenAPI for it -- which is what a protocol looks like when it is a
+  # protocol rather than one vendor's API.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - fmu1-cauldr0nf1xturet0ken00000000
+  absent_error: no_authorization_header
+  # Both a wrong token and an unreadable one get the same sentence, and it is
+  # about the format rather than the key.
+  rejected_error: invalid_bearer
+  malformed_error: invalid_bearer
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    # A bare sentence, not an object -- so there is no field to read it from.
+    style: text
+
+resources:
+  session:
+    id:
+      field: state
+      style: opaque
+    fields:
+      username:
+        type: string
+      apiUrl:
+        type: string
+      # An RFC 6570 URI Template rather than an address: it has to be expanded
+      # before anything can be fetched.
+      downloadUrl:
+        type: string
+      uploadUrl:
+        type: string
+      eventSourceUrl:
+        type: string
+      # Keyed by URN, and a vendor extension is keyed by a full https address.
+      capabilities:
+        type: map
+      # Keyed by opaque account id.
+      accounts:
+        type: map
+      # Keyed by capability URN and valued by account id, so finding your own
+      # mail account is a lookup through one map to get a key for another.
+      primaryAccounts:
+        type: map
+
+routes:
+  - method: GET
+    path: /jmap/session
+    resource: session
+    operation: get
+    # There is no identifier in the request: the session describes whoever the
+    # credential belongs to.
+    id_from: auth
+
+  # The document the challenge header points at, which is the whole reason the
+  # challenge is worth anything.
+  - method: GET
+    path: /.well-known/oauth-protected-resource/jmap/session
+    public: true
+    raw:
+      content_type: application/json
+      text: '{"resource":"https://api.fastmail.com/jmap/session","authorization_servers":["https://api.fastmail.com"],"scopes_supported":["urn:ietf:params:oauth:scope:mail","urn:ietf:params:oauth:scope:contacts","urn:ietf:params:oauth:scope:calendars","offline_access"],"bearer_methods_supported":["header"],"resource_name":"Fastmail JMAP API","resource_documentation":"https://www.fastmail.com/dev/"}'
+
+errors:
+  no_authorization_header:
+    status: 401
+    message: "No Authorization header"
+    headers:
+      # A bare sentence under text/plain, beside the best challenge header in
+      # this collection.
+      Content-Type: text/plain
+      WWW-Authenticate: Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session"
+
+  invalid_bearer:
+    status: 401
+    # About the format rather than the key: `notreal` is a valid bearer token
+    # by RFC 6750's grammar, and Fastmail is saying its own tokens have a
+    # shape and that was not one.
+    message: "Invalid Authorization bearer parameters, not valid format"
+    headers:
+      Content-Type: text/plain
+      WWW-Authenticate: Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session"
+
+  unknown_route:
+    # Not a 404: a mistyped JMAP path redirects, so a client following
+    # redirects lands on an HTML page and parses it as JSON.
+    status: 302
+    style: text
+    message: "<html><head><title>302 Found</title></head><body><center><h1>302 Found</h1></center><hr><center>nginx</center></body></html>"
+    headers:
+      Content-Type: text/html
+
+fixtures:
+  empty:
+    session: []
+
+  account:
+    session:
+      - state: cyrus-0;p-5;t-1788048000
+        username: ada@example.invalid
+        apiUrl: https://api.fastmail.com/jmap/api/
+        # A URI Template, not an address.
+        downloadUrl: https://api.fastmail.com/jmap/download/{accountId}/{blobId}/{name}?type={type}
+        uploadUrl: https://api.fastmail.com/jmap/upload/{accountId}/
+        eventSourceUrl: https://api.fastmail.com/jmap/event/{types}/{closeafter}/{ping}
+        capabilities:
+          urn:ietf:params:jmap:core:
+            maxSizeUpload: 250000000
+            maxConcurrentUpload: 10
+            maxSizeRequest: 10000000
+            maxCallsInRequest: 64
+            maxObjectsInGet: 4096
+            maxObjectsInSet: 4096
+            collationAlgorithms:
+              - i;ascii-numeric
+              - i;ascii-casemap
+              - i;unicode-casemap
+          urn:ietf:params:jmap:mail: {}
+          # A vendor capability, keyed by a full https address rather than a
+          # URN, which the specification permits and no struct mapping enjoys.
+          https://www.fastmail.com/dev/maskedemail: {}
+        accounts:
+          u1a2b3c4d:
+            name: ada@example.invalid
+            isPersonal: true
+            isReadOnly: false
+          u9f8e7d6c:
+            name: shared@example.invalid
+            # Somebody else's mailbox, shared read-only, in the same map.
+            isPersonal: false
+            isReadOnly: true
+        primaryAccounts:
+          urn:ietf:params:jmap:mail: u1a2b3c4d
+          urn:ietf:params:jmap:contacts: u1a2b3c4d
+
+conformance:
+  - name: a missing credential is told where to go to get one
+    source: https://api.fastmail.com/jmap/session
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # RFC 9728. The only challenge header in this collection that names a
+        # document rather than only a scheme.
+        WWW-Authenticate: Bearer resource_metadata="https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session"
+
+  - name: the body beside that header is a bare sentence
+    source: https://api.fastmail.com/jmap/session
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # No JSON, no code, no field name -- the machine-readable half of this
+        # failure is the best here and the readable half is a string.
+        Content-Type: text/plain
+      body_matches: '^No Authorization header$'
+
+  - name: a wrong token is refused on its format rather than its value
+    source: https://api.fastmail.com/jmap/session
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      # `notreal` is a valid bearer token by RFC 6750's grammar, so this is
+      # Fastmail saying its own tokens have a shape and that was not one.
+      body_matches: 'not valid format'
+
+  - name: the document the challenge points at resolves
+    source: https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /.well-known/oauth-protected-resource/jmap/session
+      headers: {}
+    expect:
+      status: 200
+      # Which authorisation server, which scopes, where the token goes, what
+      # the resource is called and where its documentation is -- everything
+      # the other three challenge headers in this collection fail to say.
+      body_matches: '"authorization_servers"'
+
+  - name: the metadata names the scopes and where the token belongs
+    source: https://api.fastmail.com/.well-known/oauth-protected-resource/jmap/session
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /.well-known/oauth-protected-resource/jmap/session
+      headers: {}
+    expect:
+      status: 200
+      body_matches: '"bearer_methods_supported":\["header"\]'
+
+  - name: an unknown path redirects rather than saying it is unknown
+    source: https://api.fastmail.com/jmap/cauldron-nope
+    verified: "2026-09-10"
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/cauldron-nope
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      # A client following redirects lands on an HTML page and parses it as
+      # JSON.
+      status: 302
+      headers:
+        Content-Type: text/html
+
+  - name: the session is a bare object with no envelope
+    source: https://www.rfc-editor.org/rfc/rfc8620#section-2
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer fmu1-cauldr0nf1xturet0ken00000000"
+    expect:
+      status: 200
+      body:
+        username: ada@example.invalid
+        apiUrl: https://api.fastmail.com/jmap/api/
+
+  - name: finding your own mail account takes two lookups
+    source: https://www.rfc-editor.org/rfc/rfc8620#section-2
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer fmu1-cauldr0nf1xturet0ken00000000"
+    expect:
+      status: 200
+      body:
+        # primaryAccounts maps a capability URN to an account id, and accounts
+        # maps that id to the account -- so the answer is a key in one map
+        # used to index another.
+        'primaryAccounts.urn:ietf:params:jmap:mail': u1a2b3c4d
+        'accounts.u1a2b3c4d.name': ada@example.invalid
+        'accounts.u1a2b3c4d.isPersonal': true
+
+  - name: somebody elses mailbox is in the same map
+    source: https://www.rfc-editor.org/rfc/rfc8620#section-2
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer fmu1-cauldr0nf1xturet0ken00000000"
+    expect:
+      status: 200
+      body:
+        # Shared, read-only, and indistinguishable from your own except by two
+        # booleans.
+        'accounts.u9f8e7d6c.isPersonal': false
+        'accounts.u9f8e7d6c.isReadOnly': true
+
+  - name: the capability keys are URNs and one is a URL
+    source: https://www.rfc-editor.org/rfc/rfc8620#section-2
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer fmu1-cauldr0nf1xturet0ken00000000"
+    expect:
+      status: 200
+      body:
+        # Namespaced identifiers as JSON object keys, which the specification
+        # requires and no struct mapping enjoys.
+        'capabilities.urn:ietf:params:jmap:core.maxCallsInRequest': 64
+        'capabilities.urn:ietf:params:jmap:core.maxObjectsInGet': 4096
+
+  - name: the download address is a template rather than a URL
+    source: https://www.rfc-editor.org/rfc/rfc8620#section-2
+    fixture: account
+    request:
+      method: GET
+      path: /jmap/session
+      headers:
+        Authorization: "Bearer fmu1-cauldr0nf1xturet0ken00000000"
+    expect:
+      status: 200
+      body:
+        # RFC 6570, in a field ending Url -- it has to be expanded before
+        # anything can be fetched.
+        downloadUrl: https://api.fastmail.com/jmap/download/{accountId}/{blobId}/{name}?type={type}
+        uploadUrl: https://api.fastmail.com/jmap/upload/{accountId}/
+        eventSourceUrl: https://api.fastmail.com/jmap/event/{types}/{closeafter}/{ping}
