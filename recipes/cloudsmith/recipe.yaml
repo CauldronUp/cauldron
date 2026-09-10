@@ -1,0 +1,300 @@
+# Cloudsmith Recipe for Cauldron
+#
+# Written against Cloudsmith's API reference at api.cloudsmith.io and struck
+# live on 2026-09-10 with no credential, with a credential in the documented
+# scheme, with one in the wrong scheme, and with a bare token carrying no
+# scheme at all.
+#
+# **A credential in the wrong scheme is discarded and the request proceeds as
+# anonymous.** Struck live against `/v1/user/self/`:
+#
+#   (no header)                     200 {"authenticated":false,"email":null, ...}
+#   Authorization: Bearer notreal   200 {"authenticated":false,"email":null, ...}
+#   Authorization: notreal          200 {"authenticated":false,"email":null, ...}
+#   Authorization: token notreal    401 {"detail":"Invalid authentication
+#                                        credentials provided in Authorization header."}
+#
+# Cloudsmith's documented scheme is the word `token` -- its own worked example
+# is `curl -H "Authorization: token $key"`. Send the key under `Bearer`, which
+# is what every HTTP library's built-in helper does, and the header is thrown
+# away without comment. The request succeeds, the body says
+# `"authenticated": false`, and `/v1/repos/` answers `[]`.
+#
+# So a developer who wires up the standard bearer helper gets 200 and an empty
+# repository list, and concludes their account is empty. There is no signal
+# anywhere in the response that a credential was sent and ignored -- no header,
+# no field, no status. The only thing distinguishing "I have no repositories"
+# from "my authentication is misconfigured" is a boolean five fields into an
+# endpoint the developer had no reason to call.
+#
+# **And the one time it does challenge, it names a scheme it does not take.**
+# The 401 above carries `www-authenticate: Basic realm="Cloudsmith API"`.
+# Basic, on an API whose documentation says `token` and which answers 200 to a
+# Basic-shaped header. A caller following the challenge would authenticate the
+# wrong way and be silently anonymous again.
+#
+# That is the third distinct challenge-header fault in this collection and the
+# three cover the whole space. [cloudamqp](../cloudamqp) withholds the header
+# from the caller with no credential and sends it to the one with a wrong
+# credential. [airship](../airship) always sends it and fills it with whichever
+# scheme the caller already tried. Cloudsmith sends it once and names a scheme
+# that does not work.
+#
+# **The error body is Django REST Framework's `detail`**, which the sentence
+# also gives away by naming the header rather than the key -- accurate, and
+# not written by Cloudsmith. [insightly](../insightly) publishes ASP.NET's
+# `Message` for the same reason.
+#
+# **Four custom headers duplicate what the Link header carries.**
+# `X-Pagination-Count`, `X-Pagination-Page`, `X-Pagination-PageTotal` and
+# `X-Pagination-PageSize`, beside a `Link` header the documentation says
+# carries `first`, `prev`, `next` and `last`. Two complete pagination systems
+# on one response.
+#
+# **And the reference cites a specification that does not exist.** The
+# documentation labels that header "Link (based on H+C6988)". RFC 5988 is Web
+# Linking; H+C6988 is nothing. A mangled reference, published, in the row that
+# tells a reader where the format comes from.
+#
+# **Empty datasets are never paginated**, says the same page -- so the four
+# headers and the Link header all disappear exactly when a client checking
+# `X-Pagination-Count` for zero would want to read one.
+
+recipe: cloudsmith
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.cloudsmith.io/
+  # No spec: Cloudsmith's reference is a rendered application, and no OpenAPI
+  # document answered at any of the usual addresses on 2026-09-10.
+
+auth:
+  # The scheme word is `token`, not Bearer -- which is the whole finding
+  # above, because a Bearer-shaped header is discarded rather than refused.
+  scheme: bearer
+  header: Authorization
+  prefix: "token "
+  keys:
+    - cauldr0ncloudsm1thf1xturekey
+  rejected_error: invalid_credentials
+  absent_error: invalid_credentials
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # Django REST Framework's own field, which is why the sentence is accurate
+    # and does not sound like Cloudsmith.
+    style: flat
+    message_field: detail
+    code_field: "-"
+
+resources:
+  user:
+    id:
+      # The self URL, because on an anonymous response every other identifier
+      # on this record -- slug and slug_perm alike -- is null, and this is the
+      # only field that always carries a value.
+      field: self_url
+      style: opaque
+    fields:
+      # False for every anonymous request, including the ones that sent a
+      # credential in the wrong scheme.
+      authenticated:
+        type: boolean
+      email:
+      name:
+      profile_url:
+      slug:
+      slug_perm:
+
+  repository:
+    id:
+      field: slug
+      style: opaque
+    fields:
+      # One field, untyped, and nothing ever sets it. This listing is only
+      # served empty: no repository shape could be read without an account,
+      # and inventing one is the guess this collection forbids. `verify`
+      # reports the unserved name, which is the correct complaint to leave
+      # standing rather than to silence with a made-up record.
+      name:
+
+routes:
+  # Answers anybody, and says in the body whether it recognised them.
+  - method: GET
+    path: /v1/user/self/
+    resource: user
+    operation: get
+    # No identifier anywhere in the request: the endpoint answers about
+    # whoever the credentials belong to, and about nobody when there are none.
+    id_from: auth
+    public: when-absent
+
+  # Live, this answers [] to a request with no credential and 401 to one whose
+  # token is wrong -- so an empty list and a broken credential are one byte
+  # apart in the caller's experience.
+  - method: GET
+    path: /v1/repos/
+    resource: repository
+    operation: list
+    public: when-absent
+    empty: true
+    pagination:
+      # 1-based, defaulting to 30, capped at 500 -- the documentation's own
+      # numbers.
+      style: page
+      limit: 30
+      max_limit: 500
+      limit_param: page_size
+      cursor_param: page
+
+errors:
+  invalid_credentials:
+    status: 401
+    # Names the header rather than the key, which is right, and is Django REST
+    # Framework's wording rather than Cloudsmith's.
+    message: "Invalid authentication credentials provided in Authorization header."
+    headers:
+      # Basic, on an API documented to take `token`, which answers 200 to a
+      # Basic-shaped header. Following this challenge authenticates the wrong
+      # way and lands back at anonymous.
+      WWW-Authenticate: Basic realm="Cloudsmith API"
+
+fixtures:
+  empty:
+    user: []
+    repository: []
+
+  anonymous:
+    user:
+      - authenticated: false
+        # Present and null rather than absent, every one of them, on every
+        # anonymous request -- which is most requests a misconfigured client
+        # will ever make.
+        email: null
+        name: null
+        profile_url: null
+        slug: null
+        slug_perm: null
+        self_url: https://api.cloudsmith.io/v1/user/self/
+    repository: []
+
+conformance:
+  - name: a request with no credential succeeds as nobody
+    source: https://api.cloudsmith.io/v1/user/self/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/user/self/
+      headers: {}
+    expect:
+      # 200, not 401 -- the endpoint describes an anonymous caller rather than
+      # refusing one.
+      status: 200
+      body:
+        authenticated: false
+        self_url: https://api.cloudsmith.io/v1/user/self/
+
+  - name: the anonymous user has nulls where a real one has values
+    source: https://api.cloudsmith.io/v1/user/self/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/user/self/
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # Present and null rather than absent, so a client reading .email
+        # gets null rather than throwing -- and never learns why.
+        email: null
+        name: null
+        profile_url: null
+        # Both halves of the identifier are null too, so there is nothing on
+        # the record to key anything by.
+        slug: null
+        slug_perm: null
+
+  - name: a wrong key in the documented scheme is refused
+    source: https://api.cloudsmith.io/v1/user/self/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/user/self/
+      headers:
+        # The scheme word Cloudsmith's own example uses.
+        Authorization: "token notreal"
+    expect:
+      status: 401
+      body:
+        detail: "Invalid authentication credentials provided in Authorization header."
+
+  - name: the challenge names a scheme this API does not take
+    source: https://api.cloudsmith.io/v1/user/self/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/user/self/
+      headers:
+        Authorization: "token notreal"
+    expect:
+      status: 401
+      headers:
+        # Basic, on an API documented to take `token`. A caller following it
+        # authenticates the wrong way and is silently anonymous again.
+        WWW-Authenticate: Basic realm="Cloudsmith API"
+
+  - name: a wrong key on a listing is refused too
+    source: https://api.cloudsmith.io/v1/repos/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/repos/
+      headers:
+        Authorization: "token notreal"
+    expect:
+      status: 401
+      body:
+        detail: "Invalid authentication credentials provided in Authorization header."
+
+  - name: the documented paging parameters are accepted and change nothing
+    source: https://api.cloudsmith.io/v1/repos/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/repos/
+      headers: {}
+      query:
+        # 1-based, defaulting to 30, capped at 500 -- and the documentation
+        # says empty datasets are never paginated, so none of the four
+        # X-Pagination headers comes back on this response.
+        page: "1"
+        page_size: "30"
+    expect:
+      status: 200
+      body_matches: '^\[\s*\]\s*$'
+
+  - name: an anonymous listing is empty rather than refused
+    source: https://api.cloudsmith.io/v1/repos/
+    verified: "2026-09-10"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /v1/repos/
+      headers: {}
+    expect:
+      # The response a misconfigured client sees forever: 200 and nothing,
+      # which reads as "this account has no repositories".
+      status: 200
+      body_matches: '^\[\s*\]\s*$'
