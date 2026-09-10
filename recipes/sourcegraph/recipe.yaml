@@ -1,0 +1,386 @@
+# Sourcegraph Recipe for Cauldron
+#
+# The GraphQL API, struck live against sourcegraph.com on 2026-09-10 with no
+# credential, with a deliberately invalid one, with a query naming a field that
+# does not exist, and on a path that does not exist.
+#
+# **Not being logged in is data rather than an error.** Struck live:
+#
+#   POST /.api/graphql   { currentUser { username } }   (no credential)
+#   200 {"data":{"currentUser":null}}
+#
+# No `errors` array at all. An anonymous caller is a valid session whose
+# current user happens to be nobody, and a client checking `body.errors` before
+# reading `body.data` finds nothing to check.
+#
+# **And a wrong credential is a 401 in plain text.**
+#
+#   Authorization: token notreal
+#   401 Content-Type: text/plain
+#   Invalid access token.
+#
+# So sending nothing succeeds and sending something wrong fails at the
+# transport, which is the opposite way round from every other GraphQL API in
+# this collection.
+#
+# That completes a set of three. [railway](../railway) answers 200 with
+# `data: null`, an errors array, and `INTERNAL_SERVER_ERROR` as the code for
+# "Not Authorized". [wave](../wave) answers 200 with the failing field nulled,
+# an errors array, and the correct `UNAUTHENTICATED`. Sourcegraph answers 200
+# with the field nulled and no errors at all -- and is the only one of the
+# three that refuses a bad token outright.
+#
+# Three GraphQL APIs, three different answers to "who are you", and all three
+# are permitted by the specification. A client written against one reads
+# nonsense from the next.
+#
+# **A query naming a field that does not exist has no machine-readable code.**
+#
+#   200 {"errors":[{"message":"Cannot query field \"nope\" on type \"Query\".
+#                              Did you mean \"node\"?",
+#                   "locations":[{"line":1,"column":3}]}]}
+#
+# No `extensions`, so no `code`. The message is the entire machine-readable
+# content of the failure, and a client that wants to distinguish a validation
+# error from anything else has to match on English prose. Railway and Wave both
+# send `GRAPHQL_VALIDATION_FAILED` here.
+#
+# It does contain a spelling suggestion -- "Did you mean \"node\"?" -- which is
+# genuinely useful to a person and is the part a machine cannot use.
+#
+# **`totalCount` is 0 on a page holding two records and claiming more.**
+# Struck live:
+#
+#   "nodes": [ ...two repositories... ],
+#   "pageInfo": {"hasNextPage": true, "endCursor": "UmVwb3NpdG9yeUN1cnNvcjp7..."},
+#   "totalCount": 0
+#
+# The listing plainly has records, says there are further pages, and reports a
+# total of zero. A client rendering "0 results" above two rows is reading the
+# field correctly. Counting the index is expensive and this connection declines
+# to do it, which is a defensible decision reported as a wrong number rather
+# than as a null.
+#
+# **The connection is `nodes`, not `edges`.** Relay's shape without the edge
+# wrapper, so the per-record cursor has nowhere to live and paging depends
+# entirely on `pageInfo.endCursor`. This is the fourth GraphQL provider in the
+# collection and the third connection shape: Railway and [braintree](../braintree)
+# use `edges`/`node`, Wave uses `edges`/`node` over offset paging, and this one
+# drops edges altogether.
+#
+# **The opaque identifier decodes to a type and a number.**
+# `UmVwb3NpdG9yeTo2NDI0NTk0OA==` is base64 for `Repository:64245948`. So the
+# global id carries the type name and the underlying row id in plain sight, and
+# a client that base64-decodes one gets two more identifiers out.
+#
+# **Introspection is open to anonymous callers**, as it is on Railway -- the
+# whole schema, to a request that cannot read a user's name.
+#
+# **And an unknown path is two lower-case words.** `404 text/plain`, "no
+# route".
+
+recipe: sourcegraph
+capability: vcs
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://sourcegraph.com/api/graphql
+  # No spec: the API is GraphQL, and its schema is served to anybody who asks.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "token "
+  keys:
+    - sgp_cauldr0nf1xtureaccesst0ken000
+  # Sending nothing succeeds; sending something wrong fails at the transport.
+  rejected_error: invalid_access_token
+  malformed_error: invalid_access_token
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  repository:
+    collection: data.repositories.nodes
+    id:
+      # Base64 of "Repository:64245948" -- the type and the row id, in plain
+      # sight inside the opaque one.
+      field: id
+      style: opaque
+    fields:
+      name:
+        type: string
+      # Empty string rather than null on a repository with no description.
+      description:
+        type: string
+      createdAt:
+        type: datetime
+      isPrivate:
+        type: boolean
+      isFork:
+        type: boolean
+      defaultBranch:
+        type: map
+
+routes:
+  # Anonymous, and it answers the whole public index.
+  - method: POST
+    path: /.api/graphql
+    resource: repository
+    operation: list
+    selects: repositories
+    public: when-absent
+    pagination:
+      style: cursor
+      limit_param: variables.first
+      cursor_param: variables.after
+      in: body
+    fields:
+      data.repositories.pageInfo.hasNextPage: true
+      data.repositories.pageInfo.endCursor: UmVwb3NpdG9yeUN1cnNvcjp7ImMiOiJuYW1lIn0=
+      # Zero, on a page holding records and claiming more.
+      data.repositories.totalCount: 0
+
+  # Not being logged in is a successful answer whose value is null.
+  - method: POST
+    path: /.api/graphql
+    selects: currentUser
+    public: when-absent
+    raw:
+      content_type: application/json
+      text: '{"data":{"currentUser":null}}'
+
+  # A field the schema does not have: 200, an errors array, and no code
+  # anywhere in it.
+  - method: POST
+    path: /.api/graphql
+    selects: nope
+    public: when-absent
+    raw:
+      content_type: application/json
+      text: '{"errors":[{"message":"Cannot query field \"nope\" on type \"Query\". Did you mean \"node\"?","locations":[{"line":1,"column":3}]}]}'
+
+errors:
+  invalid_access_token:
+    status: 401
+    # Plain text, three words and a full stop, on an API that speaks GraphQL.
+    message: "Invalid access token."
+    headers:
+      Content-Type: text/plain; charset=utf-8
+
+  unknown_route:
+    status: 404
+    style: text
+    message: "no route"
+    headers:
+      Content-Type: text/plain; charset=utf-8
+
+fixtures:
+  empty:
+    repository: []
+
+  index:
+    repository:
+      - id: UmVwb3NpdG9yeTo2NDI0NTk0OA==
+        name: github.com/cauldron/weagentchat
+        description: A chat client
+        createdAt: "2026-02-01T06:58:11Z"
+        isPrivate: false
+        isFork: false
+        defaultBranch:
+          displayName: master
+      - id: UmVwb3NpdG9yeTo1NDYzMzMyMA==
+        name: github.com/cauldron/koolson-qure
+        # Empty string rather than null, which is what a repository with no
+        # description actually sends.
+        description: ""
+        createdAt: "2021-07-20T20:39:07Z"
+        isPrivate: false
+        isFork: false
+        defaultBranch:
+          displayName: master
+
+conformance:
+  - name: not being logged in is a successful answer
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers: {}
+      json:
+        query: "{ currentUser { username } }"
+    expect:
+      # 200 and no errors array at all -- an anonymous caller is a valid
+      # session whose current user is nobody.
+      status: 200
+      body:
+        'data.currentUser': null
+
+  - name: a wrong token is refused in plain text
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers:
+        Authorization: "token notreal"
+      json:
+        query: "{ currentUser { username } }"
+    expect:
+      # So sending nothing succeeds and sending something wrong fails at the
+      # transport, which is backwards from every other GraphQL API here.
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '^Invalid access token\.$'
+
+  - name: a bad field has a suggestion and no code
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers: {}
+      json:
+        query: "{ nope }"
+    expect:
+      status: 200
+      # No extensions, so no code: the message is the whole machine-readable
+      # content, and the only useful part of it is addressed to a person.
+      body_matches: 'Did you mean \\"node\\"\?'
+
+  - name: an unknown path is two lower-case words
+    source: https://sourcegraph.com/.api/cauldron-nope
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/cauldron-nope
+      headers: {}
+      json:
+        query: "{ currentUser { username } }"
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '^no route$'
+
+  - name: the public index is served to anybody
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers: {}
+      json:
+        query: "{ repositories(first:2) { nodes { id name } pageInfo { hasNextPage } totalCount } }"
+    expect:
+      status: 200
+      body:
+        # nodes, not edges -- Relay's shape without the wrapper, so a
+        # per-record cursor has nowhere to live.
+        'data.repositories.nodes[0].name': github.com/cauldron/weagentchat
+        'data.repositories.nodes[0].id': UmVwb3NpdG9yeTo2NDI0NTk0OA==
+
+  - name: the total is zero on a page that has records and claims more
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers: {}
+      json:
+        query: "{ repositories(first:2) { nodes { name } pageInfo { hasNextPage } totalCount } }"
+    expect:
+      status: 200
+      body:
+        # Two records, hasNextPage true, and a total of zero. A client
+        # rendering "0 results" above two rows is reading the field correctly.
+        'data.repositories.totalCount': 0
+        'data.repositories.pageInfo.hasNextPage': true
+        'data.repositories.nodes[1].name': github.com/cauldron/koolson-qure
+
+  - name: a repository with no description sends an empty string
+    source: https://sourcegraph.com/.api/graphql
+    verified: "2026-09-10"
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers: {}
+      json:
+        query: "{ repositories(first:2) { nodes { name description } } }"
+    expect:
+      status: 200
+      body:
+        # Not null, so a client testing for null renders an empty caption
+        # rather than falling back.
+        'data.repositories.nodes[1].description': ""
+        'data.repositories.nodes[0].description': A chat client
+
+  - name: the flags and the default branch travel with the repository
+    source: https://sourcegraph.com/.api/graphql
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers:
+        Authorization: "token sgp_cauldr0nf1xtureaccesst0ken000"
+      json:
+        query: "{ repositories(first:2) { nodes { isPrivate isFork createdAt defaultBranch { displayName } } } }"
+    expect:
+      status: 200
+      body:
+        # The branch is an object rather than a string, so reading its name is
+        # two hops and a query that forgets the subfield is invalid.
+        'data.repositories.nodes[0].defaultBranch.displayName': master
+        'data.repositories.nodes[0].isPrivate': false
+        'data.repositories.nodes[0].isFork': false
+        'data.repositories.nodes[0].createdAt': "2026-02-01T06:58:11Z"
+
+  - name: repositories page on first and after in the variables
+    source: https://sourcegraph.com/.api/graphql
+    fixture: index
+    request:
+      method: POST
+      path: /.api/graphql
+      headers:
+        Authorization: "token sgp_cauldr0nf1xtureaccesst0ken000"
+      json:
+        query: "query R($first: Int, $after: String) { repositories(first: $first, after: $after) { nodes { name } } }"
+        variables:
+          first: 1
+          after: UmVwb3NpdG9yeTo2NDI0NTk0OA==
+    expect:
+      status: 200
+      body:
+        'data.repositories.nodes[0].name': github.com/cauldron/koolson-qure
+
+  - name: an instance with no repositories answers an empty node list
+    source: https://sourcegraph.com/.api/graphql
+    fixture: empty
+    request:
+      method: POST
+      path: /.api/graphql
+      headers:
+        Authorization: "token sgp_cauldr0nf1xtureaccesst0ken000"
+      json:
+        query: "{ repositories(first:2) { nodes { name } } }"
+    expect:
+      status: 200
+      body:
+        'data.repositories.nodes': []
