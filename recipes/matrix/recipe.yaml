@@ -1,0 +1,418 @@
+# Matrix Recipe for Cauldron
+#
+# The Client-Server API, written against the Matrix specification's own OpenAPI
+# sources at github.com/matrix-org/matrix-spec and struck live against
+# matrix.org on 2026-09-10 with no credential, with a deliberately invalid one,
+# and on a path that does not exist.
+#
+# **Three failures, three codes, one vocabulary, and the specification defines
+# all of them.** Struck live:
+#
+#   (no token)            401 {"errcode":"M_MISSING_TOKEN","error":"Missing access token"}
+#   Bearer notreal        401 {"errcode":"M_UNKNOWN_TOKEN","error":"Token is not active",
+#                              "soft_logout":false}
+#   /cauldron_nope        404 {"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}
+#
+# Every one of those `M_` codes is in the specification rather than invented by
+# this server, so a client can branch on them across implementations --
+# Synapse, Dendrite, Conduit -- instead of against one vendor. That is the
+# thing almost nothing else in this collection has: an error vocabulary that is
+# part of the protocol.
+#
+# And the 404 is JSON in the same shape as the 401. Most providers here fall
+# through to a web server and answer HTML on an unrouted path; this one
+# answers its own envelope, so a single parser reads every failure.
+#
+# **`soft_logout` is a third field and it is the useful one.** It tells the
+# client whether the token was invalidated in a way that should discard local
+# state -- encryption keys, device identity -- or merely expired. No other
+# provider in this collection distinguishes those, and getting it wrong means
+# either throwing away a device's keys unnecessarily or keeping keys the server
+# has already repudiated.
+#
+# **One path is anonymous for GET and authenticated for POST.** The
+# specification gives `GET /publicRooms` `security: null` -- explicitly no
+# authentication, not merely omitted -- and `POST /publicRooms`
+# `accessTokenBearer`. The POST is the filtered version, and carrying a filter
+# is what costs you a token. Struck live: the GET answers 200 with real rooms
+# and no credential at all.
+#
+# **The published server URL names no host, and that is correct.**
+# `servers: ['{protocol}://{hostname}{basePath}']` -- every component
+# templated. Matrix is federated: there is no api.matrix.com, a client
+# discovers its homeserver through `.well-known/matrix/client`, and any
+# concrete host in the document would be a lie about somebody's deployment.
+#
+# It is the honest version of a shape [adobesign](../adobesign) has by
+# accident, whose `servers` entry is the bare path `/api/rest/v6` on an API
+# that shards by region without saying so. Same missing host, opposite
+# reasons.
+#
+# **`avatar_url` is not a URL any client can fetch.** It is an `mxc://` URI --
+# `mxc://t2l.io/0e92cc03f71f...` -- which has to be rewritten into a
+# `/_matrix/media/` request against your own homeserver before anything can
+# load it. A field whose name ends `_url`, holding a scheme no HTTP client
+# implements.
+#
+# **The total is named an estimate.** `total_room_count_estimate`, optional,
+# and the specification's own description says "an estimate on the total number
+# of published rooms, if the server has [one]". After a collection full of
+# `total_count` fields that quietly mean something narrower, a provider saying
+# in the field name that the number is approximate is worth recording.
+#
+# **The array is called `chunk`.** Named for the streaming shape rather than
+# for what is in it, so two endpoints returning different things share a key --
+# the same trade [ironclad](../ironclad) makes with `list`.
+#
+# **Three fields describe who may read a room.** `world_readable`,
+# `guest_can_join` and `join_rule`, and they are not redundant: a room can be
+# world-readable and closed to joins. A client showing a padlock has to decide
+# which of the three it means.
+#
+# **And the room list contains things that are not rooms.** `room_type:
+# "m.space"` marks a space -- a container of rooms -- returned in the same
+# array as the rooms themselves, so a client rendering a room list renders
+# folders among the files unless it filters.
+
+recipe: matrix
+capability: chat
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://spec.matrix.org/latest/client-server-api/
+  # No spec: Matrix publishes OpenAPI, one file per endpoint, and every schema
+  # is a relative $ref into a sibling `definitions/` file -- so no single
+  # published file resolves on its own, and fingerprinting one would compare a
+  # document whose fields cannot be read. The position basiq and customerio
+  # are in, entered knowingly here rather than by accident.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - syt_cauldr0n_f1xtureaccesstoken_00
+  # Two credential failures, two specification-defined codes.
+  absent_error: missing_token
+  rejected_error: unknown_token
+  # An unrecognised path answers M_UNRECOGNIZED whether or not a credential
+  # came with it, so the router runs first.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    # Named for the streaming shape rather than the contents.
+    key: chunk
+    cursor_field: next_batch
+    prev_field: prev_batch
+    # The specification calls this an estimate, in the field name.
+    count_field: total_room_count_estimate
+  error:
+    style: flat
+    message_field: error
+    code_field: errcode
+    code_type: string
+
+resources:
+  room:
+    id:
+      field: room_id
+      style: opaque
+    fields:
+      name:
+        type: string
+      topic:
+        type: string
+      canonical_alias:
+        type: string
+      num_joined_members:
+        type: integer
+      # An mxc:// URI, which no HTTP client can fetch without rewriting it
+      # into a /_matrix/media/ request first.
+      avatar_url:
+        type: string
+      # Three fields about who may read or enter, and they are not redundant.
+      world_readable:
+        type: boolean
+      guest_can_join:
+        type: boolean
+      join_rule:
+        type: string
+      # Present on a space, absent on an ordinary room -- so the room list
+      # carries containers among the things they contain.
+      room_type:
+
+routes:
+  # Anonymous for GET, and the specification says so with security: null
+  # rather than by omitting it.
+  - method: GET
+    path: /_matrix/client/v3/publicRooms
+    resource: room
+    operation: list
+    public: true
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: since
+
+  # The version list, served to anybody, and the reason a client can negotiate
+  # at all.
+  - method: GET
+    path: /_matrix/client/versions
+    public: true
+    raw:
+      content_type: application/json
+      text: '{"versions":["r0.0.1","r0.1.0","r0.2.0","r0.3.0","r0.4.0","r0.5.0","r0.6.0","r0.6.1","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7","v1.8","v1.9","v1.10","v1.11","v1.12"],"unstable_features":{"org.matrix.label_based_filtering":true}}'
+
+  # And one that is not anonymous, which is where the credential failures live.
+  - method: GET
+    path: /_matrix/client/v3/joined_rooms
+    raw:
+      content_type: application/json
+      text: '{"joined_rooms":["!iMZEhwCvbfeAYUxAjZ:t2l.io"]}'
+
+errors:
+  missing_token:
+    status: 401
+    code: M_MISSING_TOKEN
+    message: Missing access token
+
+  unknown_token:
+    status: 401
+    code: M_UNKNOWN_TOKEN
+    message: Token is not active
+    fields:
+      # Whether the client should discard local state -- encryption keys and
+      # device identity -- or merely re-authenticate. Nothing else in this
+      # collection tells a client that.
+      soft_logout: false
+
+  unknown_route:
+    status: 404
+    # The same envelope as every other failure, where most providers here fall
+    # through to a web server and answer HTML.
+    code: M_UNRECOGNIZED
+    message: Unrecognized request
+
+fixtures:
+  empty:
+    room: []
+
+  directory:
+    room:
+      - room_id: "!iMZEhwCvbfeAYUxAjZ:t2l.io"
+        name: Matrix Community
+        topic: All things Matrix.
+        canonical_alias: "#community:matrix.org"
+        num_joined_members: 34723
+        avatar_url: mxc://t2l.io/0e92cc03f71f27c321ab641a15c41ae76cd80ba7
+        world_readable: true
+        guest_can_join: true
+        join_rule: public
+        # A space, in the room directory, among the rooms.
+        room_type: m.space
+      - room_id: "!LOkTdxSMDWCPBoUgZM:matrix.org"
+        name: Language Exchange
+        topic: Find a language partner.
+        canonical_alias: "#language-exchange:matrix.org"
+        num_joined_members: 1284
+        avatar_url: mxc://matrix.org/9d18c4a7b2e5f10c3a6d8b4e7f2a5c9d1e4b7a03
+        # Readable by anyone and not joinable by guests, which is the pair a
+        # single "is it private" boolean could not express.
+        world_readable: true
+        guest_can_join: false
+        join_rule: knock
+
+conformance:
+  - name: a missing token has a specification-defined code
+    source: https://matrix.org/_matrix/client/v3/joined_rooms
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/joined_rooms
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # M_ codes belong to the protocol rather than to this server, so a
+        # client can branch on them across implementations.
+        errcode: M_MISSING_TOKEN
+        error: Missing access token
+
+  - name: a wrong token is a different code and says whether to forget the device
+    source: https://matrix.org/_matrix/client/v3/joined_rooms
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/joined_rooms
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        errcode: M_UNKNOWN_TOKEN
+        error: Token is not active
+        # The field that decides whether encryption keys survive.
+        soft_logout: false
+
+  - name: an unrecognised path answers the same envelope
+    source: https://matrix.org/_matrix/client/v3/cauldron_nope
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/cauldron_nope
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      # JSON, in the shape every other failure uses, where most providers here
+      # fall through to a web server and answer HTML.
+      status: 404
+      body:
+        errcode: M_UNRECOGNIZED
+        error: Unrecognized request
+
+  - name: the version list is served to anybody
+    source: https://matrix.org/_matrix/client/versions
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/versions
+      headers: {}
+    expect:
+      status: 200
+      body_matches: '"v1.12"'
+
+  - name: the public room directory needs no credential
+    source: https://matrix.org/_matrix/client/v3/publicRooms?limit=2
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      # security: null in the specification, and 200 with real rooms live.
+      # POST on this same path requires a token, because it carries a filter.
+      status: 200
+      body:
+        'chunk[0].room_id': "!iMZEhwCvbfeAYUxAjZ:t2l.io"
+        'chunk[0].name': Matrix Community
+
+  - name: the avatar is an mxc URI rather than an address
+    source: https://matrix.org/_matrix/client/v3/publicRooms?limit=2
+    verified: "2026-09-10"
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # A field ending _url holding a scheme no HTTP client implements: it
+        # has to be rewritten into a /_matrix/media/ request first.
+        'chunk[0].avatar_url': mxc://t2l.io/0e92cc03f71f27c321ab641a15c41ae76cd80ba7
+
+  - name: three fields describe who may read a room
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # Not redundant: the second room is readable by anyone and closed to
+        # guests, which one boolean could not say.
+        'chunk[1].world_readable': true
+        'chunk[1].guest_can_join': false
+        'chunk[1].join_rule': knock
+        'chunk[0].guest_can_join': true
+
+  - name: the directory contains things that are not rooms
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # A space is a container of rooms, returned in the same array as the
+        # rooms, so a client rendering a list shows folders among the files.
+        'chunk[0].room_type': m.space
+      absent:
+        - 'chunk[1].room_type'
+
+  - name: the member count and the alias travel with the room
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # The room id is opaque and server-scoped; the canonical alias is the
+        # human one, and both address the same room.
+        'chunk[0].canonical_alias': "#community:matrix.org"
+        'chunk[0].num_joined_members': 34723
+        'chunk[1].topic': Find a language partner.
+
+  - name: the total is named an estimate
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        'chunk[0].room_id': "!iMZEhwCvbfeAYUxAjZ:t2l.io"
+        # The specification's own word, in the field name, and the field is
+        # optional -- a server that does not know omits it.
+        total_room_count_estimate: 2
+      matches:
+        # The pagination token, whose absence is how a client knows it has
+        # reached the end -- the specification says so in as many words.
+        next_batch: '.'
+
+  - name: the directory pages on a batch token
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: directory
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+      query:
+        limit: "1"
+        since: "!iMZEhwCvbfeAYUxAjZ:t2l.io"
+    expect:
+      status: 200
+      body:
+        'chunk[0].room_id': "!LOkTdxSMDWCPBoUgZM:matrix.org"
+
+  - name: a server publishing no rooms answers an empty chunk
+    source: https://spec.matrix.org/latest/client-server-api/
+    fixture: empty
+    request:
+      method: GET
+      path: /_matrix/client/v3/publicRooms
+      headers: {}
+    expect:
+      status: 200
+      body:
+        chunk: []
