@@ -736,13 +736,39 @@ func (d *Document) ResolveResponse(r Response) Response {
 // the JSON readable without a second set of struct tags to keep in step with
 // the first.
 func viaJSON(raw []byte) ([]byte, error) {
-	var any any
+	var value any
 
-	if err := json.Unmarshal(raw, &any); err != nil {
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, err
 	}
 
-	return yaml.Marshal(any)
+	// Re-encoded as JSON rather than as YAML, which is the whole point.
+	//
+	// The obvious move is yaml.Marshal, and it introduces a second failure on
+	// the recovery path. yaml.v3 writes a string that begins with a newline as
+	// a literal block with an explicit indentation indicator -- `source: |4` --
+	// and its own parser then reads that indicator as a larger indent than the
+	// lines it just wrote. The block ends early, the next line is parsed as a
+	// mapping, and a shell example containing `-H "Authorization: Bearer ..."`
+	// becomes a mapping key. The error lands hundreds of lines away as "mapping
+	// values are not allowed in this context", pointing at a document that was
+	// never wrong.
+	//
+	// Todoist found it, and needed both faults at once: 1.2MB of valid JSON
+	// with an astral escape that fails the direct parse and nine code samples
+	// that begin with a newline. The direct decode refused the surrogate pair,
+	// the recovery refused what it had itself produced, and drift reported the
+	// provider unreadable.
+	//
+	// Going back out as JSON avoids the emitter entirely: encoding/json writes
+	// astral characters as literal UTF-8 rather than as the surrogate escapes
+	// yaml.v3 rejects, and JSON has no block scalars for a scanner to disagree
+	// about. The bytes that come back are still valid YAML, so the caller reads
+	// them with the same decoder as everything else.
+	//
+	// yaml.Node.Encode is not the answer either, in case it looks like one: it
+	// marshals to text internally and fails identically.
+	return json.Marshal(value)
 }
 
 // looksHTML reports whether these bytes open like a web page.
