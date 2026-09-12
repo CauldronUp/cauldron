@@ -1,0 +1,428 @@
+# lemlist Recipe for Cauldron
+#
+# The campaigns listing, read from the OpenAPI document lemlist embeds in each
+# documentation page, and struck live against api.lemlist.com on 2026-09-11
+# with no credential, with a deliberately invalid one, and on a path that does
+# not exist.
+#
+# **A path that does not exist answers 200 and sends the web application.**
+# Struck live:
+#
+#   GET /api/cauldron-nope   200 text/html   <!DOCTYPE html> ... (the SPA)
+#
+# Not a 404. A success, with the lemlist single-page app in the body -- script
+# tags, stylesheets, a Google Tag Manager block and the client bootstrap
+# configuration, which carries analytics identifiers, a publishable payment
+# key, internal service hostnames and the deployed commit hash. So a client
+# that mistypes a path gets `response.ok === true`, a `.json()` that throws,
+# and nothing anywhere in the answer saying the path was wrong.
+#
+# **And none of the four real failures is JSON either.** The document declares
+# them all as `text/plain`, one sentence each:
+#
+#   400  no api key provided
+#   401  The authentication you supplied is incorrect
+#   403  User linked to this API key is blocked
+#   404  No user found for this API key
+#
+# Four statuses describing four states of one credential. A missing key is a
+# **400**, so a client branching on 401 never sees it. A 404 on a listing means
+# the key has no user behind it rather than that anything is missing. And the
+# live 400 arrives with no `Content-Type` header at all, so a reader has to
+# guess what the bytes are.
+#
+# **The instructions call a colon a semicolon.** Verbatim, from the
+# authentication section:
+#
+#   Don't forget to add the semicolon (`:`) before your API key in curl command
+#
+# The character in the code span is right and the word in front of it is wrong.
+# A reader who follows the prose types `;`, which sends the key as the username
+# with an empty password -- and lemlist reads only the password half. Struck
+# live, a Basic header carrying a key with no colon answers 400 `no api key
+# provided`, identically to sending no header at all. So the typo does not
+# produce "wrong key". It produces "no key", which is the one message that will
+# not send a reader to look at their credential.
+#
+# **`X-RateLimit-Reset` is a JavaScript timestamp.** Struck live on the 401:
+#
+#   x-ratelimit-reset: Sat Sep 12 2026 04:07:49 GMT+0200 (Central European Summer Time)
+#
+# That is `Date.prototype.toString()` in an HTTP header. It is not an HTTP-date,
+# not a Unix second count, and it ends in a parenthesised timezone *name* that
+# changes with the season -- so the field that tells a client when it may retry
+# is the one field in the response no date parser will read.
+#
+# `Retry-After: 2` comes with it, on a request that was not rate limited at all
+# -- `x-ratelimit-remaining: 19` of 20 -- so the header that means "wait" is
+# sent to callers who need not wait.
+#
+# **The version parameter is optional, defaults to v2, accepts only v2, and the
+# page warns you to send it.** The schema says `default: v2` and `enum: [v2]`;
+# the prose above it says "Don't forget to set the query parameter version to
+# `version=v2`". A default nobody may override should never need a warning, and
+# the warning is the evidence that it does not apply.
+#
+# **Two pagination schemes sit on the same listing.** `offset` with `limit`,
+# and `page`, declared side by side with nothing saying which wins.
+#
+# **And three of the four campaigns in the success example are broken.** The
+# happy-path sample for listing campaigns carries `hasError: true` on three
+# records, with the API's own sentences inside: "Your campaign does not have
+# sender.", "One of your sender has no email provider.", "Your campaign have an
+# invalid sender mailbox". The fourth omits `hasError` rather than sending
+# false.
+
+recipe: lemlist
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+  # No spec: lemlist embeds a complete OpenAPI document per endpoint inside the
+  # Markdown of that endpoint's page, the same arrangement Mailtrap uses. There
+  # is no single document to fingerprint.
+
+auth:
+  # Basic with an empty username and the key as the password -- the same shape
+  # as CloudAMQP, Close and Insightly, and the one OpenAPI has no way to say.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldr0nlemlistf1xturek3y
+  unentitled:
+    # Authenticates, and is refused because the person behind it is blocked.
+    - cauldr0nlemlistbl0ckedk3y
+  # 400, not 401. The status for a missing credential is the status for a
+  # malformed request.
+  absent_error: no_api_key
+  rejected_error: bad_authentication
+  # A Basic header carrying a username and no colon answers the same sentence:
+  # lemlist reads the password half and nothing else, so a key put in the
+  # username is not a wrong key, it is no key.
+  malformed_error: no_api_key
+  unentitled_error: user_blocked
+  # An unrouted path answers 200 and the web application even with a wrong
+  # credential, so the router reaches the catch-all before the key is read.
+  after_routing: true
+
+responses:
+  list:
+    style: bare
+  error:
+    # Not JSON. One sentence, as bytes.
+    style: text
+
+resources:
+  campaign:
+    id:
+      # Mongo's underscore-prefixed key with a typed prefix in front of the
+      # value: the shape names the store and the record both.
+      field: _id
+      style: prefixed
+      prefix: cam_
+      length: 17
+    fields:
+      name:
+        type: string
+      # Shown next to the campaign name, and absent on most records.
+      emoji:
+        type: string
+      labels:
+        type: list
+      createdAt:
+        type: datetime
+      createdBy:
+        type: string
+      status:
+        type: string
+      timezone:
+        type: string
+      hasError:
+        type: boolean
+      # The sentences lemlist's own example ships, ungrammatical and all.
+      errors:
+        type: list
+
+routes:
+  - method: GET
+    path: /api/campaigns
+    resource: campaign
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+errors:
+  no_api_key:
+    status: 400
+    # Lower case live, capitalised in the document that describes it.
+    message: no api key provided
+
+  bad_authentication:
+    status: 401
+    message: The authentication you supplied is incorrect
+    headers:
+      # Sent to a caller with 19 of 20 requests left, so the header that means
+      # wait is sent to callers who need not.
+      Retry-After: "2"
+      X-RateLimit-Limit: "20"
+      X-RateLimit-Remaining: "19"
+      # Date.prototype.toString(), in an HTTP header, with a parenthesised
+      # timezone name that changes with the season.
+      X-RateLimit-Reset: "Sat Sep 12 2026 04:07:49 GMT+0200 (Central European Summer Time)"
+
+  user_blocked:
+    status: 403
+    message: User linked to this API key is blocked
+
+  unknown_route:
+    # Not a failure at all as far as the status line is concerned.
+    status: 200
+    headers:
+      Content-Type: text/html; charset=utf-8
+    # The live body is the whole lemlist single-page application. This is its
+    # opening, which is as much as a sandbox needs to reproduce the hazard: a
+    # client reading `response.ok` sees success and a client reading JSON
+    # throws.
+    message: "<!DOCTYPE html>"
+
+fixtures:
+  empty:
+    campaign: []
+
+  team:
+    campaign:
+      - _id: cam_4HrZbi8xsez4QlrnL
+        name: Product Launch Campaign
+        emoji: "\U0001F680"
+        timezone: Europe/Paris
+        labels: []
+        createdAt: "2025-02-20T14:45:54.230Z"
+        createdBy: usr_zdTCrNFyXblc4mrYK
+        status: running
+        hasError: true
+        errors:
+          # lemlist's own sentence, missing its article.
+          - Your campaign does not have sender.
+      - _id: cam_k3gu2sa4KIfhRK34M
+        name: Sales Outreach 2025
+        labels: []
+        createdAt: "2025-02-05T09:00:07.541Z"
+        createdBy: usr_UEvrOEP0CTAYEoFR4
+        status: running
+        hasError: true
+        errors:
+          - One of your sender has no email provider.
+          - Your campaign have an invalid sender mailbox
+      - _id: cam_yZXeC6q3SXs3ha1FI
+        name: Customer Onboarding
+        labels: []
+        createdAt: "2022-06-14T13:32:57.880Z"
+        createdBy: usr_i52PiQtbq8SucjVTM
+        status: running
+        # No hasError at all, where the three above say true -- so absent is
+        # the only way this API says a campaign is fine.
+        hasError: null
+        errors: null
+
+conformance:
+  - name: a missing key is a 400 in plain text
+    source: https://api.lemlist.com/api/campaigns
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers: {}
+    expect:
+      status: 400
+      # Not 401, and not JSON. A client branching on 401 never reaches this.
+      body_matches: '^no api key provided$'
+
+  - name: a wrong key is a 401 in plain text
+    source: https://api.lemlist.com/api/campaigns
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        # Empty username, key as password: base64(":notarealkey").
+        Authorization: "Basic Om5vdGFyZWFsa2V5"
+    expect:
+      status: 401
+      body_matches: '^The authentication you supplied is incorrect$'
+
+  - name: the reset header is a JavaScript date
+    source: https://api.lemlist.com/api/campaigns
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        Authorization: "Basic Om5vdGFyZWFsa2V5"
+    expect:
+      status: 401
+      header_matches:
+        # Date.prototype.toString(): a weekday name, a month name, and a
+        # parenthesised timezone name. No date parser reads this.
+        X-RateLimit-Reset: '^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{2} \d{4} .*\(.*\)$'
+      headers:
+        # Sent with 19 of 20 requests remaining, to a caller who need not wait.
+        Retry-After: "2"
+        X-RateLimit-Remaining: "19"
+
+  - name: an unrouted path answers 200 and HTML
+    source: https://api.lemlist.com/api/cauldron-nope
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /api/cauldron-nope
+      headers:
+        Authorization: "Basic Om5vdGFyZWFsa2V5"
+    expect:
+      # A success, for a path that does not exist. `response.ok` is true and
+      # `.json()` throws.
+      status: 200
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: '^<!DOCTYPE html>'
+
+  - name: campaigns are a bare array of prefixed Mongo ids
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGYxeHR1cmVrM3k="
+    expect:
+      status: 200
+      body:
+        '[0]._id': cam_4HrZbi8xsez4QlrnL
+        '[0].name': Product Launch Campaign
+        '[0].createdBy': usr_zdTCrNFyXblc4mrYK
+        '[0].createdAt': "2025-02-20T14:45:54.230Z"
+        '[0].timezone': Europe/Paris
+        # On the first record and on none of the others.
+        '[0].emoji': "\U0001F680"
+
+  - name: the success example is mostly broken campaigns
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGYxeHR1cmVrM3k="
+    expect:
+      status: 200
+      body:
+        # Running, and failing, at the same time -- with the vendor's own
+        # ungrammatical sentences inside.
+        '[0].status': running
+        '[0].hasError': true
+        '[0].errors[0]': Your campaign does not have sender.
+        '[1].errors[0]': One of your sender has no email provider.
+        '[1].errors[1]': Your campaign have an invalid sender mailbox
+
+  - name: a healthy campaign says nothing rather than false
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGYxeHR1cmVrM3k="
+    expect:
+      status: 200
+      body:
+        '[2].name': Customer Onboarding
+        # Absent, where the failing ones say true. The only signal that a
+        # campaign is fine is the missing key.
+        '[2].hasError': null
+        '[2].labels': []
+
+  - name: the listing pages by offset, beside a page parameter it also takes
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+        limit: "1"
+        offset: "1"
+      headers:
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGYxeHR1cmVrM3k="
+    expect:
+      status: 200
+      body:
+        '[0]._id': cam_k3gu2sa4KIfhRK34M
+
+  - name: a key whose person is blocked authenticates and is refused
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        # base64(":cauldr0nlemlistbl0ckedk3y")
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGJsMGNrZWRrM3k="
+    expect:
+      status: 403
+      # A third status for a third state of the same credential, still in
+      # plain text.
+      body_matches: "^User linked to this API key is blocked$"
+
+  - name: a key sent as the username reads as no key at all
+    source: https://api.lemlist.com/api/campaigns
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        # base64("notarealkey") -- a username, no colon, no password. lemlist
+        # reads the password half only, so this is not a wrong key.
+        Authorization: "Basic bm90YXJlYWxrZXk="
+    expect:
+      status: 400
+      body_matches: "^no api key provided$"
+
+  - name: a team with no campaigns answers an empty array
+    source: https://developer.lemlist.com/api-reference/endpoints/campaigns/get-many-campaigns
+    fixture: empty
+    request:
+      method: GET
+      path: /api/campaigns
+      query:
+        version: v2
+      headers:
+        Authorization: "Basic OmNhdWxkcjBubGVtbGlzdGYxeHR1cmVrM3k="
+    expect:
+      status: 200
+      body_matches: '^\[\s*\]\s*$'
