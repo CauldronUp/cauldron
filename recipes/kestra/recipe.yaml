@@ -1,0 +1,387 @@
+# Kestra Recipe for Cauldron
+#
+# The open-source server's Flows API, read from the OpenAPI document Kestra
+# publishes at kestra.io/kestra.yml -- 462KB describing 194 paths -- and
+# contrasted against Kestra Cloud, struck live at api.kestra.io on 2026-09-11
+# with no credential and with a deliberately invalid one.
+#
+# **The document never says where the API is or how to authenticate to it.**
+# 194 paths, and no `servers` block, no `security` block, and no
+# `securitySchemes` under components. Meanwhile basic authentication has been
+# mandatory on open-source instances since 0.24.0 -- a username that is an
+# email address and a password, set in configuration or through a setup page --
+# and every path in the document is templated on `{tenant}` with nothing saying
+# what to put there. The one example in the whole file that fills it in is a
+# ProblemDetail's `instance`: `/api/v1/main/flows`.
+#
+# So a generated client from this document has no base URL, no credential, and
+# a required path parameter it must be told about out of band.
+#
+# **The failure type it does define cannot be relied on for anything.**
+# `ProblemDetail` is a careful RFC 9457 document -- `type` described as "what
+# clients branch on", `title` "stable for a given type and never
+# parameterised", `status`, `detail`, `instance`, `errors`, `traceId` -- and it
+# declares **no `required` array at all**. Every member is optional, so `{}` is
+# a conforming problem document, and the field a client is told to branch on is
+# one the schema permits to be absent.
+#
+# **And the vendor's own hosted API does not send that shape.** Struck live
+# against Kestra Cloud, which is a different product on a different host:
+#
+#   api.kestra.io/v1/flows   401 application/json   {"message":"Unauthorized"}
+#
+# Not `application/problem+json`, no `type`, no `title`, no `status` -- one key
+# the published contract does not contain, for the same company's API, with the
+# same word in it.
+#
+# **The Cloud host also redirects API paths into a Google login.** Struck live:
+#
+#   GET api.kestra.io/api/v1/main/flows/search   307 Location: /oauth/login/google
+#
+# A programmatic caller on the open-source path shape gets a temporary redirect
+# into an interactive sign-in flow. Every HTTP client follows 307 by default, so
+# the request that arrives is for an HTML page, and the status the caller
+# finally sees is a 200 with a login screen in it.
+#
+# **`variables` is an object that permits no properties.** The Flow schema
+# declares `variables: {type: object, additionalProperties: false}` -- on the
+# field whose entire purpose is arbitrary user-defined keys. A validator
+# enforcing that schema rejects every flow that uses the feature.
+#
+# **`tasks` declares `additionalProperties` on an array.** The keyword applies
+# to objects; on an array schema it means nothing, and it is set to `true` next
+# to a `minItems: 1` that does.
+#
+# **And `labels` is a `oneOf` with one member.** Its own description says
+# "Labels as a list of Label (key/value pairs) or as a map of string to string"
+# -- two shapes named in prose, one branch in the schema, and the branch is the
+# map.
+#
+# **The required search parameter has no wire format.** `GET /flows/search`
+# marks `filters` required and types it as an array of `QueryFilter` *objects*
+# in the query string, with no `style` and no `explode` -- so the one parameter
+# a caller must send is the one the document does not say how to serialise.
+
+recipe: kestra
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: 2.0.1
+  docs: https://kestra.io/docs/api-reference/open-source
+  spec: https://kestra.io/kestra.yml
+  spec_hash: 6575d34fd1222de0ca0381bac0515519c9137955095d423753fd2c35c7d7ab66
+  spec_seen: "2026-09-11"
+
+auth:
+  # Required on open-source instances since 0.24.0, and absent from the
+  # OpenAPI document entirely: the username is an email address and the
+  # password is the secret.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldr0nkestraf1xturepass
+  absent_error: unauthorized
+  rejected_error: unauthorized
+  unentitled:
+    # Authenticates, and is refused by the instance's access rules.
+    - cauldr0nkestrareadonlypass
+  unentitled_error: access_denied
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # Both required, because the description says this envelope is only used
+    # by stores that always know their row count.
+    count_field: total
+  error:
+    style: flat
+    # RFC 9457's short summary. `detail` is the per-occurrence sentence and
+    # the document gives no example of one for these statuses.
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+    # The HTTP status, repeated in the body, which the schema calls "for
+    # convenience".
+    status_field: status
+
+resources:
+  flow:
+    id:
+      # Constrained to ^[a-zA-Z0-9][a-zA-Z0-9._-]* and 1 to 100 characters,
+      # which is a name rather than a generated key.
+      field: id
+      style: opaque
+      length: 12
+    fields:
+      # Lower case only, where the id permits capitals: two patterns for the
+      # two halves of the same address.
+      namespace:
+        type: string
+      revision:
+        type: integer
+      description:
+        type: string
+      # A disabled flow does not run: its triggers are paused and new
+      # executions are rejected.
+      disabled:
+        type: boolean
+      # And a draft revision is skipped by webhooks, schedules, subflows and
+      # manual triggers unless the revision is named explicitly.
+      draft:
+        type: boolean
+      deleted:
+        type: boolean
+      tasks:
+        type: list
+      # A oneOf with one member, described as accepting two shapes.
+      labels:
+        type: map
+      # Declared as an object with additionalProperties false, on the field
+      # that exists to hold arbitrary keys.
+      variables:
+        type: map
+
+routes:
+  - method: GET
+    # Every path in the document is templated on {tenant}, and the value is
+    # named exactly once in the whole file -- inside a ProblemDetail example,
+    # as /api/v1/main/flows. `main` is the default an open-source install
+    # starts with.
+    path: /api/v1/{tenant}/flows/search
+    resource: flow
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 10
+      max_limit: 1000
+      limit_param: size
+      cursor_param: page
+
+errors:
+  unauthorized:
+    status: 401
+    # The response description, because the document offers no example of a
+    # ProblemDetail for this status -- and no member of that schema is
+    # required, so an empty object would satisfy it too.
+    message: Authentication required
+    headers:
+      # RFC 9457's media type, which the vendor's own hosted API does not use.
+      Content-Type: application/problem+json
+
+  access_denied:
+    status: 403
+    message: Access denied
+    headers:
+      Content-Type: application/problem+json
+
+fixtures:
+  empty:
+    flow: []
+
+  instance:
+    flow:
+      - id: hello-world
+        namespace: company.team
+        revision: 3
+        description: The flow every Kestra install starts with.
+        disabled: false
+        draft: false
+        deleted: false
+        tasks:
+          - id: log_message
+            type: io.kestra.plugin.core.log.Log
+            message: Hello, World!
+        labels:
+          env: production
+        variables: {}
+      - id: nightly.rollup
+        namespace: company.team.reporting
+        revision: 11
+        description: Disabled, and still listed.
+        # Listed, and it does not run: triggers paused, new executions
+        # rejected.
+        disabled: true
+        # And this revision is a draft, so anything starting it without
+        # naming a revision skips it.
+        draft: true
+        deleted: false
+        tasks:
+          - id: rollup
+            type: io.kestra.plugin.jdbc.postgresql.Query
+        labels:
+          env: production
+          owner: data
+        variables: {}
+
+conformance:
+  - name: no credential is a problem document
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # What the document promises. Kestra Cloud answers application/json
+        # and one key.
+        Content-Type: application/problem+json
+      body:
+        status: 401
+        title: Authentication required
+
+  - name: a wrong password is the same problem
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        # base64("admin@kestra.io:notarealpassword")
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOm5vdGFyZWFscGFzc3dvcmQ="
+    expect:
+      status: 401
+      body:
+        status: 401
+        title: Authentication required
+
+  - name: an authenticated caller without access is a 403
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        # base64("admin@kestra.io:cauldr0nkestrareadonlypass")
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhcmVhZG9ubHlwYXNz"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/problem+json
+      body:
+        status: 403
+        title: Access denied
+
+  - name: the listing always carries its total
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        # base64("admin@kestra.io:cauldr0nkestraf1xturepass")
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        # PagedResults requires both, because this envelope is only used by
+        # stores that know their row count.
+        total: 2
+        'results[0].id': hello-world
+        'results[0].namespace': company.team
+
+  - name: a flow can be listed and still not run
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        # Two independent ways a listed flow does nothing, and neither is
+        # `deleted`.
+        'results[1].disabled': true
+        'results[1].draft': true
+        'results[1].deleted': false
+        'results[1].revision': 11
+
+  - name: the namespace and the id have different character sets
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        # The id permits capitals and the namespace does not, on the two
+        # halves of one address.
+        'results[1].id': nightly.rollup
+        'results[1].namespace': company.team.reporting
+        'results[1].description': Disabled, and still listed.
+
+  - name: labels are the map branch of a oneOf with one branch
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        # The description names two shapes -- a list of key/value pairs or a
+        # map -- and the schema offers one.
+        'results[0].labels.env': production
+        'results[1].labels.owner': data
+        # And variables, whose schema permits no properties at all.
+        'results[0].variables': {}
+
+  - name: a task is identified by a fully qualified plugin class
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        'results[0].tasks[0].id': log_message
+        # A Java class name on the wire, which is how every task names what it
+        # does.
+        'results[0].tasks[0].type': io.kestra.plugin.core.log.Log
+        'results[1].tasks[0].type': io.kestra.plugin.jdbc.postgresql.Query
+
+  - name: the second page is the second flow
+    source: https://kestra.io/kestra.yml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+      query:
+        size: "1"
+        page: "2"
+    expect:
+      status: 200
+      body:
+        'results[0].id': nightly.rollup
+        total: 2
+
+  - name: an instance with no flows still carries a total
+    source: https://kestra.io/kestra.yml
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/main/flows/search
+      headers:
+        Authorization: "Basic YWRtaW5Aa2VzdHJhLmlvOmNhdWxkcjBua2VzdHJhZjF4dHVyZXBhc3M="
+    expect:
+      status: 200
+      body:
+        results: []
+        total: 0
