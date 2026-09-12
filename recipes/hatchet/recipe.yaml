@@ -1,0 +1,402 @@
+# Hatchet Recipe for Cauldron
+#
+# The Hatchet API, read from the multi-file OpenAPI contract in Hatchet's own
+# repository -- it is open source -- and struck live against cloud.onhatchet.run
+# on 2026-09-11 with no credential, with a deliberately invalid one, on a path
+# that does not exist, and on tenant paths carrying a malformed and an unknown
+# identifier.
+#
+# **Nothing is ever a 401.** Struck live:
+#
+#   (no header)      403 {"message":"Please provide valid credentials"}
+#   Bearer notreal   403 {"message":"Please provide valid credentials"}
+#
+# The same status and the same sentence for both. 403 means the server knows
+# who you are and you may not; 401 means tell me who you are. Hatchet only ever
+# says the first, to callers who have said nothing -- and because 403 carries no
+# challenge, there is no `WWW-Authenticate` anywhere to say which scheme it
+# takes. A client cannot tell a missing credential from a rejected one, and a
+# retry-on-401 interceptor never fires.
+#
+# **A path that does not exist answers 403 and the body `null`.** Four bytes,
+# under `application/json`. It parses -- `JSON.parse` returns null rather than
+# throwing -- so a client reaches `body.message` on it and gets a TypeError
+# instead of an error message.
+#
+# **And the document declares none of this.** `GET /api/v1/users/current` lists
+# 400, 401 and 405 and no 403 at all, and every one of them points at
+# `APIErrors`:
+#
+#   {"errors": [{"code": 1400, "field": "name", "description": "...",
+#                "docs_link": "github.com/hatchet-dev/hatchet"}]}
+#
+# The live failure is `{"message": "..."}`. Not one field in common with the
+# declared type, so a generated client's error struct parses nothing this API
+# actually sends. The declared shape's own `docs_link` example is a URL with no
+# scheme.
+#
+# **The operation's declared security is a browser cookie.** The document's
+# top-level `security` offers `bearerAuth` and `cookieAuth`, and this operation
+# overrides it to `cookieAuth` alone -- an apiKey in a cookie named `hatchet`.
+# So the endpoint that answers "who am I" is documented as reachable only from
+# a browser session, while the sentence it refuses a Bearer token with says to
+# provide valid credentials.
+#
+# **The unauthenticated caller gets a four-way oracle.** With no credential at
+# all, struck live:
+#
+#   /api/v1/users/current                403 {"message":"Please provide valid credentials"}
+#   /api/v1/cauldron-nope                403 null
+#   /api/v1/tenants/notauuid             400 {"message":"invalid tenant id"}
+#   /api/v1/tenants/<a well-formed uuid> 404 {"message":"not found"}
+#
+# Identifier parsing and existence lookup both run before authentication, so
+# the response separates a real tenant from an absent one for a caller who has
+# proved nothing. The identifiers are version-4 UUIDs, so this is not a
+# practical way to find one; it is a statement about the order the checks run
+# in, which is the part that generalises to whatever else is keyed that way.
+#
+# **`/api/v1/meta` answers 200 to anybody** and describes the deployment: which
+# sign-in schemes exist, whether signup is open, whether tenants may be created,
+# whether observability is on, and whether authentication is disabled entirely.
+#
+# And the schema for it declares `authDisabledToken` -- "the embedded worker API
+# token, only set on authdisabled builds", example `eyJhbGciOiJFUzI1NiIs...`.
+# So the same unauthenticated endpoint that reports authentication is off is
+# also the one that hands out the token, by design, on those builds. Hatchet
+# Cloud reports `authDisabled: false` and omits the field.
+#
+# **An id may be the empty string.** `APIResourceMeta.id` is described as "the
+# id of this resource, in UUID format" and constrained `minLength: 0`,
+# `maxLength: 36` -- so a conforming record can identify itself with nothing,
+# and the length that would actually pin a UUID is 36 at both ends.
+#
+# **And a user carries a hash of their own email.** `emailHash`, "for use with
+# Pylon Support Chat" -- the record shape of an API's own user object includes
+# a derived identifier whose only consumer is a third-party support widget.
+
+recipe: hatchet
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://docs.hatchet.run/home
+  # No spec: Hatchet's OpenAPI contract is a tree of files stitched by relative
+  # $ref -- paths/user/user.yaml, components/schemas/_index.yaml and so on --
+  # so the document at the root address is a manifest rather than a
+  # description, and nothing at one URL can be fingerprinted. The files are
+  # cited individually in the README.
+
+auth:
+  # The document's top-level security offers this and a cookie; the operation
+  # modelled here overrides it to the cookie alone.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-hatchet-f1xture-t0ken
+  also:
+    # cookieAuth: an apiKey in a cookie named `hatchet`, which is the only
+    # scheme GET /api/v1/users/current declares.
+    - scheme: header
+      header: Cookie
+      prefix: "hatchet="
+  # One status, one sentence, for a caller who sent nothing and a caller who
+  # sent something wrong.
+  absent_error: invalid_credentials
+  rejected_error: invalid_credentials
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # No code, no type, no field: one key.
+    code_field: "-"
+
+resources:
+  user:
+    id:
+      # Under a metadata object rather than on the record, and permitted by its
+      # own schema to be the empty string.
+      field: metadata.id
+      style: uuid
+    fields:
+      # Beside the id, in the same sub-object. APIResourceMeta requires all
+      # three of them; the user's own name is not required at all.
+      createdAt:
+        type: datetime
+        in: metadata
+      updatedAt:
+        type: datetime
+        in: metadata
+      name:
+        type: string
+      email:
+        type: string
+      emailVerified:
+        type: boolean
+      hasPassword:
+        type: boolean
+      # A hash of the user's address, on the user record, for a third-party
+      # support widget.
+      emailHash:
+        type: string
+
+  meta:
+    id:
+      # The instance has no identifier of its own. The support-chat app id is
+      # the only stable one on the record.
+      field: "-"
+      style: uuid
+      carried_by: pylonAppId
+    fields:
+      pylonAppId:
+        type: string
+      # Which sign-in schemes the deployment offers, to a caller who has not
+      # signed in.
+      auth:
+        type: map
+      allowSignup:
+        type: boolean
+      allowInvites:
+        type: boolean
+      allowCreateTenant:
+        type: boolean
+      allowChangePassword:
+        type: boolean
+      observabilityEnabled:
+        type: boolean
+      prometheusServerEnabled:
+        type: boolean
+      # And whether authentication is on at all. The schema declares an
+      # authDisabledToken beside it, sent when this is true.
+      authDisabled:
+        type: boolean
+      embedded:
+        type: boolean
+      posthog:
+        type: map
+
+routes:
+  - method: GET
+    path: /api/v1/users/current
+    resource: user
+    operation: get
+    # No identifier in the request: the endpoint answers about whoever the
+    # credential belongs to.
+    id_from: auth
+
+  - method: GET
+    path: /api/v1/meta
+    resource: meta
+    operation: get
+    id_from: auth
+    # Answered to anybody, with or without a credential, struck live both ways.
+    public: true
+
+errors:
+  invalid_credentials:
+    # Not 401. The status that means "you may not" answers the caller who has
+    # not said who they are.
+    status: 403
+    message: Please provide valid credentials
+
+  unknown_route:
+    status: 403
+    # Live this is the four bytes `null` under application/json -- valid JSON
+    # that parses to nothing, so a client reading body.message throws on it.
+    # A Recipe cannot emit a bare null, so this sends no body; see the README's
+    # modelling limits for the difference that makes.
+    empty: true
+
+fixtures:
+  empty:
+    user: []
+    meta: []
+
+  instance:
+    user:
+      - id: bb214807-246e-43a5-a25d-41761d1cff9e
+        createdAt: "2022-12-13T15:06:48.888358-05:00"
+        updatedAt: "2026-08-30T09:14:02.114221-05:00"
+        name: Cauldron
+        email: cauldron@example.com
+        emailVerified: true
+        hasPassword: false
+        # Not the address, and not useful to this API either.
+        emailHash: 8c8a30a2ee5ad2b0a0d2e2b32fbbd6b8d5ab0e1f7c2d6f9a3b4c5d6e7f80911a
+    meta:
+      - pylonAppId: 049bc7f6-dd8c-4e76-8a98-2625ddc0587d
+        auth:
+          # Named to a caller who has not authenticated.
+          schemes:
+            - google
+            - github
+        allowSignup: true
+        allowInvites: true
+        allowCreateTenant: true
+        allowChangePassword: true
+        observabilityEnabled: true
+        prometheusServerEnabled: true
+        # False here, so no authDisabledToken beside it.
+        authDisabled: false
+        embedded: false
+        posthog:
+          apiHost: https://analytics.example.com
+          apiKey: phc_cauldronfixturekeynotreal
+
+conformance:
+  - name: no credential is a 403 rather than a 401
+    source: https://cloud.onhatchet.run/api/v1/users/current
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/users/current
+      headers: {}
+    expect:
+      # The status that means "you may not", answering a caller who has not
+      # said who they are -- so no challenge header can accompany it.
+      status: 403
+      body:
+        message: Please provide valid credentials
+      absent_headers:
+        - WWW-Authenticate
+
+  - name: a wrong credential is the same status and the same sentence
+    source: https://cloud.onhatchet.run/api/v1/users/current
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/users/current
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 403
+      body:
+        # Indistinguishable from the case above, so a client cannot tell a
+        # missing credential from a rejected one.
+        message: Please provide valid credentials
+
+  - name: an unrouted path is a 403 with nothing to read
+    source: https://cloud.onhatchet.run/api/v1/cauldron-nope
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/cauldron-nope
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 403
+      # Live, the body is `null`. Here it is empty; both leave a client with
+      # no message, and neither is the 404 the path deserves.
+      no_body: true
+
+  - name: the deployment describes itself to anybody
+    source: https://cloud.onhatchet.run/api/v1/meta
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/meta
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # Whether people may sign up, whether tenants may be created, and
+        # which sign-in schemes exist -- to a caller who has not signed in.
+        allowSignup: true
+        allowCreateTenant: true
+        'auth.schemes[0]': google
+        'auth.schemes[1]': github
+
+  - name: the same endpoint says whether authentication is on
+    source: https://cloud.onhatchet.run/api/v1/meta
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/meta
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # The schema declares an authDisabledToken sent beside this when it is
+        # true, so the endpoint that reports authentication is off is the one
+        # that hands out the token.
+        authDisabled: false
+        embedded: false
+        observabilityEnabled: true
+        prometheusServerEnabled: true
+        allowChangePassword: true
+        allowInvites: true
+
+  - name: the user identifier lives under a metadata object
+    source: https://github.com/hatchet-dev/hatchet/blob/main/api-contracts/openapi/components/schemas/metadata.yaml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/users/current
+      headers:
+        Authorization: "Bearer cauldr0n-hatchet-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        # Described as "in UUID format" and constrained minLength 0, so the
+        # schema permits a record to identify itself with the empty string.
+        'metadata.id': bb214807-246e-43a5-a25d-41761d1cff9e
+        'metadata.createdAt': "2022-12-13T15:06:48.888358-05:00"
+        'metadata.updatedAt': "2026-08-30T09:14:02.114221-05:00"
+
+  - name: a user carries a hash of their own address
+    source: https://github.com/hatchet-dev/hatchet/blob/main/api-contracts/openapi/components/schemas/user.yaml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/users/current
+      headers:
+        Authorization: "Bearer cauldr0n-hatchet-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        email: cauldron@example.com
+        name: Cauldron
+        emailVerified: true
+        hasPassword: false
+        # For a third-party support widget, on the API's own user record.
+        emailHash: 8c8a30a2ee5ad2b0a0d2e2b32fbbd6b8d5ab0e1f7c2d6f9a3b4c5d6e7f80911a
+
+  - name: the cookie the operation declares is read too
+    source: https://github.com/hatchet-dev/hatchet/blob/main/api-contracts/openapi/paths/user/user.yaml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/users/current
+      headers:
+        # cookieAuth is the only scheme this operation declares, so the
+        # document's answer to "who am I" is a browser session.
+        Cookie: "hatchet=cauldr0n-hatchet-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        email: cauldron@example.com
+
+  - name: the public metadata carries the analytics configuration
+    source: https://github.com/hatchet-dev/hatchet/blob/main/api-contracts/openapi/components/schemas/metadata.yaml
+    fixture: instance
+    request:
+      method: GET
+      path: /api/v1/meta
+      headers: {}
+    expect:
+      status: 200
+      body:
+        'posthog.apiHost': https://analytics.example.com
+        'posthog.apiKey': phc_cauldronfixturekeynotreal
+        pylonAppId: 049bc7f6-dd8c-4e76-8a98-2625ddc0587d
