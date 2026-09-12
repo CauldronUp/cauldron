@@ -1,0 +1,340 @@
+# Zitadel Recipe for Cauldron
+#
+# The Management API, which is gRPC behind a grpc-gateway, struck live against
+# zitadel.cloud on 2026-09-11 with no credential, with a deliberately invalid
+# one, and on a path that does not exist. Record shapes are read from Zitadel's
+# own protobuf, which is open -- see the sources in the README.
+#
+# **The body's `code` is not an HTTP status.** Struck live:
+#
+#   (no header)      401 {"code":16,"message":"auth header missing"}
+#   Bearer notreal   401 {"code":16,"message":"Errors.Token.Invalid (AUTH-7fs1e)", ...}
+#   /cauldron-nope   404 {"code":5,"message":"Not Found"}
+#
+# 16 is gRPC's `UNAUTHENTICATED` and 5 is its `NOT_FOUND`. The numbering is
+# from a different protocol, arriving in an HTTP body beside an HTTP status
+# that already said the same thing in its own numbering, and a client that
+# switches on `code` needs the gRPC status table to read it.
+#
+# **And `WWW-Authenticate` is not a challenge.** The 401s carry:
+#
+#   www-authenticate: auth header missing
+#   www-authenticate: Errors.Token.Invalid (AUTH-7fs1e)
+#
+# Neither begins with an auth-scheme token, which RFC 9110 requires -- a
+# challenge is `<scheme> <params>`, and "auth" is being read as the scheme with
+# "header missing" as garbage after it. The field is being used as a free-text
+# error channel.
+#
+# That is the fifth challenge-header fault in this collection and the most
+# thorough. [cloudamqp](../cloudamqp) omits the header from the caller who
+# needs it, [airship](../airship) fills it with whichever scheme the caller
+# already tried, [cloudsmith](../cloudsmith) names a scheme that does not work,
+# [fastmail](../fastmail) does it properly -- and Zitadel puts a sentence where
+# the scheme belongs.
+#
+# **The sentence is an untranslated resource key.** `Errors.Token.Invalid` is
+# the name of a string in a message bundle, not a string; `(AUTH-7fs1e)` is an
+# internal error id. So the human-readable field contains the identifier of the
+# human-readable text, and a caller who looks up the key finds it in Zitadel's
+# i18n files rather than in its API reference.
+#
+# **The failure carries a protobuf type URL.** The wrong-token body has
+# `details: [{"@type":"type.googleapis.com/zitadel.v1.ErrorDetail", ...}]` --
+# `google.protobuf.Any`, serialised into JSON, repeating the same id and
+# message one level down. A JSON client is being handed protobuf's own
+# reflection machinery.
+#
+# **`sequence` means two different things depending on the direction of the
+# call.** Zitadel's own comment on it, in the proto:
+#
+#   on read: the sequence of the last event reduced by the projection
+#   on manipulation: the timestamp of the event(s) added by the manipulation
+#
+# One field, one type, and its meaning chosen by whether you were reading or
+# writing -- an event sequence number coming back from a GET and a timestamp
+# coming back from a POST. Nothing on the wire distinguishes them.
+#
+# It is also a `uint64`, which protobuf's JSON mapping requires to be emitted
+# as a **string**, so the field that is sometimes a counter and sometimes a
+# clock is always quoted.
+#
+# **The proto says `primary_domain` and the wire says `primaryDomain`.** The
+# gateway's JSON mapping lower-camels every field name, so the schema a reader
+# consults and the keys a client receives are spelled differently throughout.
+#
+# **And every enum has a zero value meaning "unset".** `ORG_STATE_UNSPECIFIED
+# = 0` sits before ACTIVE, INACTIVE and REMOVED, because protobuf requires a
+# zero -- so `state` can come back saying nothing, and a client switching on it
+# needs a branch for a value that means the field was never set.
+
+recipe: zitadel
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://zitadel.com/docs/apis/introduction
+  # No spec: Zitadel's API is defined in protobuf and its OpenAPI is generated
+  # per service at build time rather than published at an address. The record
+  # shapes here come from the proto instead, which is the source the generated
+  # document is made from.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-z1tadel-f1xture-t0ken
+  absent_error: auth_header_missing
+  rejected_error: token_invalid
+  after_routing: true
+
+responses:
+  resource:
+    style: wrapped
+    key: org
+  error:
+    style: flat
+    message_field: message
+    # gRPC's numbering, in an HTTP body, beside an HTTP status.
+    code_field: code
+
+resources:
+  org:
+    id:
+      # A snowflake as a string: the proto's own example is
+      # "69629023906488334".
+      field: id
+      style: digits
+    fields:
+      name:
+        type: string
+      # primary_domain in the proto; the gateway lower-camels it on the wire.
+      primaryDomain:
+        type: string
+      # Every protobuf enum carries a zero meaning unset, so this can say
+      # nothing at all.
+      state:
+        type: string
+      details:
+        type: map
+
+routes:
+  - method: GET
+    path: /management/v1/orgs/me
+    resource: org
+    operation: get
+    # No identifier in the request: the endpoint answers about whichever
+    # organisation the credential belongs to.
+    id_from: auth
+
+errors:
+  auth_header_missing:
+    status: 401
+    # gRPC UNAUTHENTICATED.
+    code: 16
+    message: auth header missing
+    headers:
+      # Not a challenge: no scheme, no realm, just the sentence again.
+      WWW-Authenticate: auth header missing
+
+  token_invalid:
+    status: 401
+    code: 16
+    # A message-bundle key and an internal error id, where a sentence belongs.
+    message: Errors.Token.Invalid (AUTH-7fs1e)
+    headers:
+      WWW-Authenticate: Errors.Token.Invalid (AUTH-7fs1e)
+    fields:
+      # google.protobuf.Any, serialised into JSON, repeating the same two
+      # values one level down.
+      details:
+        - "@type": type.googleapis.com/zitadel.v1.ErrorDetail
+          id: AUTH-7fs1e
+          message: Errors.Token.Invalid
+
+  unknown_route:
+    status: 404
+    # gRPC NOT_FOUND, beside HTTP 404.
+    code: 5
+    message: Not Found
+
+fixtures:
+  empty:
+    org: []
+
+  instance:
+    org:
+      - id: "69629023906488334"
+        name: Cauldron
+        primaryDomain: cauldron.zitadel.cloud
+        state: ORG_STATE_ACTIVE
+        details:
+          # uint64, which protobuf's JSON mapping requires to be a string --
+          # and which means an event sequence on a read and a timestamp on a
+          # write.
+          sequence: "1247"
+          creationDate: "2026-04-11T08:30:00.000Z"
+          changeDate: "2026-08-22T13:45:10.000Z"
+          resourceOwner: "69629023906488334"
+
+conformance:
+  - name: the body code is a gRPC status rather than an HTTP one
+    source: https://zitadel.cloud/management/v1/orgs/me
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # 16 is gRPC UNAUTHENTICATED. A client switching on this needs the
+        # gRPC status table, not the HTTP one.
+        code: 16
+        message: auth header missing
+
+  - name: the challenge header is not a challenge
+    source: https://zitadel.cloud/management/v1/orgs/me
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # RFC 9110 wants <scheme> <params>. This is a sentence, so "auth" is
+        # read as the scheme and the rest as garbage after it.
+        WWW-Authenticate: auth header missing
+
+  - name: a wrong token answers an untranslated resource key
+    source: https://zitadel.cloud/management/v1/orgs/me
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # The name of a string in a message bundle, plus an internal error id,
+        # where a sentence belongs.
+        message: Errors.Token.Invalid (AUTH-7fs1e)
+        code: 16
+
+  - name: the failure carries a protobuf type URL
+    source: https://zitadel.cloud/management/v1/orgs/me
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        # google.protobuf.Any in JSON, repeating the same id and message one
+        # level down.
+        'details[0].@type': type.googleapis.com/zitadel.v1.ErrorDetail
+        'details[0].id': AUTH-7fs1e
+
+  - name: an unknown path is gRPC NOT_FOUND
+    source: https://zitadel.cloud/management/v1/cauldron-nope
+    verified: "2026-09-11"
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/cauldron-nope
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 404
+      body:
+        # 5, beside HTTP 404 -- the same fact in two numbering schemes.
+        code: 5
+        message: Not Found
+
+  - name: the organisation is wrapped under its own name
+    source: https://github.com/zitadel/zitadel/blob/main/proto/zitadel/org.proto
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer cauldr0n-z1tadel-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        'org.name': Cauldron
+        'org.id': "69629023906488334"
+
+  - name: the proto says primary_domain and the wire says primaryDomain
+    source: https://github.com/zitadel/zitadel/blob/main/proto/zitadel/org.proto
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer cauldr0n-z1tadel-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        # The gateway lower-camels every field name, so the schema a reader
+        # consults and the keys a client receives are spelled differently.
+        'org.primaryDomain': cauldron.zitadel.cloud
+
+  - name: the state is an enum whose zero value means unset
+    source: https://github.com/zitadel/zitadel/blob/main/proto/zitadel/management.proto
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer cauldr0n-z1tadel-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        # ORG_STATE_UNSPECIFIED = 0 sits before ACTIVE, INACTIVE and REMOVED,
+        # because protobuf requires a zero -- so a client needs a branch for a
+        # value meaning the field was never set.
+        'org.state': ORG_STATE_ACTIVE
+
+  - name: the sequence is a quoted number that means two things
+    source: https://github.com/zitadel/zitadel/blob/main/proto/zitadel/object.proto
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer cauldr0n-z1tadel-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        # uint64, which protobuf's JSON mapping requires to be a string. Its
+        # own comment says it is an event sequence on a read and a timestamp
+        # on a write, and nothing on the wire tells the two apart.
+        'org.details.sequence': "1247"
+        'org.details.creationDate': "2026-04-11T08:30:00.000Z"
+        'org.details.changeDate': "2026-08-22T13:45:10.000Z"
+
+  - name: the object carries its own owner
+    source: https://github.com/zitadel/zitadel/blob/main/proto/zitadel/object.proto
+    fixture: instance
+    request:
+      method: GET
+      path: /management/v1/orgs/me
+      headers:
+        Authorization: "Bearer cauldr0n-z1tadel-f1xture-t0ken"
+    expect:
+      status: 200
+      body:
+        # An organisation whose resourceOwner is itself, so the field is only
+        # informative on objects that belong to something else.
+        'org.details.resourceOwner': "69629023906488334"
