@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These eighty-three are left, and every one of them has now been looked for
+another. These eighty-four are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| Umami | A project using Umami holds a script tag or the @umami/node tracker, which posts events to the collect endpoint; neither is a client of the reading API this Recipe describes, so a dependency would offer the wrong surface. Checked 2026-09-11 |
 | Plausible | A project using Plausible holds a script tag or a proxy route rather than a client of this API, and the npm packages named for it are tracker wrappers that post events to /api/event rather than reading the Sites API. Checked 2026-09-11 |
 | Figma | A project that talks to Figma holds either a plugin manifest, which is not a dependency, or a generic HTTP client and a personal access token -- so no package name on any registry says this API is in use. Checked 2026-09-11 |
 | Todoist | Reached through its own apps and through generic HTTP clients holding a personal token; no client library on npm, Packagist or the Go module proxy calls this API under an obvious name, checked 2026-09-11. The npm results for the word are unofficial wrappers of the REST surface Todoist retired, which answers 410 |
