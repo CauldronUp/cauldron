@@ -1,0 +1,339 @@
+# Salesloft Recipe for Cauldron
+#
+# The users listing, read from Salesloft's own API reference, and struck live
+# against api.salesloft.com on 2026-09-11 with no credential, with a
+# deliberately invalid one, and on a path that does not exist.
+#
+# **The failure points at a hostname that is not a link.** Struck live:
+#
+#   (no header)      401 {"error":"No Bearer Token attached to request, please see documentation at developers.salesloft.com"}
+#   Bearer notreal   401 {"error":"Invalid Bearer token"}
+#
+# `developers.salesloft.com` has no scheme, so it is not a URL. It will not
+# open from a terminal, it does not linkify in a log viewer, and a client that
+# wants to surface it has to guess `https://` in front. It is also the only
+# machine-readable thing in the response: there is no code, no type, and no
+# field beside `error`.
+#
+# **And the 401 names a scheme it will not put in the header for it.** No
+# `WWW-Authenticate` on either failure, on an API whose own error message
+# contains the words "Bearer Token". RFC 9110 makes that header mandatory on a
+# 401; here the scheme is in the prose instead, where no client will read it.
+#
+# **Every path answers the credential failure, including the ones that do not
+# exist.** `/v2/cauldron-nope` with no token gets the missing-token sentence and
+# with a wrong token gets the invalid-token sentence, so a mistyped path is
+# indistinguishable from a credential problem and a client retrying its
+# credentials retries forever against a typo.
+#
+# **A "List users" endpoint documents its success as one user.** The reference
+# for `GET /v2/users` publishes a 200 schema of exactly four fields -- `id`,
+# `guid`, `name`, `email` -- with no array around them and no envelope. It is
+# the same schema the single-user endpoint `/v2/me` publishes, character for
+# character. So the document describes a listing and a lookup identically, and
+# neither description is the shape a listing can possibly have.
+#
+# **It names an envelope only in a parameter description.** `include_paging_counts`
+# is documented as "Whether to include total_pages and total_count in the
+# metadata" -- a `metadata` object that appears nowhere in the response schema.
+# This Recipe does not invent it: sending a field the provider may not send is
+# the more dangerous mistake, because code written against it works locally and
+# fails in production.
+#
+# **And the listing does not paginate by default.** `page` is documented as
+# "The current page to fetch users from. **Defaults to returning all users**",
+# and `per_page` as applying only "if the page parameter is defined". So a
+# caller who sets a page size and no page number gets every user on the team in
+# one response, and the parameter they set does nothing.
+#
+# `include_paging_counts` defaults to false, so the totals needed to page are
+# off unless asked for -- and `visible_only` defaults to true, which hides the
+# users the caller cannot act on and every deactivated user. The default
+# behaviour of "list users" is to return an unpaginated, uncounted, filtered
+# subset.
+#
+# **Two identifiers, three spellings.** Every user carries an integer `id` and
+# a `guid`, and the note on the second says "New endpoints will explicitly
+# accept this over id" -- without saying which endpoints those are. The filters
+# take both: `ids` as `integer[]`, `guid` as `string[]`, and the manager filter
+# spells the same concept a third way as `manager_user_guid`.
+#
+# **And two filters are typed as strings so they can hold magic words.**
+# `group_id` is `string[]` with the example `[1, _is_null]` -- a number and a
+# sentinel in one array -- and `role_id` is `string[]` with `[1, User]`, so it
+# takes an identifier or a role's name in the same position. `last_login` is a
+# string whose documented example value is `never`.
+#
+# **The declared credential is OAuth2 only.** The reference lists one security
+# scheme, an authorization-code flow against accounts.salesloft.com with the
+# scope `team:read`. The live error talks about bearer tokens, and Salesloft
+# issues API keys as well; neither appears in the description.
+
+recipe: salesloft
+capability: crm
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.salesloft.com/docs/api/users-index/
+  # No spec: the reference is a Docusaurus site built from an OpenAPI document
+  # at api-spec/v2/v2.json, which is a build-time path -- the bundle names it
+  # and the site answers 404 for it. The schemas below were read from the
+  # rendered reference.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n-sale5l0ft-f1xture
+  # Two sentences: one points at a hostname with no scheme, the other says
+  # nothing at all.
+  absent_error: no_bearer_token
+  rejected_error: invalid_bearer_token
+  # Every path answers the credential failure, routed or not.
+  after_routing: false
+
+responses:
+  list:
+    # The document publishes no envelope for this endpoint, and names a
+    # `metadata` object only inside a parameter's description. Nothing is
+    # invented here.
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    # No code, no type, no documentation link that is a link.
+    code_field: "-"
+
+resources:
+  user:
+    id:
+      field: id
+      style: numeric
+      type: number
+    fields:
+      # "New endpoints will explicitly accept this over id", without saying
+      # which endpoints those are.
+      guid:
+        type: string
+      name:
+        type: string
+      email:
+        type: string
+
+  # A second resource for the same four fields, because the reference
+  # publishes the listing's 200 schema and the single user's as the same
+  # object, character for character.
+  me:
+    id:
+      field: id
+      style: numeric
+      type: number
+    fields:
+      guid:
+        type: string
+      name:
+        type: string
+      email:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/users
+    resource: user
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 25
+      max_limit: 100
+      limit_param: per_page
+      # Live, this is what turns pagination on at all: the reference says
+      # results are only paginated if `page` is defined, and that `page`
+      # defaults to returning every user. A page size sent without a page
+      # number is inert. Cauldron has no way to say that -- a declared
+      # limit_param always applies -- so the sandbox honours per_page on its
+      # own where Salesloft ignores it. See the README's modelling limits.
+      cursor_param: page
+
+  - method: GET
+    # The same four-field schema as the listing above, for the one user the
+    # credential belongs to.
+    path: /v2/me
+    resource: me
+    operation: get
+    id_from: auth
+
+errors:
+  no_bearer_token:
+    status: 401
+    # A hostname with no scheme, inside the only field in the body.
+    message: "No Bearer Token attached to request, please see documentation at developers.salesloft.com"
+
+  invalid_bearer_token:
+    status: 401
+    # And no pointer at all on the second failure.
+    message: Invalid Bearer token
+
+fixtures:
+  empty:
+    user: []
+    me: []
+
+  team:
+    me:
+      - id: 1
+        guid: 9cc6da15-d403-4f5b-aeed-c4b8463cf9ae
+        name: Benjamin Franklin
+        email: fake@salesloft.com
+    user:
+      - id: 1
+        guid: 9cc6da15-d403-4f5b-aeed-c4b8463cf9ae
+        name: Benjamin Franklin
+        email: fake@salesloft.com
+      - id: 2
+        guid: 3a1f7c02-58ab-4d19-b6c7-8e2d4f9a0b11
+        name: Ada Lovelace
+        email: ada@salesloft.example
+
+conformance:
+  - name: the missing-token sentence points at a hostname with no scheme
+    source: https://api.salesloft.com/v2/users
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /v2/users
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # Not a URL. It will not open, will not linkify, and is the only
+        # machine-readable thing in the response.
+        error: "No Bearer Token attached to request, please see documentation at developers.salesloft.com"
+
+  - name: the 401 names a scheme it will not send a challenge for
+    source: https://api.salesloft.com/v2/users
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /v2/users
+      headers: {}
+    expect:
+      status: 401
+      absent_headers:
+        # RFC 9110 makes this mandatory on a 401. The scheme is in the prose
+        # instead, where no client reads it.
+        - WWW-Authenticate
+
+  - name: a wrong token drops the pointer entirely
+    source: https://api.salesloft.com/v2/users
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /v2/users
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 401
+      body:
+        # Three words, no code, no link, no field beside this one.
+        error: Invalid Bearer token
+
+  - name: an unrouted path is a credential failure
+    source: https://api.salesloft.com/v2/cauldron-nope
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /v2/cauldron-nope
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      # Not 404. A mistyped path and a bad credential are the same answer.
+      status: 401
+      body:
+        error: Invalid Bearer token
+
+  - name: an unrouted path with no token blames the token
+    source: https://api.salesloft.com/v2/cauldron-nope
+    verified: "2026-09-11"
+    fixture: team
+    request:
+      method: GET
+      path: /v2/cauldron-nope
+      headers: {}
+    expect:
+      status: 401
+      body:
+        error: "No Bearer Token attached to request, please see documentation at developers.salesloft.com"
+
+  - name: a user carries two identifiers
+    source: https://developers.salesloft.com/docs/api/users-index/
+    fixture: team
+    request:
+      method: GET
+      path: /v2/users
+      headers:
+        Authorization: "Bearer cauldr0n-sale5l0ft-f1xture"
+    expect:
+      status: 200
+      body:
+        # An integer id, and a guid the reference says new endpoints will take
+        # instead -- without naming them.
+        '[0].id': 1
+        '[0].guid': 9cc6da15-d403-4f5b-aeed-c4b8463cf9ae
+        '[0].name': Benjamin Franklin
+        '[0].email': fake@salesloft.com
+
+  - name: the listing and the single user publish the same four fields
+    source: https://developers.salesloft.com/docs/api/me-index/
+    fixture: team
+    request:
+      method: GET
+      path: /v2/me
+      headers:
+        Authorization: "Bearer cauldr0n-sale5l0ft-f1xture"
+    expect:
+      status: 200
+      body:
+        # The reference's 200 schema for "List users" is this object, with no
+        # array around it -- identical to the one published here.
+        id: 1
+        guid: 9cc6da15-d403-4f5b-aeed-c4b8463cf9ae
+        name: Benjamin Franklin
+        email: fake@salesloft.com
+
+  - name: naming a page is what turns pagination on
+    source: https://developers.salesloft.com/docs/api/users-index/
+    fixture: team
+    request:
+      method: GET
+      path: /v2/users
+      headers:
+        Authorization: "Bearer cauldr0n-sale5l0ft-f1xture"
+      query:
+        per_page: "1"
+        page: "2"
+    expect:
+      status: 200
+      body:
+        '[0].id': 2
+        '[0].name': Ada Lovelace
+        '[0].guid': 3a1f7c02-58ab-4d19-b6c7-8e2d4f9a0b11
+        '[0].email': ada@salesloft.example
+
+  - name: a team with no visible users answers an empty array
+    source: https://developers.salesloft.com/docs/api/users-index/
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/users
+      headers:
+        Authorization: "Bearer cauldr0n-sale5l0ft-f1xture"
+    expect:
+      status: 200
+      body_matches: '\A\[\s*\]\s*\z'
