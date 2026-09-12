@@ -1,0 +1,429 @@
+# Storyblok Recipe for Cauldron
+#
+# The Content Delivery API, read from Storyblok's own documentation -- every
+# page of which answers Markdown when `.md` is appended to its URL -- and
+# struck live against api.storyblok.com on 2026-09-11 with no credential, with
+# a deliberately invalid one, and on a path that does not exist.
+#
+# **One API answers an object for one failure and a bare array for the other.**
+# Struck live:
+#
+#   /v2/cdn/stories                 401 {"error":"Unauthorized"}
+#   /v2/cdn/stories?token=notreal   401 {"error":"Unauthorized"}
+#   /v2/cdn/cauldron-nope           404 ["This record could not be found"]
+#
+# The 401 is an object with a key. The 404 is a top-level JSON array holding
+# one string. A client that reads `body.error` gets the sentence on one and
+# `undefined` on the other, and a client that loops over the array gets one
+# entry from the 404 and characters from nothing at all on the 401.
+#
+# The same sentence answers a missing token and a wrong one, so there is no way
+# to tell a caller who forgot the credential from one whose credential is bad.
+#
+# **The credential is a query parameter, and only a query parameter.** The
+# documentation's authentication section says so plainly: "API requests must be
+# authenticated by providing an API access token as a query parameter". So the
+# secret is in the URL on every request -- in access logs, in proxy logs, in
+# `Referer` headers on any absolute link the content carries, and in the
+# browser history of anyone who opens one by hand.
+#
+# **The rate limit falls as the page grows, and its boundaries land in two
+# tiers at once.** The published table:
+#
+#   Listings with fewer than or equal to 25 entries   50 per second
+#   Listings with 25 to 50 entries                    15 per second
+#   Listings with 50 to 75 entries                    10 per second
+#   Listings with 75 to 100 entries                    6 per second
+#
+# 25 is in the first row and the second. 50 is in the second and the third. 75
+# is in the third and the fourth. Three of the four boundaries name two
+# different limits for the same request, and 25 and 50 are the two page sizes
+# anybody actually picks -- 25 because it is the default, 50 because it is the
+# round number above it.
+#
+# **Pagination travels outside the JSON.** `total` and `per_page` come back as
+# response *headers* on an endpoint whose body is an envelope with room for
+# them; the body's only envelope field is `cv`, a cache-version Unix timestamp.
+# So the two numbers a client needs in order to page are the two it cannot read
+# from the parsed response.
+#
+# **Every story carries two identifiers, and its content carries a third.** An
+# integer `id` and a `uuid` sit side by side on the record, and every block
+# inside `content` has a `_uid` of its own. Three identifier schemes on one
+# document, and other endpoints key by different ones.
+#
+# **And one record spells "nothing" two ways.** The homepage in Storyblok's own
+# example has `parent_id: 0` -- zero meaning no parent -- beside six fields that
+# say null for the same idea: `sort_by_date`, `meta_data`, `release_id`,
+# `path`, `default_full_slug` and `translated_slugs`. A client checking for
+# absence needs both tests, and `parent_id` is the one where the falsy check
+# and the null check agree by accident.
+#
+# **`lang` is the string "default".** Not a language tag, not null, not the
+# space's actual default language -- the literal word, where an IETF tag
+# belongs.
+#
+# **And there are nine base URLs.** Five regional hosts, four more for
+# enterprise plans, and the Chinese one is on a different domain entirely
+# (app.storyblokchina.cn). Nothing in a token says which one serves it, so the
+# host is configuration a client has to be told.
+
+recipe: storyblok
+capability: cms
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.storyblok.com/docs/api/content-delivery/v2
+  # No spec: Storyblok publishes its Content Delivery API as prose, one page
+  # per operation, each of which also answers Markdown at the same address with
+  # `.md` appended. There is no OpenAPI document at any address this Recipe
+  # could find.
+
+auth:
+  # In the URL, by design and by documentation. There is no header form.
+  scheme: query
+  param: token
+  keys:
+    - cauldr0nstorybl0kf1xt
+  # One sentence for both, so a caller cannot tell a missing token from a
+  # wrong one.
+  absent_error: unauthorized
+  rejected_error: unauthorized
+  # An unrouted path answers its own failure with a wrong token attached.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: stories
+    # Outside the body. The envelope has room for it and does not use it.
+    count_header: total
+    fields:
+      # Storyblok's cache version, a Unix timestamp, in the envelope where the
+      # pagination numbers are not.
+      cv: 1717516800
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+
+resources:
+  story:
+    id:
+      # An integer, beside a uuid that is also an identifier for the same
+      # record.
+      field: id
+      style: numeric
+      type: number
+    fields:
+      uuid:
+        type: string
+      name:
+        type: string
+      slug:
+        type: string
+      full_slug:
+        type: string
+      # Every block inside carries a _uid of its own, which is the third
+      # identifier scheme on one document.
+      content:
+        type: map
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      published_at:
+        type: datetime
+      first_published_at:
+        type: datetime
+      position:
+        type: integer
+      tag_list:
+        type: list
+      is_startpage:
+        type: boolean
+      # Zero means no parent, on a record whose six other absent fields say
+      # null.
+      parent_id:
+        type: integer
+      group_id:
+        type: string
+      # The literal word, where a language tag belongs.
+      lang:
+        type: string
+      alternates:
+        type: list
+      # Untyped, so absence survives: these arrive as null rather than as a
+      # default of their type.
+      sort_by_date:
+      meta_data:
+      release_id:
+      path:
+      default_full_slug:
+      translated_slugs:
+
+routes:
+  - method: GET
+    path: /v2/cdn/stories
+    resource: story
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 25
+      max_limit: 100
+      limit_param: per_page
+      cursor_param: page
+
+errors:
+  unauthorized:
+    status: 401
+    # An object with one key, where the 404 below is an array with none.
+    message: Unauthorized
+
+  unknown_route:
+    status: 404
+    # A top-level JSON array holding one string. `-` says there is no
+    # envelope: the array is the whole body, so `body.error` is undefined
+    # here and the sentence on the 401.
+    style: string_list
+    key: "-"
+    message: This record could not be found
+
+fixtures:
+  empty:
+    story: []
+
+  space:
+    story:
+      - id: 371891025
+        uuid: 8f14e45f-ceea-467e-adc1-5c1b1a3a7b3b
+        name: Homepage
+        slug: home
+        full_slug: home
+        content:
+          _uid: b1f8c9a2-3d44-4c2e-9a1e-6e7d2f5c9a10
+          component: page
+          body:
+            - _uid: 1a2b3c4d-5e6f-4a1b-8c2d-9e0f1a2b3c4d
+              component: teaser
+              headline: Welcome to Storyblok
+        created_at: "2025-01-15T09:30:00.000Z"
+        updated_at: "2025-06-02T14:12:05.000Z"
+        published_at: "2025-01-15T09:32:10.000Z"
+        first_published_at: "2025-01-15T09:32:10.000Z"
+        position: 0
+        tag_list:
+          - marketing
+          - featured
+        is_startpage: true
+        # Zero, not null, for the thing that is not there.
+        parent_id: 0
+        group_id: 57350688-5a28-49d1-b5a9-086ae0d4c0d2
+        lang: default
+        alternates: []
+        # And null for six others on the same record.
+        sort_by_date: null
+        meta_data: null
+        release_id: null
+        path: null
+        default_full_slug: null
+        translated_slugs: null
+      - id: 371891412
+        uuid: 2c6b9a4a-2b9c-4d3f-9e21-2a6b6a2f0b3d
+        name: "Blog: Announcing our Q2 release"
+        slug: announcing-our-q2-release
+        full_slug: blog/announcing-our-q2-release
+        content:
+          _uid: d2a9c1b0-4e55-4d3f-8b2a-7f6d3e5c9b21
+          component: blog_post
+          headline: Announcing our Q2 release
+        created_at: "2025-04-02T11:05:00.000Z"
+        updated_at: "2025-04-02T11:20:00.000Z"
+        published_at: "2025-04-02T11:20:00.000Z"
+        first_published_at: "2025-04-02T11:20:00.000Z"
+        position: 1
+        tag_list:
+          - product-updates
+        is_startpage: false
+        parent_id: 371890998
+        group_id: 9d1a6c3e-1f2b-4a5d-9c3e-6a2b1d4f0e7a
+        lang: default
+        alternates: []
+        sort_by_date: null
+        meta_data: null
+        release_id: null
+        path: null
+        default_full_slug: null
+        translated_slugs: null
+
+conformance:
+  - name: a missing token and a wrong one are the same sentence
+    source: https://api.storyblok.com/v2/cdn/stories
+    verified: "2026-09-11"
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+
+  - name: a wrong token is the object shape
+    source: https://api.storyblok.com/v2/cdn/stories
+    verified: "2026-09-11"
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: notarealtoken
+    expect:
+      status: 401
+      body:
+        # A key to read. The 404 below has none.
+        error: Unauthorized
+
+  - name: an unrouted path is a bare array of one string
+    source: https://api.storyblok.com/v2/cdn/cauldron-nope
+    verified: "2026-09-11"
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/cauldron-nope
+      query:
+        token: notarealtoken
+    expect:
+      status: 404
+      # No envelope at all, so body.error is undefined here and the sentence
+      # one status earlier.
+      body_matches: '\A\[\s*"This record could not be found"\s*\]\s*\z'
+
+  - name: a story carries two identifiers and its content a third
+    source: https://www.storyblok.com/docs/api/content-delivery/v2/stories/retrieve-multiple-stories
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+    expect:
+      status: 200
+      body:
+        'stories[0].id': 371891025
+        'stories[0].uuid': 8f14e45f-ceea-467e-adc1-5c1b1a3a7b3b
+        # And a _uid on every block inside the content.
+        'stories[0].content._uid': b1f8c9a2-3d44-4c2e-9a1e-6e7d2f5c9a10
+        'stories[0].content.body[0]._uid': 1a2b3c4d-5e6f-4a1b-8c2d-9e0f1a2b3c4d
+
+  - name: one record spells nothing two ways
+    source: https://www.storyblok.com/docs/api/content-delivery/v2/stories/retrieve-multiple-stories
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+    expect:
+      status: 200
+      body:
+        # Zero for the parent that is not there, null for six other absences
+        # on the same record.
+        'stories[0].parent_id': 0
+        'stories[0].sort_by_date': null
+        'stories[0].meta_data': null
+        'stories[0].release_id': null
+        'stories[0].path': null
+        'stories[0].default_full_slug': null
+        'stories[0].translated_slugs': null
+
+  - name: the language is the word default
+    source: https://www.storyblok.com/docs/api/content-delivery/v2/stories/retrieve-multiple-stories
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+    expect:
+      status: 200
+      body:
+        # Not a language tag. The literal string.
+        'stories[0].lang': default
+        'stories[0].alternates': []
+        'stories[0].is_startpage': true
+        'stories[0].tag_list[0]': marketing
+        'stories[0].tag_list[1]': featured
+
+  - name: the two timestamps for publication agree and are both sent
+    source: https://www.storyblok.com/docs/api/content-delivery/v2/stories/retrieve-multiple-stories
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+    expect:
+      status: 200
+      body:
+        'stories[0].published_at': "2025-01-15T09:32:10.000Z"
+        'stories[0].first_published_at': "2025-01-15T09:32:10.000Z"
+        'stories[0].created_at': "2025-01-15T09:30:00.000Z"
+        'stories[0].updated_at': "2025-06-02T14:12:05.000Z"
+        'stories[0].name': Homepage
+        'stories[0].slug': home
+        'stories[0].full_slug': home
+
+  - name: the total is a header and the cache version is the envelope
+    source: https://www.storyblok.com/docs/api/content-delivery/v2
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+        per_page: "1"
+        page: "1"
+    expect:
+      status: 200
+      headers:
+        # Outside the JSON, on an endpoint whose envelope has room for it.
+        total: "2"
+      body:
+        'stories[0].id': 371891025
+        # The one number the envelope does carry, and it is a cache key.
+        cv: 1717516800
+
+  - name: the second page is the second story
+    source: https://www.storyblok.com/docs/api/content-delivery/v2
+    fixture: space
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+        per_page: "1"
+        page: "2"
+    expect:
+      status: 200
+      body:
+        'stories[0].id': 371891412
+        'stories[0].position': 1
+        'stories[0].parent_id': 371890998
+        'stories[0].group_id': 9d1a6c3e-1f2b-4a5d-9c3e-6a2b1d4f0e7a
+
+  - name: a space with no stories answers an empty array
+    source: https://www.storyblok.com/docs/api/content-delivery/v2/stories/retrieve-multiple-stories
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/cdn/stories
+      query:
+        token: cauldr0nstorybl0kf1xt
+    expect:
+      status: 200
+      body:
+        stories: []
+        cv: 1717516800

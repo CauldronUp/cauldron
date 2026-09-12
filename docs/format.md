@@ -323,7 +323,7 @@ How every response is wrapped, in four blocks.
 | key | type | meaning |
 |---|---|---|
 | `style` | string | `nested` (Stripe, the default), `flat` (GitHub), `list` (SendGrid, `{"errors": [{...}]}`, because one request can fail several ways at once), `string_list` (Datadog, the same array with bare strings in it), `string` or `text` (Trello, whose failures are not JSON at all, so a client calling `.json()` on one throws). |
-| `key` | string | The property holding the array, when the style is `list`. |
+| `key` | string | The property holding the array, when the style is `list` or `string_list`. `-` means there is no envelope and the array is the whole body -- Salesforce sends a bare array of objects, Storyblok a bare array of one string. |
 | `message_field` | string | The property carrying the human-readable message in a flat envelope. |
 | `code_field` | string | The property carrying the error code. |
 | `code_type` | string | Whether the code is sent as a `string` or a `number`. |

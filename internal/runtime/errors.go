@@ -281,6 +281,21 @@ func (s *Sandbox) errorBody(spec recipe.ErrorResponse, category, code, message s
 			key = "errors"
 		}
 
+		// "-" means there is no envelope, the same way it does for the list
+		// style below: the array of sentences is the whole body. Storyblok
+		// answers ["This record could not be found"] for a path it does not
+		// route, beside {"error":"Unauthorized"} for a credential it does not
+		// accept -- so one API answers an object and a bare array of strings
+		// depending on which failure it is, and a client reading body.error
+		// finds undefined on one of them.
+		//
+		// Declared fields have nowhere to go in this shape, exactly as they
+		// have nowhere to go in the bare list, so a Recipe that wants both has
+		// to choose the shape the provider actually sends.
+		if key == "-" {
+			return []any{message}
+		}
+
 		// Datadog sends the array with bare strings in it. A client looping
 		// over the entries and reading .message from each finds undefined on
 		// every one, which throws rather than reporting anything.
