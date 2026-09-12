@@ -1,0 +1,439 @@
+# Instantly Recipe for Cauldron
+#
+# The v2 API, read from Instantly's published OpenAPI document -- 4.2MB of it,
+# fetchable without a key -- and struck live against api.instantly.ai on
+# 2026-09-11 with no credential, with a deliberately invalid one, and on a path
+# that does not exist.
+#
+# **The three keys of a failure arrive in one order, or the other.** Struck
+# live:
+#
+#   (no header)      401 {"statusCode":401,"error":"Unauthorized","message":"Missing authorization header"}
+#   Bearer notreal   401 {"statusCode":401,"error":"Unauthorized","message":"Invalid API key"}
+#   /cauldron-nope   404 {"message":"Route GET:/api/v2/cauldron-nope not found","error":"Not Found","statusCode":404}
+#
+# Same three keys, exactly reversed. The 401s are raised by the application and
+# the 404 by Fastify underneath it, and the two serialisers disagree about
+# which key leads. Nothing reads JSON positionally, so nothing breaks -- but a
+# fixture recorded from one path does not match a body from the other, and
+# every snapshot test written against this API is pinned to which failure it
+# happened to capture.
+#
+# **The 404 reads the caller's request back.** `Route GET:/api/v2/cauldron-nope
+# not found` names the method and the path. The published document's own
+# example for a 404 is `Resource not found`, so the message a client will
+# actually see for a mistyped path is not the message the document shows.
+#
+# **An account has no identifier.** The `Account` schema has no `id` property
+# at all. The record is keyed by `email`, which is also the thing most likely
+# to change when someone is renamed -- and the addressing scheme for every
+# other endpoint on this entity is therefore an address.
+#
+# **The cursor's separator is the query string's separator.** `starting_after`
+# is documented as `timestamp_created&email` format, and the document's own
+# example value is:
+#
+#   2026-01-01T00:00:00.000Z&jon@doe.com
+#
+# Sent as shown, the `&` ends the parameter and `jon@doe.com` becomes a
+# parameter of its own with no value. It has to be percent-encoded, and the
+# example is the form that does not work.
+#
+# **And the field carrying it back has three possible types.** The document's
+# description of `next_starting_after`, verbatim:
+#
+#   this could either be a UUID, a timestamp, on an email depending on the
+#   specific API
+#
+# One string field, three shapes, chosen by which endpoint you called -- with
+# the typo preserved. This listing's example is a UUID; the parameter it feeds
+# is documented as the timestamp-and-email pair.
+#
+# **Two enums carry their meaning in the sign.** `status` is 1, 2, 3, -1, -2,
+# -3 and `warmup_status` is 0, 1, -1, -2, -3, with the negatives being the
+# failures in both. The names live in `x-enumDescriptions`, a vendor extension,
+# so a generated client gets six unnamed integers and the reader has to know
+# that below zero means broken.
+#
+# **`autofix_failed` is a boolean with three states.** Its own description:
+# `null = in progress, true = failed, false = succeeded`. So null is not
+# unknown, it is *still working* -- and a client treating absent-or-null as
+# "fine" reports a reconnection that has not finished as one that worked.
+#
+# **And `status_message` is the mail server's own error, passed through.** It
+# carries `code`, `command`, `response` and `responseCode` straight off the
+# SMTP conversation -- `EENVELOPE`, `DATA`, `550-5.4.5 Daily user sending limit
+# exceeded` -- with `additionalProperties: true`, so the JSON API's error
+# detail for an email account is an uninterpreted slice of a different
+# protocol.
+
+recipe: instantly
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: "2.0.0"
+  docs: https://developer.instantly.ai/api-reference/account/list-account
+  # Named inside the documentation's own fenced code block rather than linked,
+  # and served without a credential.
+  spec: https://api.instantly.ai/openapi/api_v2.json
+  spec_hash: c48dc4d66e0de3da7e04fadd222a69e9bd68f64d414bc6f5e7e14f75a0172b92
+  spec_seen: "2026-09-11"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0n1nstantlyf1xturek3y
+  unentitled:
+    # Authenticates, and is refused for having no paid plan.
+    - cauldr0n1nstantlyfr33t1erk3y
+  # Two different sentences: one for the header being absent and one for the
+  # key inside it being wrong.
+  absent_error: missing_authorization_header
+  rejected_error: invalid_api_key
+  unentitled_error: workspace_not_paid
+  # An unrouted path answers 404 with a wrong key attached, so routing runs
+  # first.
+  after_routing: true
+
+responses:
+  list:
+    # {items: [...], next_starting_after: "..."} and nothing else: no count,
+    # no has_more, no echo of the request.
+    style: wrapped
+    key: items
+    # A UUID here, a timestamp-and-email pair in the parameter it feeds.
+    cursor_field: next_starting_after
+  error:
+    style: flat
+    message_field: message
+    code_field: error
+    code_type: string
+    # The HTTP status again, inside the body.
+    status_field: statusCode
+
+resources:
+  account:
+    id:
+      # There is no id property on the schema. The email address is the key.
+      field: "-"
+      style: opaque
+      carried_by: email
+    fields:
+      # The identifier, and the thing most likely to change when someone is
+      # renamed.
+      email:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      organization:
+        type: string
+      # 1, 2, 3, -1, -2, -3 -- the negatives are the failures, and the names
+      # are only in a vendor extension.
+      status:
+        type: integer
+      # 0, 1, -1, -2, -3, on the same principle and a different zero.
+      warmup_status:
+        type: integer
+      provider_code:
+        type: integer
+      setup_pending:
+        type: boolean
+      is_managed_account:
+        type: boolean
+      # null means the reconnection is still running, not that nothing is
+      # known.
+      autofix_failed:
+        type: boolean
+      stat_warmup_score:
+        type: integer
+      # The SMTP conversation, forwarded.
+      status_message:
+        type: map
+      timestamp_created:
+        type: datetime
+      timestamp_updated:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v2/accounts
+    resource: account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+      max_limit: 100
+      limit_param: limit
+      # The value is documented as `timestamp_created&email`, which has to be
+      # percent-encoded to survive being a query parameter.
+      cursor_param: starting_after
+
+errors:
+  missing_authorization_header:
+    status: 401
+    code: Unauthorized
+    # The published document's example capitalises Authorization here. The
+    # live API does not.
+    message: Missing authorization header
+
+  invalid_api_key:
+    status: 401
+    code: Unauthorized
+    message: Invalid API key
+
+  workspace_not_paid:
+    status: 402
+    code: Payment Required
+    message: Workspace does not have an active paid plan
+
+  unknown_route:
+    status: 404
+    code: Not Found
+    # The live body names the method and the path that was asked for. The
+    # document's example for this status is the sentence `Resource not found`,
+    # which is not what an unrouted path answers.
+    message: "Route GET:/api/v2/cauldron-nope not found"
+
+fixtures:
+  empty:
+    account: []
+
+  workspace:
+    account:
+      - email: jon@doe.com
+        first_name: Jon
+        last_name: Doe
+        organization: 01a0918b-8523-7e2a-902f-8e99f2fa6ad1
+        status: 1
+        warmup_status: 1
+        provider_code: 2
+        setup_pending: false
+        is_managed_account: false
+        autofix_failed: false
+        stat_warmup_score: 98
+        status_message: {}
+        timestamp_created: "2026-01-01T00:00:00.000Z"
+        timestamp_updated: "2026-08-30T11:12:13.000Z"
+      - email: sam@doe.com
+        first_name: Sam
+        last_name: Doe
+        organization: 01a0918b-8523-7e2a-902f-8e99f2fa6ad1
+        # Below zero: a connection error, which the numbers alone do not say.
+        status: -1
+        warmup_status: -1
+        provider_code: 1
+        setup_pending: false
+        is_managed_account: false
+        # Still trying, which is what null means on this field.
+        autofix_failed: null
+        stat_warmup_score: 41
+        status_message:
+          # Straight off the SMTP conversation.
+          code: EENVELOPE
+          command: DATA
+          response: "550-5.4.5 Daily user sending limit exceeded."
+          responseCode: 550
+        timestamp_created: "2026-02-14T09:00:00.000Z"
+        timestamp_updated: "2026-09-01T06:30:00.000Z"
+
+conformance:
+  - name: a missing header and a wrong key are two different sentences
+    source: https://api.instantly.ai/api/v2/accounts
+    verified: "2026-09-11"
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers: {}
+    expect:
+      status: 401
+      body:
+        statusCode: 401
+        error: Unauthorized
+        # Lower-case a, where the published document's example has a capital.
+        message: Missing authorization header
+
+  - name: a wrong key names the key
+    source: https://api.instantly.ai/api/v2/accounts
+    verified: "2026-09-11"
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer notarealkey"
+    expect:
+      status: 401
+      body:
+        statusCode: 401
+        error: Unauthorized
+        message: Invalid API key
+
+  - name: an unrouted path reads the request back
+    source: https://api.instantly.ai/api/v2/cauldron-nope
+    verified: "2026-09-11"
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/cauldron-nope
+      headers:
+        # A wrong key, and the answer is still the routing failure -- so the
+        # path is resolved before the credential is read.
+        Authorization: "Bearer notarealkey"
+    expect:
+      status: 404
+      body:
+        statusCode: 404
+        error: Not Found
+        # The method and the path, echoed. The document's own example for a
+        # 404 is `Resource not found`.
+        message: "Route GET:/api/v2/cauldron-nope not found"
+
+  - name: a key with no paid plan authenticates and is refused anyway
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyfr33t1erk3y"
+    expect:
+      status: 402
+      body:
+        statusCode: 402
+        error: Payment Required
+        message: Workspace does not have an active paid plan
+
+  - name: an account is keyed by its email address
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+    expect:
+      status: 200
+      body:
+        # No id anywhere on the record: the address is the identifier.
+        'items[0].email': jon@doe.com
+        'items[0].organization': 01a0918b-8523-7e2a-902f-8e99f2fa6ad1
+        'items[0].first_name': Jon
+        'items[0].last_name': Doe
+        'items[0].timestamp_created': "2026-01-01T00:00:00.000Z"
+        'items[0].timestamp_updated': "2026-08-30T11:12:13.000Z"
+
+  - name: the status enums carry their meaning in the sign
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+    expect:
+      status: 200
+      body:
+        # 1 is Active and -1 is Connection Error, and the response says
+        # neither -- the names are in x-enumDescriptions.
+        'items[0].status': 1
+        'items[0].warmup_status': 1
+        'items[1].status': -1
+        'items[1].warmup_status': -1
+        # Provider codes are unnamed numbers too: 1 is a custom IMAP/SMTP
+        # server and 2 is Google.
+        'items[0].provider_code': 2
+        'items[1].provider_code': 1
+        'items[0].stat_warmup_score': 98
+
+  - name: a null autofix_failed means still trying
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+    expect:
+      status: 200
+      body:
+        # false is succeeded, true is failed, and null is in progress -- so a
+        # client reading absent-or-null as "fine" is wrong on the third.
+        'items[0].autofix_failed': false
+        'items[1].autofix_failed': null
+        # Both required by the schema, where `status` -- whether the account
+        # works at all -- is not.
+        'items[0].setup_pending': false
+        'items[0].is_managed_account': false
+
+  - name: the failure detail is the mail server's own
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+    expect:
+      status: 200
+      body:
+        # SMTP's vocabulary, forwarded into a JSON API unaltered.
+        'items[1].status_message.code': EENVELOPE
+        'items[1].status_message.command': DATA
+        'items[1].status_message.responseCode': 550
+
+  - name: a page carries a cursor whose type depends on the endpoint
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        'items[0].email': jon@doe.com
+      matches:
+        # A UUID here; the parameter it feeds is documented as a timestamp and
+        # an email joined by an ampersand.
+        next_starting_after: '.'
+
+
+  - name: the cursor resumes where the page stopped
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+      query:
+        limit: "1"
+        # Documented as `timestamp_created&email`, which a client has to
+        # percent-encode before it can travel in a query string at all.
+        starting_after: rfBd56ti2SMtYv
+    expect:
+      status: 200
+      body:
+        'items[0].email': sam@doe.com
+
+  - name: a workspace with no accounts still sends the envelope
+    source: https://api.instantly.ai/openapi/api_v2.json
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: "Bearer cauldr0n1nstantlyf1xturek3y"
+    expect:
+      status: 200
+      body:
+        items: []
