@@ -1,0 +1,329 @@
+# Stability AI Recipe for Cauldron
+#
+# The generation-result endpoint, read from the OpenAPI document Stability
+# serves without a credential, and struck live against api.stability.ai on
+# 2026-09-13 with no header, with a wrong key, on a v1 path and on a v2beta one.
+#
+# **The refusal quotes both ends of the key you sent.** Struck live against v1
+# with `Authorization: Bearer sk-notarealtokenzzzzzz`:
+#
+#   {"id":"35e2a3c9...","message":"Incorrect API key provided:
+#     sk-nota***********zzzz. You can find your API key at
+#     https://stability.ai.","name":"unauthorized"}
+#
+# Seven characters of the front, four of the back, and an asterisk for every
+# character between -- so the response body carries both ends of the secret and
+# its exact length, into every log that records a response.
+#
+# **Two error envelopes on one host.** The same 401, from v1 and from v2beta:
+#
+#   /v1/engines/list              {"id","message","name"}
+#   /v2beta/stable-image/...      {"id","errors":[...],"name"}
+#
+# One sends prose as a string under `message`; the other sends it as an array of
+# strings under `errors` and has no `message` at all. A client that handles a
+# Stability failure handles half of them.
+#
+# **And the v2beta sentence says "authorization" twice.**
+# `"authorization: authorization: invalid or missing header value"`.
+#
+# **A path that does not exist is answered by the credential check.**
+# `GET /v1/cauldron-nope` with no header answers 401 "missing authorization
+# header" -- so a typo in the path is reported as a problem with a header.
+#
+# **And no operation declares a 401 at all.** The document lists 200, 202, 400,
+# 404 and 500 on the result endpoint and never the status every unauthenticated
+# request receives, which is why drift reports all three of this Recipe's
+# refusals as unbacked. The v1 path is not in the document either.
+#
+# **The key is a parameter, not a security scheme.** Every operation in the
+# document declares `{"name": "authorization", "in": "header", "required": true,
+# "type": "string"}` as an ordinary parameter, with the same paragraph about key
+# reuse repeated on each one. There is no `securitySchemes` entry, so a
+# generated client takes the raw header value as a positional argument and
+# nothing marks it as a secret.
+#
+# **The same two facts are headers or body fields, and change name in between.**
+# The document's own note: "This header is absent on JSON encoded responses
+# because it is present in the body as `finish_reason`." So `finish-reason` and
+# `seed` arrive as headers when the caller accepts bytes, and `finish_reason`
+# and `seed` arrive in the body when the caller accepts JSON -- one of them
+# renamed across the hyphen, and `seed` declared `type: string` in the header
+# and `type: number` in the body. An Accept header decides which.
+#
+# **`CONTENT_FILTERED` is a success.** The enum on that field is
+# `["SUCCESS", "CONTENT_FILTERED"]`, and the second is documented as
+# "successful generation, however the output violated our content moderation
+# policy and has been blurred as a result". A finished generation, a blurred
+# image, and a status that says it worked.
+#
+# **The in-progress status is an enum of one.** The 202 body is
+# `{id, status}` with `status` enumerated `["in-progress"]` -- a field that can
+# only ever hold one value, on a response whose status code already said it.
+#
+# **And `id` means three different things on one endpoint.** On the 202 it is
+# the generation; on the 404 and every other failure it is "a unique identifier
+# associated with this error"; on the 200 it is absent entirely.
+#
+# Also pinned: the document is titled "StabilityAI REST API v2beta" and is
+# served at `/v2alpha/openapi`, with `/v2alpha/` and `/v2beta/` paths inside it;
+# and the v1 engine types the vendor's own documentation bundle still ships are
+# `gooseai.EngineInfo` with a `gooseai.EngineTokenizer` of `GPT2` or `PILE` --
+# the message definitions of a text-generation company, compiled into the
+# reference page of an image API.
+
+recipe: stability
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v2beta
+  docs: https://platform.stability.ai/docs/api-reference
+  spec: https://api.stability.ai/v2alpha/openapi
+  spec_hash: 2b258b870945f3acef6f24d7723c1402e17d97682bc52525e696f3d6749e25f9
+  spec_seen: "2026-09-13"
+
+auth:
+  # Declared in the document as an ordinary header parameter on every
+  # operation, rather than as a security scheme.
+  scheme: header
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk-cauldr0nf1xturek3y00000000000000000000
+  absent_error: v2_unauthorized
+  rejected_error: v2_unauthorized
+  after_routing: true
+
+responses:
+  error:
+    style: flat
+    # v2beta's array of strings, with no message field anywhere.
+    message_field: "errors[]"
+    code_field: "-"
+    # The category, under a field called name.
+    type_field: name
+
+resources:
+  result:
+    id:
+      # Absent from the finished body: it is the path segment, and on the 202
+      # beside it the same key names the generation.
+      field: "-"
+      style: hex
+      length: 32
+    fields:
+      image:
+        type: string
+      # A number here, and a string in the header form of the same response.
+      seed:
+        type: number
+      # SUCCESS, or CONTENT_FILTERED, which is also a success.
+      finish_reason:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2beta/results/{id}
+    # The JSON form. Without this header the same path answers image bytes,
+    # with finish-reason and seed as headers instead.
+    matches_header:
+      Accept: application/json
+    resource: result
+    operation: get
+    not_found: generation_not_found
+
+  - method: GET
+    # A v1 path, kept for one reason: its failures are a different shape from
+    # the v2beta ones above. This Recipe holds no key for it, because no
+    # source describes the JSON the engine listing answers with, so every
+    # credential is refused and the two refusals are the finding.
+    path: /v1/engines/list
+    error: v1_missing_header
+    auth:
+      scheme: header
+      header: Authorization
+      prefix: "Bearer "
+      keys:
+        - sk-nokeythisrecipeholdsforv100000000000000
+      absent_error: v1_missing_header
+      rejected_error: v1_incorrect_key
+
+errors:
+  v2_unauthorized:
+    status: 401
+    type: unauthorized
+    # The word twice, in one sentence.
+    message: "authorization: authorization: invalid or missing header value"
+    fields:
+      id: 33e4fd4e3610156503c43bd40d0ccb6d
+
+  v1_missing_header:
+    status: 401
+    type: unauthorized
+    # A string, where the v2beta envelope sends an array.
+    message_field: message
+    message: missing authorization header
+    fields:
+      id: a999830f574ebd078ef2bc827f582abc
+
+  v1_incorrect_key:
+    status: 401
+    type: unauthorized
+    message_field: message
+    # Seven characters of the front, four of the back, and the length in
+    # asterisks.
+    message: "Incorrect API key provided: sk-nota***********zzzz. You can find your API key at https://stability.ai."
+    fields:
+      id: 35e2a3c9ba887d37cb2bd374b57f2810
+
+  generation_not_found:
+    status: 404
+    type: not_found
+    # "the generation either does not exist or has expired" -- two causes, one
+    # answer, and nothing saying which.
+    message: "id: the generation either does not exist or has expired"
+    fields:
+      id: e16067bb70071055a818704a411e76ba
+
+fixtures:
+  empty:
+    result: []
+
+  finished:
+    result:
+      - id: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+        image: AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1
+        # A number in this body and a string in the header beside it.
+        seed: 343940597
+        finish_reason: SUCCESS
+      - id: f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3
+        image: AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1
+        seed: 0
+        # A successful generation whose output was blurred.
+        finish_reason: CONTENT_FILTERED
+
+conformance:
+  - name: a v1 refusal quotes both ends of the key that was sent
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-13"
+    fixture: finished
+    request:
+      method: GET
+      path: /v1/engines/list
+      headers:
+        Authorization: "Bearer sk-notarealtokenzzzzzz"
+    expect:
+      status: 401
+      body:
+        # Seven characters, eleven asterisks, four characters: the secret's
+        # ends and its exact length, in a response body.
+        message: "Incorrect API key provided: sk-nota***********zzzz. You can find your API key at https://stability.ai."
+        name: unauthorized
+      matches:
+        id: '\A[0-9a-f]{32}\z'
+
+  - name: the same host sends two differently shaped failures
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-13"
+    fixture: finished
+    request:
+      method: GET
+      path: /v1/engines/list
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # A string under message, on v1.
+        message: missing authorization header
+        name: unauthorized
+      absent:
+        - errors
+
+  - name: and the v2beta one says authorization twice in an array
+    source: https://api.stability.ai/v2beta/stable-image/generate/core
+    verified: "2026-09-13"
+    fixture: finished
+    request:
+      method: GET
+      path: /v2beta/results/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+      headers:
+        Accept: application/json
+    expect:
+      status: 401
+      body:
+        # An array of strings, with no message field at all.
+        errors:
+          - "authorization: authorization: invalid or missing header value"
+        name: unauthorized
+      absent:
+        - message
+
+  - name: a wrong key on v2beta gets the same array and no echo
+    source: https://api.stability.ai/v2beta/stable-image/generate/core
+    verified: "2026-09-13"
+    fixture: finished
+    request:
+      method: GET
+      path: /v2beta/results/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+      headers:
+        Accept: application/json
+        Authorization: "Bearer sk-notarealtokenzzzzzz"
+    expect:
+      status: 401
+      body:
+        # The key is quoted back on v1 and not on v2beta, for the same key.
+        errors:
+          - "authorization: authorization: invalid or missing header value"
+
+  - name: a finished generation carries the seed as a number
+    source: https://api.stability.ai/v2alpha/openapi
+    fixture: finished
+    request:
+      method: GET
+      path: /v2beta/results/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+      headers:
+        Accept: application/json
+        Authorization: "Bearer sk-cauldr0nf1xturek3y00000000000000000000"
+    expect:
+      status: 200
+      body:
+        # In the body: a number. In the header form of this same response:
+        # a string, under seed, beside finish-reason with a hyphen.
+        seed: 343940597
+        finish_reason: SUCCESS
+        image: AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1
+
+  - name: a blurred image is a successful generation
+    source: https://api.stability.ai/v2alpha/openapi
+    fixture: finished
+    request:
+      method: GET
+      path: /v2beta/results/f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3
+      headers:
+        Accept: application/json
+        Authorization: "Bearer sk-cauldr0nf1xturek3y00000000000000000000"
+    expect:
+      status: 200
+      body:
+        # "successful generation, however the output violated our content
+        # moderation policy and has been blurred as a result".
+        finish_reason: CONTENT_FILTERED
+        seed: 0
+
+  - name: a generation that does not exist and one that expired are one answer
+    source: https://api.stability.ai/v2alpha/openapi
+    fixture: finished
+    request:
+      method: GET
+      path: /v2beta/results/00000000000000000000000000000000
+      headers:
+        Accept: application/json
+        Authorization: "Bearer sk-cauldr0nf1xturek3y00000000000000000000"
+    expect:
+      status: 404
+      body:
+        # Two causes, one sentence, and nothing saying which one happened.
+        errors:
+          - "id: the generation either does not exist or has expired"
+        name: not_found
