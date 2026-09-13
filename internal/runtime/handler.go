@@ -751,7 +751,8 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	body := s.listBody(list, page, limit, matched.spec.Resource, r.URL.Path,
 		nextPageURL(r, matched.spec.Pagination, page.NextCursor),
-		prevPageURL(r, matched.spec.Pagination, limit))
+		prevPageURL(r, matched.spec.Pagination, limit),
+		prevPagePosition(r, matched.spec.Pagination, limit))
 
 	// What this request actually served, for the providers that report it.
 	// These cannot be constants: a field whose whole purpose is to say where

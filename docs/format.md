@@ -289,6 +289,7 @@ How every response is wrapped, in four blocks.
 | `cursor_field` | string | The property carrying the next cursor. |
 | `cursor_null` | bool | Send it as `null` on the last page rather than leaving it out. |
 | `cursor_url` | string | The cursor carries an address rather than a token: `absolute` or `path`. |
+| `cursor_number` | bool | The next and previous page fields carry JSON numbers rather than strings or addresses. Creem's envelope is `{total_records, total_pages, current_page, next_page, prev_page}` with every one of them a number, `next_page` null on the last page and `prev_page` null on the first -- and a client adding one to `"2"` gets `"21"`. |
 | `count_field` | string | How many records matched in total, which is not how many are on this page. |
 | `count_means` | string | What that field counts, for providers where it is not how many matched. |
 | `count_lookahead` | int | How many pages a lookahead count reaches, including the one being served. |

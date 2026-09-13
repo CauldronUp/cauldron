@@ -85,14 +85,31 @@ func nextPageURL(r *http.Request, spec recipe.Pagination, cursor string) string 
 // no prev link rather than a guessed one -- which is what the providers
 // themselves do.
 func prevPageURL(r *http.Request, spec recipe.Pagination, limit int) string {
+	url, _ := prevPage(r, spec, limit)
+
+	return url
+}
+
+// prevPagePosition is the previous page's own number, for the envelopes that
+// send it instead of its address. Empty when there is no previous page.
+func prevPagePosition(r *http.Request, spec recipe.Pagination, limit int) string {
+	_, position := prevPage(r, spec, limit)
+
+	return position
+}
+
+// prevPage builds both at once, because they are the same computation: the
+// address is this request with one field moved back, and the field's value is
+// the number.
+func prevPage(r *http.Request, spec recipe.Pagination, limit int) (string, string) {
 	switch spec.Style {
 	case "offset", "page":
 	default:
-		return ""
+		return "", ""
 	}
 
 	if spec.In == "body" {
-		return ""
+		return "", ""
 	}
 
 	name := spec.CursorParam
@@ -101,14 +118,14 @@ func prevPageURL(r *http.Request, spec recipe.Pagination, limit int) string {
 	}
 
 	if name == "-" {
-		return ""
+		return "", ""
 	}
 
 	from := pagingFrom(r, spec)
 
 	position := positionOf(from, spec, limit)
 	if position <= 0 {
-		return ""
+		return "", ""
 	}
 
 	previous := position - limit
@@ -136,7 +153,7 @@ func prevPageURL(r *http.Request, spec recipe.Pagination, limit int) string {
 	prev.Scheme = "http"
 	prev.Host = r.Host
 
-	return prev.String()
+	return prev.String(), value
 }
 
 // cursorOf reads the identifier a cursor-paged listing resumes after.
@@ -255,7 +272,16 @@ func pageCount(total, limit int) int {
 //
 // The URL is empty when paging travels in the body, because there is no such
 // URL to render; the token is the honest answer then.
-func cursorValue(spec recipe.ListResponse, cursor, nextURL string) string {
+func cursorValue(spec recipe.ListResponse, cursor, nextURL string) any {
+	// A page-numbered listing sends the page, and a page is a number. Creem's
+	// next_page is 2 and not "2", and a client adding one to it is doing the
+	// arithmetic the field exists for.
+	if spec.CursorNumber {
+		if n, err := strconv.Atoi(cursor); err == nil {
+			return n
+		}
+	}
+
 	if spec.CursorURL == "" || nextURL == "" {
 		return cursor
 	}

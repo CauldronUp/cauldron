@@ -624,15 +624,24 @@ func asObject(value any) (map[string]any, bool) {
 // Null rather than absent, because a client reading Django REST Framework's
 // page shape tests whether it is at the start by looking at previous, and a
 // key that vanishes on page one is a different test from a key that is null.
-func prevValue(prevURL string) any {
+func prevValue(spec recipe.ListResponse, prevURL, prevPosition string) any {
 	if prevURL == "" {
 		return nil
+	}
+
+	// The page itself rather than its address, for the envelopes that count
+	// pages instead of handing out links. Creem's prev_page is 1, and null on
+	// the first page exactly as the URL form is.
+	if spec.CursorNumber {
+		if n, err := strconv.Atoi(prevPosition); err == nil {
+			return n
+		}
 	}
 
 	return prevURL
 }
 
-func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int, resource, path, nextURL, prevURL string) any {
+func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int, resource, path, nextURL, prevURL, prevPosition string) any {
 	page.Records = s.presentAll(resource, page.Records)
 
 	// Chargebee wraps every item under the resource's own name, so a client
@@ -822,7 +831,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// And where the caller came from. Null on the first page rather than
 		// absent, because the key's presence is what a client tests.
 		if spec.PrevField != "" {
-			setPath(body, spec.PrevField, prevValue(prevURL))
+			setPath(body, spec.PrevField, prevValue(spec, prevURL, prevPosition))
 		}
 
 		// Salesforce's done is has_more with the sense reversed, and false is
@@ -882,7 +891,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// And where the caller came from. Null on the first page rather than
 		// absent, because the key's presence is what a client tests.
 		if spec.PrevField != "" {
-			setPath(body, spec.PrevField, prevValue(prevURL))
+			setPath(body, spec.PrevField, prevValue(spec, prevURL, prevPosition))
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)

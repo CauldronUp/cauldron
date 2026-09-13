@@ -182,6 +182,20 @@ type ListResponse struct {
 	// Link header already renders, so a Recipe saying so gets the same value
 	// in its body.
 	CursorURL string `yaml:"cursor_url"`
+	// CursorNumber says the next and previous page fields carry JSON numbers
+	// rather than strings or addresses.
+	//
+	// Page-numbered listings routinely send the page itself: Creem's envelope
+	// is {total_records, total_pages, current_page, next_page, prev_page} with
+	// every one of them a number, next_page null on the last page and
+	// prev_page null on the first. A cursor rendered as the string "2" reads
+	// identically in a diff and is a different value on the wire, and a client
+	// doing arithmetic on it -- which is the whole point of a page number --
+	// gets a concatenation instead.
+	//
+	// Opt in, like CursorURL beside it, because emitting a number where a
+	// provider sends a token is the same mistake pointed the other way.
+	CursorNumber bool `yaml:"cursor_number"`
 	// PrevField names the body field carrying the address of the PREVIOUS
 	// page, for the providers that send one beside the next.
 	//
@@ -541,6 +555,10 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	if route.List.CursorNull {
 		spec.CursorNull = true
+	}
+
+	if route.List.CursorNumber {
+		spec.CursorNumber = true
 	}
 
 	// The five below were declared and dropped. A route-level list override
