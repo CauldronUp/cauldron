@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred and eleven are left, and every one of them has now been looked for
+another. These one hundred and twelve are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| UpCloud | UpCloud is driven by its own CLI and by a Terraform provider; upcloud-go-api is a Go module a project holds only when it is building tooling, so a dependency list mostly shows neither. Checked 2026-09-13 |
 | deepinfra | DeepInfra is reached through an OpenAI client with the base URL changed, which names no DeepInfra package at all. Checked 2026-09-13 |
 | cosmicjs | The @cosmicjs/sdk package is a real client, but a project holding one is pointed at whichever bucket slug and read key its configuration names, and neither is in the dependency. Checked 2026-09-13 |
 | Appwrite | The appwrite and node-appwrite packages are real clients, but a project holding one is pointed at whichever endpoint and project id its configuration names -- self-hosted or cloud -- and neither is in the dependency. Checked 2026-09-13 |
