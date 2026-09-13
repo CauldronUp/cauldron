@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred and twenty are left, and every one of them has now been looked for
+another. These one hundred and twenty-one are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| permit | Permit.io is reached through its PDP sidecar and its language SDKs, which are pointed at a locally-running decision point rather than at this management API, so a dependency names the sidecar's client and never this host. Checked 2026-09-13 |
 | Jina | Jina is reached through an OpenAI client with the base URL changed, or through curl against a documented endpoint, neither of which names a Jina package. Checked 2026-09-13 |
 | lambdalabs | Lambda Cloud is reached through its own CLI or a generic HTTP client holding a key; the published SDKs are generated and a project holding one is pointed at whichever account the key belongs to. Checked 2026-09-13 |
 | MagicBell | The magicbell packages are real clients, but a project holding one is pointed at whichever project its key belongs to, and most MagicBell integrations are the embeddable inbox component, which is markup rather than a dependency on this API. Checked 2026-09-13 |
