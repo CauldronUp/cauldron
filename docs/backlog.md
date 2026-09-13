@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred and thirteen are left, and every one of them has now been looked for
+another. These one hundred and fourteen are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| Basin | Basin is reached by pointing an HTML form's action at it, which is markup rather than a dependency, and it publishes no client library. Checked 2026-09-13 |
 | PocketBase | The pocketbase package on npm is a real client, but every instance is self-hosted and its address lives in configuration rather than in the dependency. Checked 2026-09-13 |
 | UpCloud | UpCloud is driven by its own CLI and by a Terraform provider; upcloud-go-api is a Go module a project holds only when it is building tooling, so a dependency list mostly shows neither. Checked 2026-09-13 |
 | deepinfra | DeepInfra is reached through an OpenAI client with the base URL changed, which names no DeepInfra package at all. Checked 2026-09-13 |
@@ -2788,7 +2789,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and seventeen Recipes send at least one identifier as a number now, and each
+One hundred and eighteen Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
