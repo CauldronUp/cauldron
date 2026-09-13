@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred are left, and every one of them has now been looked for
+another. These one hundred and one are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| Cerebras | The cerebras_cloud_sdk packages are real clients, but they are OpenAI-compatible wrappers pointed at whichever base URL a project configures, and most projects reach this API through an OpenAI client with the base URL changed, which names no Cerebras package at all. Checked 2026-09-13 |
 | Fillout | Fillout publishes no first-party client library, and a project using it holds an embed script or a webhook handler rather than a client of this API. Checked 2026-09-13 |
 | Pirsch | A project using Pirsch holds a script tag or one of its tracking SDKs, which post pageviews to a different surface rather than read the dashboard API this Recipe describes. Checked 2026-09-13 |
 | DatoCMS | The @datocms/cma-client packages are real clients of this API, but a project holding one is pointed at whichever site its token belongs to, and DatoCMS read traffic goes to a different host entirely -- graphql.datocms.com -- which this Recipe does not model. Checked 2026-09-13 |
