@@ -1,0 +1,308 @@
+# Fathom Analytics Recipe for Cauldron
+#
+# The sites listing, read from Fathom's own API documentation, and struck live
+# against api.usefathom.com on 2026-09-13 with no credential, with a
+# deliberately invalid one, and with and without an Accept header.
+#
+# **Without `Accept: application/json`, an API request is redirected into a
+# login page.** Struck live:
+#
+#   GET /v1/sites                            302 text/html
+#                                            Location: https://app.usefathom.com/login
+#   GET /v1/sites  Accept: application/json  401 {"message":"Unauthenticated."}
+#
+# Not 401, not JSON, not an error at all as far as the status line goes -- a
+# redirect to an interactive sign-in form. Every HTTP client follows a 302 by
+# default, so what a caller actually receives is 200 and an HTML page, and the
+# page carries a `<meta http-equiv="refresh">` so it redirects again if the
+# first one is somehow not followed.
+#
+# Fathom documents this, which makes it a decision rather than an accident:
+#
+#   Always send `Accept: application/json` so that errors are returned as JSON
+#   rather than an HTML error page.
+#
+# So the header that has no effect on a successful response is the one that
+# decides whether a failure is machine-readable.
+#
+# **And the JSON failure is not the documented one either.** The error section
+# says most failures "return a single `error` key with a human-readable
+# message", and gives `{"error": "..."}` as the Unauthorized example. Live, the
+# 401 is `{"message":"Unauthenticated."}` -- Laravel's default sentence, in a
+# key the documentation does not mention, with a trailing full stop.
+#
+# A missing token and a wrong one answer identically, so the two cannot be told
+# apart.
+#
+# **The documentation says its own messages are not to be relied on.** Verbatim:
+#
+#   Error messages are written for humans and may change over time. When
+#   handling errors programmatically, branch on the HTTP status code rather
+#   than matching on the message text.
+#
+# Which is good advice and leaves 400 covering seven unrelated conditions --
+# invalid parameters, a failed validation, a token without permission, an
+# unsupported entity, an hourly grouping over too long a range, and a lapsed
+# subscription -- with nothing but prose to tell them apart.
+#
+# **Two failure shapes, chosen by the kind of failure.** General errors are
+# `{"error": "a sentence"}`; validation errors are `{"errors": {"name": ["The
+# name field is required."]}}` -- singular and a string, or plural and an object
+# of arrays. A client has to test which key arrived before it can read either.
+#
+# **The cursor is not in the envelope.** The list object carries `object`,
+# `url`, `has_more` and `data`, and the value to send as the next cursor is, in
+# the documentation's own words, "the `id` of the first or last item in `data`".
+# So paging requires reaching into the collection and pulling an identifier out
+# of a record, and a page of zero records has no cursor at all.
+#
+# **And the direction parameter changes the sort order.** `starting_after` sorts
+# chronologically and `ending_before` sorts in reverse, so the same endpoint
+# returns records in two different orders depending on which cursor a caller
+# holds -- and the two may not be combined.
+#
+# **A site's timestamp is not a timestamp.** `created_at` is `2020-07-27
+# 12:01:01`: a space where RFC 3339 wants a T, and no offset. The record carries
+# a `timezone` field separately, so the zone the timestamp should be read in is
+# a different key -- and nothing says whether it applies to `created_at` or only
+# to the reports.
+
+recipe: fathom
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://usefathom.com/api
+  # No spec: Fathom documents this API as prose with worked examples, and
+  # publishes it as a single Markdown file for machine readers. There is no
+  # OpenAPI document at any address this Recipe could find.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0nfath0mf1xturet0ken
+  # Laravel's sentence, in a key the documentation does not mention, for both
+  # a missing token and a wrong one.
+  absent_error: unauthenticated
+  rejected_error: unauthenticated
+
+responses:
+  list:
+    # The Stripe shape, which Fathom says it took from Stripe: an object
+    # discriminator, the request path, a has_more boolean, and the records.
+    style: envelope
+    url: true
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+
+resources:
+  site:
+    id:
+      # Six upper-case characters, and the same string that goes in the
+      # tracking script on the page.
+      field: id
+      style: opaque
+      length: 6
+    constants:
+      object: site
+    fields:
+      name:
+        type: string
+      sharing:
+        type: string
+      # A space where RFC 3339 wants a T, and no offset anywhere in it.
+      created_at:
+        type: string
+      # The zone, in a different field, with nothing saying whether it applies
+      # to the timestamp above.
+      timezone:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1/sites
+    resource: site
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+      max_limit: 100
+      limit_param: limit
+      # An object id out of the collection, not a token out of the envelope.
+      cursor_param: starting_after
+
+errors:
+  unauthenticated:
+    status: 401
+    # The documented shape for this status is {"error": "..."}. This is what
+    # arrives.
+    message: Unauthenticated.
+
+fixtures:
+  empty:
+    site: []
+
+  account:
+    site:
+      - id: CDBUGS
+        name: Bugs Bunny Portfolio
+        sharing: none
+        created_at: "2020-07-27 12:01:01"
+        timezone: America/New_York
+      - id: PORKYP
+        name: Porky Pig Blog
+        # Shared by link, which is a different thing from the sharing value
+        # above and the same field.
+        sharing: private
+        created_at: "2023-11-02 08:14:30"
+        timezone: Europe/London
+
+conformance:
+  - name: a missing token is Laravel's sentence in an undocumented key
+    source: https://api.usefathom.com/v1/sites
+    verified: "2026-09-13"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        # Without this header the answer is a 302 into a login page. See the
+        # README's modelling limits.
+        Accept: application/json
+    expect:
+      status: 401
+      body:
+        # The documentation's example for this status uses `error`.
+        message: Unauthenticated.
+
+  - name: a wrong token is the same sentence
+    source: https://api.usefathom.com/v1/sites
+    verified: "2026-09-13"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 401
+      body:
+        # Indistinguishable from the case above.
+        message: Unauthenticated.
+
+  - name: the listing is Stripe's envelope
+    source: https://usefathom.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+    expect:
+      status: 200
+      body:
+        # An object discriminator, the request path echoed back, and a boolean
+        # where a cursor would be.
+        object: list
+        url: /v1/sites
+        has_more: false
+        'data[0].id': CDBUGS
+        'data[0].object': site
+
+  - name: the timestamp is not a timestamp
+    source: https://usefathom.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+    expect:
+      status: 200
+      body:
+        # A space where RFC 3339 wants a T, no offset, and the zone in a
+        # different field.
+        'data[0].created_at': "2020-07-27 12:01:01"
+        'data[0].timezone': America/New_York
+        'data[1].created_at': "2023-11-02 08:14:30"
+        'data[1].timezone': Europe/London
+
+  - name: a site is named and shared and nothing else
+    source: https://usefathom.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+    expect:
+      status: 200
+      body:
+        'data[0].name': Bugs Bunny Portfolio
+        'data[0].sharing': none
+        'data[1].name': Porky Pig Blog
+        'data[1].sharing': private
+        'data[1].id': PORKYP
+
+  - name: the next cursor has to be read out of the records
+    source: https://usefathom.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        # has_more says another page exists and the envelope does not say how
+        # to reach it: the cursor is the id of the last record in data.
+        has_more: true
+        'data[0].id': CDBUGS
+
+  - name: paging forwards means sending an id back
+    source: https://usefathom.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+      query:
+        limit: "1"
+        starting_after: CDBUGS
+    expect:
+      status: 200
+      body:
+        'data[0].id': PORKYP
+        has_more: false
+
+  - name: an account with no sites still sends the envelope
+    source: https://usefathom.com/api
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/sites
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0nfath0mf1xturet0ken"
+    expect:
+      status: 200
+      body:
+        # And no cursor anywhere, because there is no record to take one from.
+        object: list
+        data: []
+        has_more: false
