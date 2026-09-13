@@ -202,6 +202,23 @@ func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.
 	// absent from the schema, which is a claim worth moving on.
 	fields := sortedFieldNames(r.Resources[route.Resource].Fields)
 
+	// Which names count as declared when deciding whether a field is missing.
+	//
+	// This is deliberately not `declared`. The claim text below embeds the
+	// declared type, and 219 recorded fingerprints depend on those strings
+	// byte for byte, so what the parser reads for the *text* must not move.
+	// What a gap is measured against can, and should: a listing's records sit
+	// inside an envelope, and comparing a record's fields against the envelope
+	// around it answers the wrong question.
+	backing := declared
+
+	if record := recordSchema(doc, success); record != nil {
+		backing = map[string]string{}
+		for _, property := range doc.Properties(record) {
+			backing[property.Name] = string(property.Schema.Type)
+		}
+	}
+
 	// Whether this reading got inside the response at all. Document.Properties
 	// merges allOf and stops at the top level, so for a provider that wraps
 	// its records -- {"data": {...}} -- the only property here is data, every
@@ -215,10 +232,18 @@ func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.
 	// forty fields across its seven routes learns only that this parser did
 	// not open the envelope, and a report that says that every week is a
 	// report nobody finishes reading.
+	//
+	// One matching name used to be enough to decide the envelope was open,
+	// which is wrong whenever a record carries a field named like an envelope
+	// key. Val Town's vals each have a `links` object and its pages have one
+	// too, so `links` matched, the reading was declared to be inside, and
+	// every other field on the record was reported as undeclared -- three
+	// gaps, none of them true. Looking through the envelope first removes the
+	// collision rather than tuning the guess.
 	inside := false
 
 	for _, field := range fields {
-		if _, named := declared[field]; named {
+		if _, named := backing[field]; named {
 			inside = true
 
 			break
@@ -226,7 +251,8 @@ func routeClaims(doc *Document, index pathIndex, r *recipe.Recipe, route recipe.
 	}
 
 	for _, field := range fields {
-		kind, named := declared[field]
+		kind := declared[field]
+		_, named := backing[field]
 
 		gap := ""
 		if !named && inside {
@@ -275,4 +301,43 @@ func routeMethod(route recipe.Route) string {
 	}
 
 	return strings.ToUpper(route.Method)
+}
+
+// recordSchema looks through a listing's envelope to the schema of one record,
+// and returns nil when there is nothing to look through.
+//
+// A success schema that is itself an array is the collection. One that has
+// exactly one array-typed property is an envelope around it -- {"data": [...]},
+// {"items": [...]}, {"results": [...]} -- and the records are that property's
+// items. More than one array property is ambiguous, and guessing between them
+// would be worse than not looking, so that case reads as nothing found.
+//
+// This is used only to decide what counts as a gap. It must never feed the
+// claim text, which recorded fingerprints depend on.
+func recordSchema(doc *Document, success *Schema) *Schema {
+	resolved := doc.Resolve(success)
+	if resolved == nil {
+		return nil
+	}
+
+	if resolved.Items != nil {
+		return doc.Resolve(resolved.Items)
+	}
+
+	var found *Schema
+
+	for _, property := range doc.Properties(resolved) {
+		schema := doc.Resolve(property.Schema)
+		if schema == nil || schema.Items == nil {
+			continue
+		}
+
+		if found != nil {
+			return nil
+		}
+
+		found = doc.Resolve(schema.Items)
+	}
+
+	return found
 }
