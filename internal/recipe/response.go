@@ -374,6 +374,21 @@ type ListResponse struct {
 	// input. An emulator sending [] is the helpful kind of wrong: every test
 	// passes and the first quiet minute in production does not.
 	OmitWhenEmpty bool `yaml:"omit_when_empty"`
+
+	// NullWhenEmpty sends the JSON null literal in place of an empty
+	// collection, which is what a Go handler returning a nil slice sends.
+	//
+	// Pirsch answers `null` with a 200 to a caller with no credential at all,
+	// and an array to everyone else. It is the difference between a client
+	// that iterates an empty list and one that throws on the first quiet
+	// account, and no amount of reading the response shape when there is data
+	// in it will show the difference. Both halves of the bug are invisible in
+	// a demo and certain in production.
+	//
+	// Distinct from OmitWhenEmpty, which leaves the key out: a missing key
+	// reads as undefined and a null reads as null, and the two break different
+	// code.
+	NullWhenEmpty bool `yaml:"null_when_empty"`
 	// FinalField names a field sent only on the last page of a list, and left
 	// out of every page before it.
 	//
@@ -518,6 +533,10 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	if route.List.OmitWhenEmpty {
 		spec.OmitWhenEmpty = true
+	}
+
+	if route.List.NullWhenEmpty {
+		spec.NullWhenEmpty = true
 	}
 
 	if route.List.CursorNull {

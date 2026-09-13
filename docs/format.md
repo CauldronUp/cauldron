@@ -307,6 +307,7 @@ How every response is wrapped, in four blocks.
 | `entry_field` | string | Make each entry that one field's value rather than the whole record. |
 | `entry_style` | string | `wrapped` wraps each item under the resource's own name. |
 | `omit_when_empty` | bool | Leave the collection key out entirely when there is nothing to send. |
+| `null_when_empty` | bool | Send the JSON `null` literal in place of an empty collection, which is what a Go handler returning a nil slice sends. Pirsch answers `null` with a 200 to a caller carrying no credential and an array to everyone else. Distinct from `omit_when_empty`: a missing key reads as undefined and a null reads as null, and the two break different code. |
 | `collapse_single` | bool | Send a collection of one as the object rather than a list of one. |
 | `fields` | map | Constants added to a list response only. |
 

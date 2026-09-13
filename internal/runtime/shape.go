@@ -764,6 +764,14 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 	case "bare":
 		// GitHub and friends return the array itself, with paging in headers.
 		// A caller doing json.Unmarshal into a slice must not receive an object.
+		//
+		// Unless the provider sends null for an empty one, which is what a Go
+		// handler returning a nil slice does and what Pirsch answers to a
+		// caller with no credential.
+		if spec.NullWhenEmpty && len(page.Records) == 0 {
+			return nil
+		}
+
 		return items
 	case "tuple":
 		// Two elements: the paging object first, the records second. The World
@@ -799,7 +807,9 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// queue and one that throws. Sending an empty array is the helpful
 		// kind of wrong: every test passes and the first quiet minute in
 		// production does not.
-		if !spec.OmitWhenEmpty || len(page.Records) > 0 {
+		if spec.NullWhenEmpty && len(page.Records) == 0 {
+			setPath(body, s.collectionName(resource, spec.Key), nil)
+		} else if !spec.OmitWhenEmpty || len(page.Records) > 0 {
 			setPath(body, s.collectionName(resource, spec.Key), items)
 		}
 
