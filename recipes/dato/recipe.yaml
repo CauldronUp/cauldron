@@ -1,0 +1,508 @@
+# DatoCMS Content Management API Recipe for Cauldron
+#
+# The record listing, read from the JSON Hyper-Schema DatoCMS serves without a
+# credential at site-api.datocms.com/docs/site-api-hyperschema.json, and struck
+# live on 2026-09-13 with no credential, with a wrong token, with no Accept
+# header, with the wildcard one, on a path that does not exist, and with a
+# method the path does not take.
+#
+# **Errors arrive in the JSON:API `data` member.** Every failure is
+#
+#   {"data":[{"id":"…","type":"api_error","attributes":{"code":"…","details":{},
+#     "doc_url":"…"}}]}
+#
+# JSON:API reserves `errors` for exactly this and says `data` and `errors`
+# "MUST NOT coexist in the same document". Here the errors are the data, typed
+# `api_error`, and a client checking for an `errors` key finds none.
+#
+# **The per-occurrence id is not per occurrence.** JSON:API defines `id` on an
+# error object as "a unique identifier for this particular occurrence of the
+# problem". Struck live, three identical requests and three different wrong
+# tokens all returned `5413bc`; three unauthenticated ones all returned
+# `02f293`; the unrouted path and the wrong method both returned `cf3acb`. The
+# id is a constant per error kind. The identifier that really is per request is
+# `x-request-id`, in a header.
+#
+# **A missing credential is reported as an invalid site.** No Authorization
+# header at all answers `INVALID_SITE`, not a missing-credential code -- the
+# token is what names the site, so its absence is reported as the site being
+# wrong. A *wrong* token answers `INVALID_AUTHORIZATION_HEADER`, which blames
+# the header for the value inside it.
+#
+# **`Accept: */*` is not acceptable, and where that is checked depends on what
+# else is wrong.** The header every HTTP client sends by default gets a 406
+# `INVALID_ACCEPT_HEADER`, and so does sending no Accept header at all -- but
+# only for a caller with no token. Struck live with no Accept header:
+#
+#   GET /items            (no token)      406  INVALID_ACCEPT_HEADER
+#   GET /items            (wrong token)   401  INVALID_AUTHORIZATION_HEADER
+#   GET /cauldron-nope    (no token)      404  INVALID_ENDPOINT
+#
+# So the Accept check sits between "your token is wrong" and "you have no
+# token": a bad credential is reported before it, a missing one after it. This
+# Recipe checks the credential first in both cases and does not serve the 406;
+# see the README's modelling limits.
+#
+# **A wrong method is reported as a wrong endpoint.** `PUT /items` and
+# `GET /cauldron-nope` both answer 404 `INVALID_ENDPOINT` with the same body,
+# byte for byte, id included.
+#
+# **The path parameter is a percent-encoded JSON Pointer.** In the schema, one
+# record is at
+#
+#   /items/{(%2Fschemata%2Fitem%23%2Fdefinitions%2Fitem%2Fdefinitions%2Fidentity)}
+#
+# -- a URI Template variable whose name is a pointer into the document,
+# url-encoded, sixty characters long, for what is in the end a record id.
+#
+# **The record's content is untyped.** `attributes` is "The JSON data
+# associated to the record", `{"type": "object"}`, with no `properties` and no
+# `additionalProperties` -- the entire payload of a CMS record, unconstrained.
+#
+# **The id is a UUID that is not written as one, and the schema's own example
+# disagrees.** `id` is "RFC 4122 UUID of record expressed in URL-safe base64
+# format", example `hWl-mnkWRYmMCSTq4z_piQ`. The example `attributes` beside it
+# carries `"category": "24"` and `"upload_id": "20042921"` -- decimal strings.
+#
+# **A parameter's description names a parameter that does not exist.** `locale`
+# reads "When `filter[query]` or `field[fields]` is defined…". The listing's
+# parameters are `nested`, `filter`, `locale`, `page`, `order_by` and `version`.
+# There is no `field`.
+#
+# **And filters are documented to be ignored rather than refused.** "some
+# combinations may be invalid, resulting in errors or ignored filters, which can
+# lead to unexpected results".
+#
+# Also pinned: the resource is called `item` on the wire and titled "Record" in
+# the schema; three validity booleans ride on one record -- `is_valid`,
+# `is_current_version_valid`, `is_published_version_valid`, the last two
+# nullable and the first not; `current_version` is "The ID of the current record
+# version", a field named version holding an id, beside a `version` query
+# parameter meaning published-or-current and an `item_version` resource;
+# `relationships.creator.data` is an `anyOf` of five kinds including an access
+# token, so a record's creator may be a credential; the listing's `meta` is
+# `{total_count}` and `additionalProperties: false`, so nothing in the body says
+# where the page ended; and the document's dialect is declared as
+# `http://interagent.github.io/interagent-hyper-schema`, over cleartext http.
+
+recipe: dato
+capability: cms
+version: 0.1.0
+
+upstream:
+  api: "0.1.0"
+  docs: https://www.datocms.com/docs/content-management-api
+  spec: https://site-api.datocms.com/docs/site-api-hyperschema.json
+  # A JSON Hyper-Schema, which cauldron drift reads not at all.
+  spec_hash: "-"
+  spec_seen: "2026-09-13"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldr0ndat0cmsfixturet0ken00000
+  # Not a missing-credential code: the token is what names the site.
+  absent_error: invalid_site
+  malformed_error: invalid_site
+  rejected_error: invalid_authorization_header
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: meta.total_count
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # The errors are the data.
+    style: list
+    key: data
+    code_field: attributes.code
+    type_field: type
+    message_field: "-"
+
+resources:
+  item:
+    id:
+      field: id
+      style: opaque
+      length: 22
+    fields:
+      # Always the literal "item", for a thing the schema titles "Record".
+      type:
+        type: string
+      # "The JSON data associated to the record": object, no properties.
+      attributes:
+        type: map
+      relationships:
+        type: map
+      meta:
+        type: map
+
+routes:
+  - method: GET
+    path: /items
+    resource: item
+    operation: list
+    pagination:
+      style: offset
+      limit: 30
+      max_limit: 500
+      limit_param: page[limit]
+      cursor_param: page[offset]
+
+  - method: GET
+    path: /items/{id}
+    resource: item
+    operation: get
+    not_found: not_found
+
+errors:
+  invalid_site:
+    status: 401
+    code: INVALID_SITE
+    type: api_error
+    fields:
+      # The same six characters on every unauthenticated request.
+      id: 02f293
+      attributes.details: {}
+      attributes.doc_url: https://www.datocms.com/docs/content-management-api/errors#INVALID_SITE
+
+  invalid_authorization_header:
+    status: 401
+    code: INVALID_AUTHORIZATION_HEADER
+    type: api_error
+    fields:
+      id: 5413bc
+      attributes.details: {}
+      attributes.doc_url: https://www.datocms.com/docs/content-management-api/errors#INVALID_AUTHORIZATION_HEADER
+
+  unknown_route:
+    status: 404
+    code: INVALID_ENDPOINT
+    type: api_error
+    fields:
+      id: cf3acb
+      attributes.details: {}
+      attributes.doc_url: https://www.datocms.com/docs/content-management-api/errors#INVALID_ENDPOINT
+
+  # Byte for byte what an unrouted path answers, id included.
+  method_not_allowed:
+    status: 404
+    code: INVALID_ENDPOINT
+    type: api_error
+    fields:
+      id: cf3acb
+      attributes.details: {}
+      attributes.doc_url: https://www.datocms.com/docs/content-management-api/errors#INVALID_ENDPOINT
+
+  not_found:
+    status: 404
+    code: NOT_FOUND
+    type: api_error
+    fields:
+      id: 7a6d21
+      attributes.details: {}
+      attributes.doc_url: https://www.datocms.com/docs/content-management-api/errors#NOT_FOUND
+
+fixtures:
+  empty:
+    item: []
+
+  blog:
+    item:
+      - id: hWl-mnkWRYmMCSTq4z_piQ
+        type: item
+        attributes:
+          title: My first blog post!
+          content: Lorem ipsum dolor sit amet...
+          # Decimal strings, in the same document that calls an id a
+          # url-safe base64 UUID.
+          category: "24"
+          image:
+            alt: Alt text
+            title: Image title
+            custom_data: {}
+            focal_point: null
+            upload_id: "20042921"
+        relationships:
+          item_type:
+            data:
+              id: "44"
+              type: item_type
+          creator:
+            # An access token, as the creator of a record.
+            data:
+              id: "312"
+              type: access_token
+        meta:
+          created_at: "2026-04-02T10:15:33.129Z"
+          updated_at: "2026-08-27T08:41:02.004Z"
+          published_at: "2026-08-27T08:41:02.004Z"
+          first_published_at: "2026-04-02T10:20:00.000Z"
+          publication_scheduled_at: null
+          unpublishing_scheduled_at: null
+          status: published
+          is_valid: true
+          is_current_version_valid: true
+          is_published_version_valid: true
+          # "The ID of the current record version."
+          current_version: "179402881"
+          stage: null
+          has_children: null
+      - id: aCiWeOsUT3mxY0KIzT4rWw
+        type: item
+        attributes:
+          title: Draft, never published
+          content: ""
+          category: "25"
+          image: null
+        relationships:
+          item_type:
+            data:
+              id: "44"
+              type: item_type
+          creator:
+            data:
+              id: "8812"
+              type: user
+        meta:
+          created_at: "2026-09-01T17:02:11.884Z"
+          updated_at: "2026-09-01T17:02:11.884Z"
+          published_at: null
+          first_published_at: null
+          publication_scheduled_at: null
+          unpublishing_scheduled_at: null
+          status: draft
+          # Valid overall, and null on both of the qualified flags.
+          is_valid: true
+          is_current_version_valid: null
+          is_published_version_valid: null
+          current_version: "179502114"
+          stage: null
+          has_children: null
+
+conformance:
+  - name: a missing credential is reported as an invalid site
+    source: https://site-api.datocms.com/items
+    verified: "2026-09-13"
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+    expect:
+      status: 401
+      body:
+        # Not a missing-credential code. The token is what names the site.
+        'data[0].attributes.code': INVALID_SITE
+        'data[0].type': api_error
+        'data[0].attributes.details': {}
+        'data[0].attributes.doc_url': https://www.datocms.com/docs/content-management-api/errors#INVALID_SITE
+
+  - name: and a wrong token blames the header rather than the value
+    source: https://site-api.datocms.com/items
+    verified: "2026-09-13"
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 401
+      body:
+        'data[0].attributes.code': INVALID_AUTHORIZATION_HEADER
+        # Three different wrong tokens returned this same id.
+        'data[0].id': 5413bc
+
+  - name: an unrouted path is a wrong endpoint
+    source: https://site-api.datocms.com/cauldron-nope
+    verified: "2026-09-13"
+    fixture: blog
+    request:
+      method: GET
+      path: /cauldron-nope
+      headers:
+        Accept: application/json
+    expect:
+      status: 404
+      body:
+        'data[0].attributes.code': INVALID_ENDPOINT
+        'data[0].id': cf3acb
+
+  - name: and a wrong method is the same body byte for byte
+    source: https://site-api.datocms.com/items
+    verified: "2026-09-13"
+    fixture: blog
+    request:
+      method: PUT
+      path: /items
+      headers:
+        Accept: application/json
+    expect:
+      status: 404
+      body:
+        # The same code and the same id as a path that does not exist.
+        'data[0].attributes.code': INVALID_ENDPOINT
+        'data[0].id': cf3acb
+        'data[0].attributes.doc_url': https://www.datocms.com/docs/content-management-api/errors#INVALID_ENDPOINT
+
+  - name: a record carries its content in an object with no schema
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 200
+      body:
+        'data[0].id': hWl-mnkWRYmMCSTq4z_piQ
+        'data[0].type': item
+        # "The JSON data associated to the record": no properties declared.
+        'data[0].attributes.title': My first blog post!
+        # Decimal strings, beside an id documented as a base64 UUID.
+        'data[0].attributes.category': "24"
+        'data[0].attributes.image.upload_id': "20042921"
+        'data[0].attributes.image.focal_point': null
+
+  - name: a record's creator may be a credential
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 200
+      body:
+        # anyOf account, access_token, user, sso_user, organization.
+        'data[0].relationships.creator.data.type': access_token
+        'data[1].relationships.creator.data.type': user
+        'data[0].relationships.item_type.data.type': item_type
+        'data[0].relationships.item_type.data.id': "44"
+
+  - name: three validity flags and only one of them commits
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 200
+      body:
+        # Required and not nullable.
+        'data[1].meta.is_valid': true
+        # Nullable, and null on a record that has never been published.
+        'data[1].meta.is_current_version_valid': null
+        'data[1].meta.is_published_version_valid': null
+        'data[1].meta.published_at': null
+        'data[1].meta.first_published_at': null
+        # "The ID of the current record version."
+        'data[1].meta.current_version': "179502114"
+        'data[1].meta.status': draft
+
+  - name: the listing says how many records exist and nothing else
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+      query:
+        page[limit]: "1"
+        page[offset]: "0"
+    expect:
+      status: 200
+      body:
+        # meta is {total_count}, additionalProperties: false.
+        'meta.total_count': 2
+        'data[0].id': hWl-mnkWRYmMCSTq4z_piQ
+      absent:
+        - meta.page
+        - links
+
+  - name: an offset past the end is an empty data array and the same count
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+      query:
+        page[offset]: "2"
+    expect:
+      status: 200
+      body:
+        data: []
+        'meta.total_count': 2
+
+  - name: one record travels under data as an object
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items/hWl-mnkWRYmMCSTq4z_piQ
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 200
+      body:
+        'data.id': hWl-mnkWRYmMCSTq4z_piQ
+        'data.type': item
+        'data.meta.status': published
+        'data.meta.stage': null
+        'data.meta.has_children': null
+        'data.meta.created_at': "2026-04-02T10:15:33.129Z"
+        'data.meta.updated_at': "2026-08-27T08:41:02.004Z"
+        'data.meta.publication_scheduled_at': null
+        'data.meta.unpublishing_scheduled_at': null
+
+  - name: a record that is not there keeps the error under data too
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: blog
+    request:
+      method: GET
+      path: /items/AAAAAAAAAAAAAAAAAAAAAA
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 404
+      body:
+        'data[0].type': api_error
+        'data[0].attributes.code': NOT_FOUND
+
+  - name: an empty project is an empty data array with a count of zero
+    source: https://site-api.datocms.com/docs/site-api-hyperschema.json
+    fixture: empty
+    request:
+      method: GET
+      path: /items
+      headers:
+        Accept: application/json
+        Authorization: "Bearer cauldr0ndat0cmsfixturet0ken00000"
+    expect:
+      status: 200
+      body:
+        data: []
+        'meta.total_count': 0
