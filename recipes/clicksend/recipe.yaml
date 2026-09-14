@@ -1,0 +1,409 @@
+# ClickSend Recipe for Cauldron
+#
+# The SMS delivery-receipt listing, read from the API documentation at
+# developers.clicksend.com and from ClickSend's own PHP SDK, and struck live on
+# 2026-09-13 with no credential, with a wrong basic credential, with an empty
+# password, with a bearer token, on a path that does not exist, and with
+# methods the paths do not take.
+#
+# **A Basic-auth API answers 401 with no `WWW-Authenticate` header.** RFC 9110
+# says a server generating a 401 MUST send one. ClickSend sends
+# `Content-Type`, `Content-Length`, three rate-limit headers, `nosniff`,
+# `SAMEORIGIN`, a Cloudflare ray id -- and no challenge. A browser never
+# prompts, and a client cannot discover from the response that Basic is what it
+# wants.
+#
+# **The rate-limit family is spelled two ways in one response.** Struck live:
+#
+#   ratelimit-reset: 47
+#   x-ratelimit-limit: 6000
+#   x-ratelimit-remaining: 5993
+#
+# The reset uses the unprefixed spelling of the IETF draft and the other two use
+# the de-facto `x-` one, so a client reading `x-ratelimit-reset` finds nothing
+# and a client reading `ratelimit-limit` finds nothing either.
+#
+# **The body repeats the status and calls the failure by a third name.** Every
+# response carries `http_code`, `response_code` and `response_msg`, so a 401 is
+# `{"http_code":401,"response_code":"UNAUTHORIZED","response_msg":
+# "Authorization failed.","data":null}` -- the number, a word, and a sentence,
+# for one fact.
+#
+# **A wrong method is reported as a wrong endpoint, and told to try again.**
+# `PUT /v3/sms/history` and `GET /v3/cauldron-nope` both answer 404
+# `{"response_code":"NOT_FOUND","response_msg":"Invalid endpoint. Please try
+# again."}`. Trying again produces the same answer.
+#
+# **The success message is "Here are your data."** -- a sentence, in the field a
+# client switches on, on every successful read.
+#
+# **The paginator's records live under `data.data`.** The envelope's `data` is a
+# Laravel paginator -- `total`, `per_page`, `current_page`, `last_page`,
+# `next_page_url`, `prev_page_url`, `from`, `to` -- whose own `data` is the
+# array of records. So the path to a receipt is `data.data[0]`, and the two
+# `data` keys mean different things one level apart.
+#
+# **A delivery status is the string "201".** On a receipt,
+# `"status_code": "201"` with `"status_text": "Success: Message received on
+# handset."` -- an HTTP created-code, as a string, for a handset delivery.
+# Beside it `error_code` and `error_text` are null, and so are `custom_string`
+# and `digits`.
+#
+# **And the message id is an uppercase UUID.**
+# `D6D16B28-46AC-484A-AB0A-A08CD08EF75C`, where RFC 4122 says generators
+# should output lowercase and comparisons should be case-insensitive -- which
+# code doing a string compare against a lowercased copy will not be.
+#
+# **The official PHP SDK types every response as a string.** In
+# `lib/Api/SMSApi.php`, eighteen methods are annotated `@return string`; the
+# eighteen `WithHttpInfo` variants return `array`, being the same string with
+# the status and headers beside it. No model, no parsing: the caller gets the
+# JSON text. And `smsHistoryGet` declares `@param int $page` with the default
+# `'1'` and `@param int $limit` with the default `'10'` -- string defaults on
+# integer parameters.
+#
+# Also pinned: `timestamp_send` and `timestamp` are two Unix seconds that are
+# equal in the documentation's own example; `message_type` is "sms" on the SMS
+# receipts endpoint; and the documented `q` parameter takes a query language of
+# its own -- "Custom query Example: from:{number},status_code:201." -- inside a
+# query parameter's value.
+
+recipe: clicksend
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.clicksend.com/docs/messaging/sms
+
+auth:
+  scheme: basic
+  # The username is the account name; the API key is the password.
+  credential: password
+  keys:
+    - CAULD30N-F1XT-URE0-KEY0-000000000000
+  absent_error: authorization_failed
+  malformed_error: authorization_failed
+  rejected_error: authorization_failed
+  # The path is matched first: an unrouted path 404s with no credential.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    # The paginator's own records, one level below the envelope's data.
+    key: data.data
+    count_field: data.total
+    limit_field: data.per_page
+    page_field: data.current_page
+    pages_field: data.last_page
+    cursor_field: data.next_page_url
+    cursor_url: absolute
+    cursor_null: true
+    prev_field: data.prev_page_url
+  success:
+    fields:
+      http_code: 200
+      response_code: SUCCESS
+      # In the field a client switches on.
+      response_msg: Here are your data.
+  error:
+    style: flat
+    status_field: http_code
+    code_field: response_code
+    message_field: response_msg
+    fields:
+      # Present and empty on every failure.
+      data: null
+
+resources:
+  receipt:
+    id:
+      field: message_id
+      # An uppercase UUID, which is why this is not the uuid style.
+      style: opaque
+      length: 36
+    fields:
+      # Two Unix seconds, equal in the documentation's own example.
+      timestamp_send:
+        type: integer
+      timestamp:
+        type: integer
+      # A string holding what looks like an HTTP status.
+      status_code:
+        type: string
+      status_text:
+        type: string
+      error_code:
+      error_text:
+      custom_string:
+      subaccount_id:
+        type: integer
+      message_type:
+        type: string
+      digits:
+
+routes:
+  - method: GET
+    path: /v3/sms/receipts
+    resource: receipt
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 15
+      limit_param: limit
+      cursor_param: page
+
+errors:
+  authorization_failed:
+    status: 401
+    code: UNAUTHORIZED
+    message: Authorization failed.
+    headers:
+      # Three headers of one family, two spellings.
+      ratelimit-reset: "47"
+      x-ratelimit-limit: "6000"
+      x-ratelimit-remaining: "5993"
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+    # And no WWW-Authenticate, which RFC 9110 says a 401 MUST carry.
+
+  unknown_route:
+    status: 404
+    code: NOT_FOUND
+    message: Invalid endpoint. Please try again.
+
+  # A verb the path does not take, reported as a path that is not there.
+  method_not_allowed:
+    status: 404
+    code: NOT_FOUND
+    message: Invalid endpoint. Please try again.
+
+fixtures:
+  empty:
+    receipt: []
+
+  receipts:
+    receipt:
+      - message_id: D6D16B28-46AC-484A-AB0A-A08CD08EF75C
+        timestamp_send: 1722565661
+        # The same second as timestamp_send.
+        timestamp: 1722565661
+        # A string, and an HTTP created-code, for a handset delivery.
+        status_code: "201"
+        status_text: "Success: Message received on handset."
+        error_code: null
+        error_text: null
+        custom_string: null
+        subaccount_id: 123456
+        # On the SMS receipts endpoint.
+        message_type: sms
+        digits: null
+      - message_id: 7F2A9C14-5BE0-4D33-9C71-1E8B4A60DD92
+        timestamp_send: 1722565700
+        timestamp: 1722565742
+        # A failure carries the same kind of string in the same field.
+        status_code: "400"
+        status_text: "Error: Invalid recipient."
+        error_code: "INVALID_RECIPIENT"
+        error_text: The number is not a valid mobile number.
+        custom_string: order-8812
+        subaccount_id: 123456
+        message_type: sms
+        digits: null
+
+conformance:
+  - name: a basic auth refusal with no challenge in it
+    source: https://rest.clicksend.com/v3/sms/receipts
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # The number, a word and a sentence, for one fact.
+        http_code: 401
+        response_code: UNAUTHORIZED
+        response_msg: Authorization failed.
+        data: null
+      absent_headers:
+        # RFC 9110 says a 401 MUST send this.
+        - WWW-Authenticate
+
+  - name: and one family of rate limit headers spelled two ways
+    source: https://rest.clicksend.com/v3/sms/receipts
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        # Unprefixed.
+        ratelimit-reset: "47"
+        # Prefixed.
+        x-ratelimit-limit: "6000"
+        x-ratelimit-remaining: "5993"
+
+  - name: a wrong basic credential is the same body
+    source: https://rest.clicksend.com/v3/sms/receipts
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        # nobody:notreal
+        Authorization: "Basic bm9ib2R5Om5vdHJlYWw="
+    expect:
+      status: 401
+      body:
+        response_code: UNAUTHORIZED
+        response_msg: Authorization failed.
+
+  - name: so is a bearer token on a basic auth api
+    source: https://rest.clicksend.com/v3/sms/receipts
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        Authorization: "Bearer notreal"
+    expect:
+      status: 401
+      body:
+        http_code: 401
+        response_msg: Authorization failed.
+
+  - name: an unrouted path is answered before the credential is read
+    source: https://rest.clicksend.com/v3/cauldron-nope
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/cauldron-nope
+      headers: {}
+    expect:
+      status: 404
+      body:
+        response_code: NOT_FOUND
+        # Trying again produces this again.
+        response_msg: Invalid endpoint. Please try again.
+        data: null
+
+  - name: and a wrong method is reported as a wrong endpoint
+    source: https://rest.clicksend.com/v3/sms/history
+    verified: "2026-09-13"
+    fixture: receipts
+    request:
+      method: PUT
+      path: /v3/sms/receipts
+      headers: {}
+    expect:
+      status: 404
+      body:
+        response_code: NOT_FOUND
+        response_msg: Invalid endpoint. Please try again.
+
+  - name: a success says here are your data
+    source: https://developers.clicksend.com/docs/messaging/mms/other/view-mms-history
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        # cauldron:CAULD30N-F1XT-URE0-KEY0-000000000000
+        Authorization: "Basic Y2F1bGRyb246Q0FVTEQzME4tRjFYVC1VUkUwLUtFWTAtMDAwMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        http_code: 200
+        response_code: SUCCESS
+        # A sentence, in the field a client switches on.
+        response_msg: Here are your data.
+
+  - name: the records live one data below the data
+    source: https://developers.clicksend.com/docs/messaging/mms/other/view-mms-history
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Q0FVTEQzME4tRjFYVC1VUkUwLUtFWTAtMDAwMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        # data.data[0], because the envelope's data is a paginator.
+        'data.data[0].message_id': D6D16B28-46AC-484A-AB0A-A08CD08EF75C
+        'data.total': 2
+        'data.current_page': 1
+        'data.last_page': 1
+        'data.per_page': 15
+        'data.next_page_url': null
+        'data.prev_page_url': null
+
+  - name: a delivery status is a string that looks like an http code
+    source: https://developers.clicksend.com/docs/messaging/sms/other/view-sms-receipts
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Q0FVTEQzME4tRjFYVC1VUkUwLUtFWTAtMDAwMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        # "201", as a string, for a message received on a handset.
+        'data.data[0].status_code': "201"
+        'data.data[0].status_text': "Success: Message received on handset."
+        'data.data[0].error_code': null
+        'data.data[0].error_text': null
+        'data.data[0].custom_string': null
+        'data.data[0].digits': null
+        'data.data[0].message_type': sms
+        'data.data[0].subaccount_id': 123456
+
+  - name: two timestamps that are the same second
+    source: https://developers.clicksend.com/docs/messaging/sms/other/view-sms-receipts
+    fixture: receipts
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Q0FVTEQzME4tRjFYVC1VUkUwLUtFWTAtMDAwMDAwMDAwMDAw"
+      query:
+        page: "1"
+        limit: "15"
+    expect:
+      status: 200
+      body:
+        # Equal in the documentation's own example.
+        'data.data[0].timestamp_send': 1722565661
+        'data.data[0].timestamp': 1722565661
+        # And forty-two seconds apart on the next one.
+        'data.data[1].timestamp_send': 1722565700
+        'data.data[1].timestamp': 1722565742
+        'data.data[1].status_code': "400"
+
+  - name: an account with no receipts keeps the whole paginator
+    source: https://developers.clicksend.com/docs/messaging/mms/other/view-mms-history
+    fixture: empty
+    request:
+      method: GET
+      path: /v3/sms/receipts
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Q0FVTEQzME4tRjFYVC1VUkUwLUtFWTAtMDAwMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        'data.data': []
+        'data.total': 0
+        'data.next_page_url': null
+        response_msg: Here are your data.
