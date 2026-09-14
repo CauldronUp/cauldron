@@ -1,0 +1,277 @@
+# Momento HTTP API Recipe for Cauldron
+#
+# The cache read, read from the HTTP API reference at docs.momentohq.com, and
+# struck live on 2026-09-13 with no token, with a wrong token in the header,
+# with a wrong token in the documented query parameter, with the wrong scheme,
+# with no key, with two keys, without the required ttl, on a path that does not
+# exist, and with a method the path does not take.
+#
+# **The documented query parameter is refused as a header format problem.**
+# Momento documents two carriers -- `Authorization: <token>` or `?token=<token>`
+# -- and its own refusal names only one:
+#
+#   GET /cache/mycache?key=k&token=notarealtoken
+#   401 {"status":401,"title":"Unauthorized","detail":"Invalid authorization
+#        header format"}
+#
+# There was no authorization header. A caller who used the documented query
+# parameter is told the header they did not send is malformed.
+#
+# **And the message for no token at all names both carriers**, so the API can
+# describe the query parameter when nothing is wrong with it and forgets it the
+# moment something is.
+#
+# **The credential is documented to live in a URL.** `?token=<token>` is a
+# first-class option for a cache credential, which puts the secret in every
+# access log, proxy log, browser history and `Referer` along the way -- on a
+# host that also answers `access-control-allow-credentials: true`.
+#
+# **The Authorization header takes a bare token with no scheme.** Not `Bearer`,
+# not `Token`: the value is the secret. Sending `Bearer <token>` draws the same
+# "Invalid authorization header format" as a wrong token does.
+#
+# **The error that fires when no key was given says "but not both".** Two
+# neighbouring 400s, struck live:
+#
+#   no key at all:  "You must specify either `key` or `key_base64, but not both."
+#   two keys:       "You must specify either 'key' or 'key_base64', not both."
+#
+# The first fires when neither was sent and tells the caller not to send both;
+# its backtick is unbalanced and its comma sits inside the name. The second is
+# the same sentence with different quoting and a correct ending.
+#
+# **A serde error reaches the caller verbatim.** A PUT without the required
+# `ttl_seconds` answers `{"status":400,"title":"Unable to Parse Query
+# Parameters","detail":"Failed to deserialize query string: missing field
+# \`ttl_seconds\`"}` -- the Rust deserialiser's own words, backtick and all,
+# inside an RFC 9457 problem document.
+#
+# **The 405 is the one failure with no problem document.** Every other refusal
+# is `application/problem+json`. A PATCH answers 405, `allow:
+# GET,HEAD,PUT,DELETE`, `content-length: 0`, and no content type at all -- so
+# the one status where the body is best specified is the one that has none.
+#
+# **An unrouted path reflects the path in plain text.** `No route for
+# /cauldron-nope`, `text/plain`, on an API that speaks problem+json everywhere
+# else. A client parsing failures as JSON throws on a typo.
+#
+# **Every problem document repeats the status in the body.** `status` is a
+# member of RFC 9457's schema and the RFC says it "SHOULD" match the HTTP
+# status; here there are two numbers to disagree and no `type` member at all,
+# so every problem is `about:blank` by default.
+#
+# Also pinned: the host is
+# `api.cache.cell-us-east-1-1.prod.a.momentohq.com`, which publishes the cell,
+# the region, the environment and a single-letter segment in DNS; the
+# documented base is the pattern `cell-{cell}-{region}-1`; and the HTTP API's
+# own reference says "most other applications should likely use [the] SDK
+# clients" -- documented and discouraged on the same page.
+
+recipe: momento
+capability: database
+version: 0.1.0
+
+upstream:
+  api: "0.1.0"
+  docs: https://docs.momentohq.com/cache/develop/api-reference/http-api
+
+auth:
+  scheme: header
+  header: Authorization
+  # The value is the secret: no Bearer, no Token, no scheme at all.
+  keys:
+    - cauldr0n.momento.fixture.token.000000000
+  also:
+    # Documented, and named in exactly one of the two refusals.
+    - scheme: query
+      param: token
+      prefix: "-"
+  absent_error: no_auth_token_provided
+  malformed_error: unauthorized
+  rejected_error: unauthorized
+  # An unrouted path is answered with no credential read at all.
+  after_routing: true
+
+responses:
+  error:
+    style: flat
+    # RFC 9457's members, with no type, so every problem is about:blank.
+    message_field: detail
+    type_field: title
+    status_field: status
+    code_field: "-"
+
+routes:
+  # A hit hands back the stored bytes rather than a record.
+  - method: GET
+    path: /cache/{cacheName}
+    raw:
+      content_type: application/octet-stream
+      text: cauldron
+
+errors:
+  no_auth_token_provided:
+    status: 401
+    type: No Auth Token Provided
+    # Both carriers named, which the other refusal does not do.
+    message: You must provide a valid momento auth token via the 'Authorization' header or the 'token' query parameter.
+    headers:
+      Content-Type: application/problem+json
+
+  unauthorized:
+    status: 401
+    type: Unauthorized
+    # Said to a caller who used the documented query parameter instead.
+    message: Invalid authorization header format
+    headers:
+      Content-Type: application/problem+json
+
+  unknown_route:
+    status: 404
+    style: text
+    message: No route for {detail}
+    headers:
+      Content-Type: text/plain; charset=utf-8
+
+  # The only failure with no problem document, and the only one whose status
+  # is the one the specification was written for.
+  method_not_allowed:
+    status: 405
+    empty: true
+    headers:
+      allow: GET,HEAD,PUT,DELETE
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no token names both carriers
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cache/mycache?key=k
+    verified: "2026-09-13"
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: k
+      headers: {}
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/problem+json
+      body:
+        title: No Auth Token Provided
+        detail: You must provide a valid momento auth token via the 'Authorization' header or the 'token' query parameter.
+        # The status, again, in the body.
+        status: 401
+
+  - name: a wrong token in the documented query parameter blames a header
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cache/mycache?key=k&token=notarealtoken
+    verified: "2026-09-13"
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: k
+        # No Authorization header was sent.
+        token: notarealtoken
+      headers: {}
+    expect:
+      status: 401
+      body:
+        title: Unauthorized
+        detail: Invalid authorization header format
+        status: 401
+
+  - name: and a wrong token in the header gets the same sentence
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cache/mycache?key=k
+    verified: "2026-09-13"
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: k
+      headers:
+        Authorization: notarealtoken
+    expect:
+      status: 401
+      body:
+        title: Unauthorized
+        detail: Invalid authorization header format
+
+  - name: so does the bearer scheme every other api wants
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cache/mycache?key=k
+    verified: "2026-09-13"
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: k
+      headers:
+        # The scheme word is the problem: the value is meant to be bare.
+        Authorization: "Bearer cauldr0n.momento.fixture.token.000000000"
+    expect:
+      status: 401
+      body:
+        title: Unauthorized
+        detail: Invalid authorization header format
+
+  - name: an unrouted path reflects the path in plain text
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cauldron-nope
+    verified: "2026-09-13"
+    request:
+      method: GET
+      path: /cauldron-nope
+      headers: {}
+    expect:
+      status: 404
+      headers:
+        # Not problem+json, which everything else here is.
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '\ANo route for /cauldron-nope\s*\z'
+
+  - name: the 405 is real and carries no body at all
+    source: https://api.cache.cell-us-east-1-1.prod.a.momentohq.com/cache/mycache?key=k&token=x
+    verified: "2026-09-13"
+    request:
+      method: PATCH
+      path: /cache/mycache
+      query:
+        key: k
+      headers: {}
+    expect:
+      status: 405
+      headers:
+        # No spaces after the commas.
+        allow: GET,HEAD,PUT,DELETE
+      no_body: true
+      absent_headers:
+        - Content-Type
+
+  - name: a hit hands back the stored bytes and not a record
+    source: https://docs.momentohq.com/cache/develop/api-reference/http-api
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: greeting
+      headers:
+        Authorization: cauldr0n.momento.fixture.token.000000000
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/octet-stream
+      body_matches: '\Acauldron\z'
+
+  - name: and the credential may ride in the url instead
+    source: https://docs.momentohq.com/cache/develop/api-reference/http-api
+    request:
+      method: GET
+      path: /cache/mycache
+      query:
+        key: greeting
+        # A cache credential in a query string, by design.
+        token: cauldr0n.momento.fixture.token.000000000
+      headers: {}
+    expect:
+      status: 200
+      body_matches: '\Acauldron\z'
