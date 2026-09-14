@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred and seventy-three are left, and every one of them has now been looked for
+another. These one hundred and seventy-four are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| plasmic | Plasmic is reached through @plasmicapp/loader-nextjs or @plasmicapp/loader-react, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
 | dokploy | Dokploy is reached through a plain HTTP call carrying an x-api-key header against a self-hosted instance, which does not resolve to any host through a dependency file. Checked 2026-09-14 |
 | saucelabs | Sauce Labs is reached through saucectl or a plain Basic call, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
 | lambdatest | LambdaTest is reached through lambdatest-node-tunnel or a plain Basic call, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
