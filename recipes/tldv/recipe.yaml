@@ -1,0 +1,461 @@
+# tl;dv Recipe for Cauldron
+#
+# The meeting listing, read from the REST documentation at doc.tldv.io, and
+# struck live on 2026-09-13 with no key, with a wrong key, on a path that does
+# not exist, with a method the path does not take, and on the health endpoint.
+#
+# **A caller who sends a key is told authorization is required.** Struck live,
+# these two answer the identical body:
+#
+#   GET /v1alpha1/meetings                          (no header)
+#   GET /v1alpha1/meetings  x-api-key: notarealkey
+#
+#   401 {"name":"AuthorizationRequiredError","message":"Authorization is
+#        required for request on GET /v1alpha1/meetings"}
+#
+# So a revoked key and a forgotten one read the same sentence, and the sentence
+# is about the header being absent.
+#
+# **And the sentence echoes the request back.** The message is composed from the
+# method and the full path, so
+# `GET /v1alpha1/meetings/abc123` refuses with "…on GET
+# /v1alpha1/meetings/abc123" -- the record id a caller asked for, returned
+# inside an error about their credential, before the credential was accepted.
+#
+# **The error's type is a JavaScript class name.** `AuthorizationRequiredError`,
+# under a field called `name`, which is where a JS Error keeps its constructor
+# name.
+#
+# **A wrong path and a wrong method are an HTML page.** Both answer Express's
+# default error handler:
+#
+#   <!DOCTYPE html>
+#   <html lang="en">
+#   <head>
+#   <meta charset="utf-8">
+#   <title>Error</title>
+#   </head>
+#   <body>
+#   <pre>Cannot GET /v1alpha1/cauldron-nope</pre>
+#   </body>
+#   </html>
+#
+# text/html, 404 for both, from an API that is JSON everywhere else. A client
+# calling `.json()` on a typo throws rather than reporting it, and `Cannot PUT
+# /v1alpha1/meetings` -- a real path with the wrong verb -- is a 404 rather than
+# a 405.
+#
+# **The version is alpha and the documentation says so.** Every path is under
+# `/v1alpha1`, on a key-gated commercial API, and the documentation's own note
+# is "Expect upcoming changes". One documented endpoint,
+# `/v1alpha1/meetings/{meetingId}/highlights`, is already marked deprecated --
+# retired before the version it lives in has shipped.
+#
+# **The API host is called pasta.** `pasta.tldv.io`, which appears in the
+# documentation as the base URL and is the only host these routes answer on.
+#
+# **The listing describes its paging in the response and not in the request.**
+# The documented envelope carries `page`, `pages`, `total` and `pageSize`; the
+# parameters that set them are not documented anywhere on the reference. This
+# Recipe assumes they are named after the fields they fill.
+#
+# Also pinned: one record carries two free-form bags -- `extraProperties`
+# ("Additional meeting metadata like conferenceId") and `metadata` ("Custom
+# fields for integration") -- with nothing saying which is for whom;
+# `/v1alpha1/health` answers `{"status":"ok"}` to anyone, with no key, on the
+# same host and the same alpha prefix as everything else; and `duration` is a
+# number of seconds beside `happenedAt`, a string, with no unit or format
+# declared for either.
+
+recipe: tldv
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1alpha1
+  docs: https://doc.tldv.io/
+
+auth:
+  scheme: header
+  header: x-api-key
+  keys:
+    - cauldr0n-tldv-fixture-key-000000
+  # One sentence for both, and it is the one about the header being absent.
+  absent_error: authorization_required
+  malformed_error: authorization_required
+  rejected_error: authorization_required
+  # A path that does not exist is answered without reading the key.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    page_field: page
+    pages_field: pages
+    count_field: total
+    limit_field: pageSize
+  error:
+    style: flat
+    message_field: message
+    # Where a JavaScript Error keeps its constructor name.
+    type_field: name
+    code_field: "-"
+
+resources:
+  meeting:
+    id:
+      field: id
+      style: opaque
+      length: 24
+    fields:
+      name:
+        type: string
+      # A string, with no format declared.
+      happenedAt:
+        type: string
+      url:
+        type: string
+      # Seconds, said nowhere but the prose.
+      duration:
+        type: integer
+      organizer:
+        type: map
+      invitees:
+        type: list
+      template:
+        type: string
+      # One of the two free-form bags.
+      extraProperties:
+        type: map
+      phoneNumber:
+        type: string
+      # The other one.
+      metadata:
+        type: map
+
+  health:
+    id:
+      # Two words and nothing else: no identifier is sent or implied.
+      style: opaque
+      field: "-"
+      carried_by: status
+    fields:
+      status:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1alpha1/health
+    resource: health
+    operation: list
+    # No key, on the same host and the same alpha prefix as everything else.
+    public: true
+    list:
+      style: bare
+      collapse_single: true
+    pagination:
+      style: none
+
+  - method: GET
+    path: /v1alpha1/meetings
+    resource: meeting
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 50
+      limit_param: pageSize
+      cursor_param: page
+
+  - method: GET
+    path: /v1alpha1/meetings/{id}
+    resource: meeting
+    operation: get
+    not_found: meeting_missing
+    auth:
+      # The refusal names the path, so it differs per route.
+      absent_error: authorization_required_meeting
+      malformed_error: authorization_required_meeting
+      rejected_error: authorization_required_meeting
+
+errors:
+  authorization_required:
+    status: 401
+    type: AuthorizationRequiredError
+    message: Authorization is required for request on GET /v1alpha1/meetings
+
+  authorization_required_meeting:
+    status: 401
+    type: AuthorizationRequiredError
+    # The id the caller asked for, returned in an error about their credential.
+    message: Authorization is required for request on GET /v1alpha1/meetings/abc123
+
+  unknown_route:
+    status: 404
+    style: text
+    message: "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET {detail}</pre>\n</body>\n</html>\n"
+    headers:
+      Content-Type: text/html; charset=utf-8
+      X-Content-Type-Options: nosniff
+
+  # A real path with the wrong verb, answered as a page that is not there.
+  method_not_allowed:
+    status: 404
+    style: text
+    message: "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot {detail}</pre>\n</body>\n</html>\n"
+    headers:
+      Content-Type: text/html; charset=utf-8
+      X-Content-Type-Options: nosniff
+
+  # Not observed. Fetching a meeting that is not there needs a real key, and
+  # every unauthenticated attempt is answered by the credential check instead.
+  # This is the provider's own envelope with a plausible sentence in it, and
+  # the README says so.
+  meeting_missing:
+    status: 404
+    type: NotFoundError
+    message: Meeting not found
+
+fixtures:
+  empty:
+    meeting: []
+    health:
+      - status: ok
+
+  calls:
+    health:
+      - status: ok
+    meeting:
+      - id: 66f1a2b4c5d6e7f809a1b2c3
+        name: Weekly platform sync
+        happenedAt: "2026-09-02T14:00:00.000Z"
+        url: https://tldv.io/app/meetings/66f1a2b4c5d6e7f809a1b2c3
+        # Seconds.
+        duration: 2715
+        organizer:
+          name: Dana Okoye
+          email: dana@example.com
+        invitees:
+          - name: Sam Ruiz
+            email: sam@example.com
+          - name: Priya Nand
+            email: priya@example.com
+        template: weekly-sync
+        # "Additional meeting metadata like conferenceId".
+        extraProperties:
+          conferenceId: abc-defg-hij
+        phoneNumber: "+1-555-0100"
+        # "Custom fields for integration".
+        metadata:
+          crmRecordId: "0035f00000ABCDEfgh"
+          callId: call_8812
+      - id: 66f1a2b4c5d6e7f809a1b2d4
+        name: Customer discovery — Northwind
+        happenedAt: "2026-09-09T09:30:00.000Z"
+        url: https://tldv.io/app/meetings/66f1a2b4c5d6e7f809a1b2d4
+        duration: 1840
+        organizer:
+          name: Dana Okoye
+          email: dana@example.com
+        invitees: []
+        template: discovery
+        extraProperties: {}
+        phoneNumber: ""
+        metadata: {}
+
+conformance:
+  - name: a caller who sent a key is told authorization is required
+    source: https://pasta.tldv.io/v1alpha1/meetings
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers:
+        x-api-key: notarealkey
+    expect:
+      status: 401
+      body:
+        # A JavaScript constructor name, under a field called name.
+        name: AuthorizationRequiredError
+        message: Authorization is required for request on GET /v1alpha1/meetings
+
+  - name: and a caller who sent nothing gets the identical body
+    source: https://pasta.tldv.io/v1alpha1/meetings
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers: {}
+    expect:
+      status: 401
+      body:
+        name: AuthorizationRequiredError
+        message: Authorization is required for request on GET /v1alpha1/meetings
+
+  - name: the refusal echoes the record id back to the caller
+    source: https://pasta.tldv.io/v1alpha1/meetings/abc123
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings/abc123
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # The path the caller asked for, inside an error about their key.
+        message: Authorization is required for request on GET /v1alpha1/meetings/abc123
+        name: AuthorizationRequiredError
+
+  - name: an unrouted path is an html page from express
+    source: https://pasta.tldv.io/v1alpha1/cauldron-nope
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/cauldron-nope
+      headers: {}
+    expect:
+      status: 404
+      headers:
+        # From an API that is JSON everywhere else.
+        Content-Type: text/html; charset=utf-8
+      body_matches: '\A<!DOCTYPE html>[\s\S]*<pre>Cannot GET /v1alpha1/cauldron-nope</pre>[\s\S]*\z'
+
+  - name: and a real path with the wrong verb is a 404 not a 405
+    source: https://pasta.tldv.io/v1alpha1/meetings
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: PUT
+      path: /v1alpha1/meetings
+      headers: {}
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: '\A<!DOCTYPE html>[\s\S]*<pre>Cannot PUT /v1alpha1/meetings</pre>[\s\S]*\z'
+
+  - name: health answers anyone with two words
+    source: https://pasta.tldv.io/v1alpha1/health
+    verified: "2026-09-13"
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/health
+      headers: {}
+    expect:
+      status: 200
+      body:
+        status: ok
+
+  - name: a meeting carries two free-form bags and nothing says which is whose
+    source: https://doc.tldv.io/
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+    expect:
+      status: 200
+      body:
+        'results[0].id': 66f1a2b4c5d6e7f809a1b2c3
+        'results[0].name': Weekly platform sync
+        # "Additional meeting metadata like conferenceId".
+        'results[0].extraProperties.conferenceId': abc-defg-hij
+        # "Custom fields for integration".
+        'results[0].metadata.crmRecordId': "0035f00000ABCDEfgh"
+        'results[0].metadata.callId': call_8812
+        'results[0].template': weekly-sync
+
+  - name: a duration in seconds beside a timestamp with no format
+    source: https://doc.tldv.io/
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+    expect:
+      status: 200
+      body:
+        # Seconds, said nowhere but the prose.
+        'results[0].duration': 2715
+        'results[0].happenedAt': "2026-09-02T14:00:00.000Z"
+        'results[0].url': https://tldv.io/app/meetings/66f1a2b4c5d6e7f809a1b2c3
+        'results[0].organizer.email': dana@example.com
+        'results[0].invitees[0].name': Sam Ruiz
+        'results[0].phoneNumber': "+1-555-0100"
+
+  - name: the envelope names its paging and the reference does not
+    source: https://doc.tldv.io/
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+      query:
+        pageSize: "1"
+        page: "1"
+    expect:
+      status: 200
+      body:
+        # Four paging fields in the response; no documented parameters.
+        page: 1
+        pages: 2
+        total: 2
+        pageSize: 1
+
+  - name: one meeting travels bare rather than wrapped
+    source: https://doc.tldv.io/
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings/66f1a2b4c5d6e7f809a1b2d4
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+    expect:
+      status: 200
+      body:
+        id: 66f1a2b4c5d6e7f809a1b2d4
+        name: Customer discovery — Northwind
+        # Empty rather than absent, on all three.
+        invitees: []
+        extraProperties: {}
+        metadata: {}
+        phoneNumber: ""
+        template: discovery
+
+  - name: a meeting that is not there keeps the json envelope
+    source: https://doc.tldv.io/
+    fixture: calls
+    request:
+      method: GET
+      path: /v1alpha1/meetings/66f1a2b4c5d6e7f809a1bfff
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+    expect:
+      status: 404
+      body:
+        name: NotFoundError
+        message: Meeting not found
+
+  - name: an account with no meetings still sends all four paging fields
+    source: https://doc.tldv.io/
+    fixture: empty
+    request:
+      method: GET
+      path: /v1alpha1/meetings
+      headers:
+        x-api-key: cauldr0n-tldv-fixture-key-000000
+    expect:
+      status: 200
+      body:
+        results: []
+        total: 0
+        page: 1
