@@ -1,0 +1,492 @@
+# Hetzner Cloud Recipe for Cauldron
+#
+# The server listing, read from the OpenAPI document Hetzner publishes at
+# docs.hetzner.cloud/cloud.spec.json, and struck live on 2026-09-13 with no
+# token, with a wrong token, on a path that does not exist, and with a method
+# the path does not take.
+#
+# **A required field named `deprecated` is deprecated, and names a replacement
+# that is also deprecated.** On `server_type`:
+#
+#   deprecated   boolean   "This field is deprecated. Use the deprecation
+#                           object instead."
+#   deprecation  object    marked deprecated: true -- "This field is
+#                           deprecated. Use the `deprecation` object in the
+#                           `locations` field instead (`.locations[].deprecation`)."
+#
+# The first field points at the second, the second points at a third, and the
+# one in the `required` array is the one telling you not to read it.
+#
+# **The count of pages goes null on the last page.** `last_page` is "Page
+# number of the last page available. Can be null if the current page is the
+# last one." So the field that says how many pages there are is guaranteed
+# present only while you still have pages left, and `total_entries` is "Can be
+# null if unknown" beside it.
+#
+# **No error in this document has a status code.** The listing declares `200`,
+# `4xx` and `5xx` -- ranges, not codes -- so a generated client cannot tell 401
+# from 404 from 422. And the example body under `4xx` is
+# `{"code": "unauthorized", "message": "unable to authenticate"}`, a sentence
+# the live API never sends. It sends "token is required" or "the token you have
+# provided is invalid".
+#
+# **The path is routed before the token is read; the method is not.** Struck
+# live:
+#
+#   GET /v1/cauldron-nope   (no token)  404  api route not found
+#   GET /v1/servers         (no token)  401  token is required
+#   PUT /v1/servers         (no token)  401  token is required
+#
+# So a mistyped path is answered without a credential, and a mistyped verb is
+# not.
+#
+# **And the two answers are serialised by different code.** The 404 arrives
+# pretty-printed over two-space indentation, `content-type: application/json;
+# charset=UTF-8`, with a `content-length`, keys in the order message, code,
+# details. The 401 arrives compact, `content-type: application/json` with no
+# charset, `transfer-encoding: chunked`, keys in the order code, details,
+# message. One envelope, two encoders.
+#
+# **Cores are a floating-point number.** `cores`, `memory` and `disk` on
+# `server_type`, and `primary_disk_size` on the server, are all `"type":
+# "number"` -- a CPU count that can carry a fraction.
+#
+# **A 3.4 MB document has eight reusable schemas.** 151 paths, and
+# `components.schemas` holds `ServiceTCP`, `ServiceHTTPProtocol`,
+# `ServiceHTTPSProtocol`, `TargetTypeServer`, `TargetTypeLabelSelector`,
+# `TargetTypeIP`, `ZonePrimary`, `ZoneSecondary` -- eight. Every other shape,
+# including the server record, is written out inline at each path that uses it.
+#
+# Also pinned: `public_net.ipv4` is required and nullable, and its own
+# `required` array omits `id`, so the primary IP may arrive without the id of
+# the Primary IP it is; `backup_window` is a string like "22-02" carrying a
+# time range with no date and no zone beyond "UTC" in prose; and the three
+# traffic counters are bytes for "the current billing period", which no field
+# on the record identifies.
+
+recipe: hcloud
+capability: infrastructure
+version: 1.0.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://docs.hetzner.cloud/
+  spec: https://docs.hetzner.cloud/cloud.spec.json
+  spec_hash: 60301911549d9939099cb584785de659ed09424f697b67ea6f4bbf15cc485f60
+  spec_seen: "2026-09-13"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldronhcloudfixturetoken00000000000000000000000000000000000000
+  absent_error: token_required
+  malformed_error: token_required
+  rejected_error: token_invalid
+  # The path is matched first: an unrouted path 404s with no token at all.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: servers
+    page_field: meta.pagination.page
+    limit_field: meta.pagination.per_page
+    # "Can be null if the current page is the last one."
+    pages_field: meta.pagination.last_page
+    # "Can be null if unknown."
+    count_field: meta.pagination.total_entries
+    cursor_field: meta.pagination.next_page
+    prev_field: meta.pagination.previous_page
+    cursor_null: true
+    # Page numbers, not tokens: next_page is 2, not "2".
+    cursor_number: true
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    fields:
+      # Declared ["object", "null"] and not required. Always sent, always null.
+      error.details: null
+
+resources:
+  server:
+    id:
+      field: id
+      type: number
+      style: numeric
+    fields:
+      name:
+        type: string
+      status:
+        type: string
+      created:
+        type: string
+      public_net:
+        type: map
+      server_type:
+        type: map
+      # Nullable.
+      image:
+      iso:
+      backup_window:
+      labels:
+        type: map
+      outgoing_traffic:
+        type: integer
+      ingoing_traffic:
+        type: integer
+      included_traffic:
+        type: integer
+      # A disk size in GB, typed as a float.
+      primary_disk_size:
+        type: number
+
+routes:
+  - method: GET
+    path: /v1/servers
+    resource: server
+    operation: list
+    pagination:
+      style: page
+      first_page: 1
+      limit: 25
+      limit_param: per_page
+      cursor_param: page
+    filters:
+      - param: name
+        field: name
+      - param: status
+        field: status
+
+  - method: GET
+    path: /v1/servers/{id}
+    resource: server
+    operation: get
+    not_found: server_not_found
+
+errors:
+  token_required:
+    status: 401
+    code: unauthorized
+    message: token is required
+
+  token_invalid:
+    status: 401
+    code: unauthorized
+    message: the token you have provided is invalid
+
+  unknown_route:
+    status: 404
+    code: not_found
+    message: api route not found
+
+  # A verb the path does not take is answered by the credential check, because
+  # the credential check runs first.
+  method_not_allowed:
+    status: 401
+    code: unauthorized
+    message: token is required
+
+  server_not_found:
+    status: 404
+    code: not_found
+    message: server not found
+
+
+fixtures:
+  empty:
+    server: []
+
+  fleet:
+    server:
+      - id: 42019823
+        name: web-01
+        status: running
+        created: "2026-03-04T09:12:07+00:00"
+        public_net:
+          # Required, nullable, and its own required array omits the id.
+          ipv4:
+            id: 8811247
+            ip: 203.0.113.17
+            blocked: false
+            dns_ptr: web-01.example.com
+          ipv6: null
+          floating_ips: []
+          firewalls: []
+        server_type:
+          id: 22
+          name: cpx11
+          description: CPX 11
+          # Cores, memory and disk are all "number".
+          cores: 2
+          memory: 2
+          disk: 40
+          # Deprecated, required, and pointing at a field that is also
+          # deprecated.
+          deprecated: false
+          storage_type: local
+          cpu_type: shared
+          architecture: x86
+        image: null
+        iso: null
+        backup_window: null
+        labels:
+          env: production
+        outgoing_traffic: 481209344
+        ingoing_traffic: 92341760
+        included_traffic: 21990232555520
+        # A float, on a whole number of gigabytes.
+        primary_disk_size: 40
+      - id: 42019901
+        name: db-01
+        status: off
+        created: "2026-05-19T14:40:55+00:00"
+        public_net:
+          ipv4:
+            id: 8811302
+            ip: 203.0.113.44
+            blocked: false
+            dns_ptr: db-01.example.com
+          ipv6: null
+          floating_ips: []
+          firewalls: []
+        server_type:
+          id: 23
+          name: cpx21
+          description: CPX 21
+          cores: 3
+          memory: 4
+          disk: 80
+          deprecated: false
+          storage_type: local
+          cpu_type: shared
+          architecture: x86
+        image: null
+        iso: null
+        # "…or null if the backups are not enabled" -- but this one has them.
+        backup_window: 22-02
+        labels: {}
+        # "Can be null" on all three, for a billing period nothing names.
+        outgoing_traffic: null
+        ingoing_traffic: null
+        included_traffic: null
+        primary_disk_size: 80
+
+conformance:
+  - name: a missing token is a sentence the document does not contain
+    source: https://api.hetzner.cloud/v1/servers
+    verified: "2026-09-13"
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # The document's example for 4xx says "unable to authenticate".
+        error.code: unauthorized
+        error.message: token is required
+        error.details: null
+
+  - name: a wrong token says so in the first person plural
+    source: https://api.hetzner.cloud/v1/servers
+    verified: "2026-09-13"
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 401
+      body:
+        error.code: unauthorized
+        error.message: the token you have provided is invalid
+        error.details: null
+
+  - name: an unrouted path is answered without a credential
+    source: https://api.hetzner.cloud/v1/cauldron-nope
+    verified: "2026-09-13"
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/cauldron-nope
+      headers: {}
+    expect:
+      status: 404
+      body:
+        # Routed first: no token was sent and none was asked for.
+        error.code: not_found
+        error.message: api route not found
+        error.details: null
+
+  - name: but a wrong method on a real path is not
+    source: https://api.hetzner.cloud/v1/servers
+    verified: "2026-09-13"
+    fixture: fleet
+    request:
+      method: PUT
+      path: /v1/servers
+      headers: {}
+    expect:
+      status: 401
+      body:
+        # The same 401 as a missing token, for a verb the path does not take.
+        error.code: unauthorized
+        error.message: token is required
+
+  - name: cores memory and disk are floating-point numbers
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        'servers[0].name': web-01
+        'servers[0].status': running
+        'servers[0].created': "2026-03-04T09:12:07+00:00"
+        'servers[0].server_type.cores': 2
+        'servers[0].server_type.disk': 40
+        # "number", on a whole number of gigabytes.
+        'servers[0].primary_disk_size': 40
+        'servers[1].primary_disk_size': 80
+
+  - name: the field named deprecated is required and deprecated
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+      query:
+        status: running
+    expect:
+      status: 200
+      body:
+        # "Use the deprecation object instead" -- which is itself deprecated in
+        # favour of .locations[].deprecation.
+        'servers[0].server_type.deprecated': false
+        'servers[0].server_type.name': cpx11
+        'servers[0].server_type.memory': 2
+
+  - name: a primary ip is required nullable and need not carry its own id
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+      query:
+        name: web-01
+    expect:
+      status: 200
+      body:
+        # required: ["ip", "blocked", "dns_ptr"] -- id is not in it.
+        'servers[0].public_net.ipv4.ip': 203.0.113.17
+        'servers[0].public_net.ipv4.blocked': false
+        'servers[0].public_net.ipv4.dns_ptr': web-01.example.com
+        'servers[0].public_net.ipv6': null
+        'servers[0].labels.env': production
+
+  - name: three traffic counters for a billing period nothing names
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers/42019823
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        # Bytes, "for the current billing period", on a record with no field
+        # saying which period that is.
+        outgoing_traffic: 481209344
+        ingoing_traffic: 92341760
+        included_traffic: 21990232555520
+        image: null
+        iso: null
+        backup_window: null
+
+  - name: and every one of them may be null on the next server
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers/42019901
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        outgoing_traffic: null
+        ingoing_traffic: null
+        included_traffic: null
+        # A time range, no date, no zone on the wire.
+        backup_window: 22-02
+        status: "off"
+        name: db-01
+
+  - name: paging counts down to a page count that may not be there
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+      query:
+        per_page: "1"
+        page: "1"
+    expect:
+      status: 200
+      body:
+        'meta.pagination.page': 1
+        'meta.pagination.per_page': 1
+        'meta.pagination.previous_page': null
+        # A number, not a token.
+        'meta.pagination.next_page': 2
+        'meta.pagination.last_page': 2
+        'meta.pagination.total_entries': 2
+
+  - name: an empty project still sends all six paging fields
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        servers: []
+        'meta.pagination.page': 1
+        'meta.pagination.previous_page': null
+        'meta.pagination.next_page': null
+        'meta.pagination.total_entries': 0
+
+  - name: a server that is not there is a 404 with the same envelope
+    source: https://docs.hetzner.cloud/cloud.spec.json
+    fixture: fleet
+    request:
+      method: GET
+      path: /v1/servers/99000111
+      headers:
+        Authorization: "Bearer cauldronhcloudfixturetoken00000000000000000000000000000000000000"
+    expect:
+      status: 404
+      body:
+        error.code: not_found
+        error.message: server not found
+        error.details: null
