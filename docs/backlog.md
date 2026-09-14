@@ -2504,7 +2504,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These one hundred and seventy are left, and every one of them has now been looked for
+another. These one hundred and seventy-one are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -2560,6 +2560,7 @@ than a client for its API.
 | Wave | Called through generic GraphQL clients and a URL, the same miss the Pipefy row records: there is no dependency name that says which GraphQL endpoint a project talks to. Checked 2026-09-07 |
 | adobesign | Adobe's published clients for this API are Java, .NET and Python, which neither npm nor Packagist indexes, and the npm results for the name are Creative Cloud and Document Cloud embed widgets on other Adobe products entirely. Checked 2026-09-07 |
 | Attentive | Attentive is integrated as a platform app and a page tag rather than as a client library, and nothing on npm, Packagist or the Go module proxy calls api.attentivemobile.com under an obvious name. Checked 2026-09-07 |
+| lambdatest | LambdaTest is reached through lambdatest-node-tunnel or a plain Basic call, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
 | browserstack | BrowserStack is reached through browserstack-local or a plain Basic call, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
 | flyio | Fly.io is reached through flyctl or a plain bearer call, neither of which resolves to this host through a dependency file. Checked 2026-09-14 |
 | speechmatics | Speechmatics is reached through speechmatics-python or a plain bearer call, neither of which resolves to this host through a dependency file. Checked 2026-09-13 |
@@ -2845,7 +2846,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-One hundred and twenty-two Recipes send at least one identifier as a number now, and each
+One hundred and twenty-three Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

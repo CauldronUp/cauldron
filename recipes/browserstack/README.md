@@ -30,7 +30,7 @@ HTTP Basic: Access denied.
 
 Twenty-seven bytes of plain prose, declared `text/html`, from a JSON API. A client calling `.json()` on a wrong access key throws rather than reporting it, and the realm a browser shows the user is the generic word the framework ships with.
 
-**LambdaTest, a direct competitor, sends the identical sentence differently.** `api.lambdatest.com` answers `HTTP Basic: Access denied.` too — the same Rack middleware, the same words — but as `text/plain; charset=utf-8`, without the trailing newline BrowserStack sends (26 bytes against 27), under `www-authenticate: Basic realm="Authorization Required"`. Two vendors, one library, and a client cannot treat the two refusals the same way on content type, byte length or realm. See the `lambdatest` Recipe.
+**LambdaTest, a direct competitor, sends the identical sentence differently.** `api.lambdatest.com` answers `HTTP Basic: Access denied.` too — the same Rack middleware, the same words — but as `text/plain; charset=utf-8`, without the trailing newline BrowserStack sends (26 bytes against 27), under `www-authenticate: Basic realm="Authorization Required"`. Two vendors, one library, and a client cannot treat the two refusals the same way on content type, byte length or realm. See the [`lambdatest`](../lambdatest) Recipe.
 
 **The listing is a bare array of one-key wrappers.** Every entry is `{"automation_build": {…}}`, so reading a build's name is `body[0].automation_build.name` — a wrapper repeated once per record, inside an array that is already typed by the endpoint it came from.
 
