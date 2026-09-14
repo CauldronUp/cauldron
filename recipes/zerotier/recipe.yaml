@@ -1,0 +1,599 @@
+# ZeroTier Central Recipe for Cauldron
+#
+# The network listing and the status endpoint, read from the OpenAPI document
+# ZeroTier vendors into its own Go client at
+# github.com/zerotier/go-ztcentral/spec.json, and struck live on 2026-09-13
+# with no credential, with a wrong credential, with the wrong scheme, on a path
+# that does not exist, and with a method the path does not take.
+#
+# **One endpoint refuses in three content types.** Struck live on
+# /api/v1/network:
+#
+#   (no Authorization)              403  text/html   <a href="/login">Forbidden</a>.
+#   Authorization: Bearer x         403  text/plain  forbidden
+#   Authorization: token x          401  application/json  {"type":"internal","message":"Access Denied"}
+#   GET /api/v1/cauldron-nope       404  text/plain  404 page not found
+#   PUT /api/v1/network             404  text/plain  404 page not found
+#
+# HTML, plain text and JSON, for one endpoint, and a document that declares no
+# error body at all: its four shared responses -- BadRequest, AccessDeniedError,
+# NotFound, UnauthorizedError -- carry a description and no content.
+#
+# **The credential-less refusal is a redirect that is not one.** 403, with
+# `location: /login` in the headers and Go's redirect body in the payload. A
+# client following `location` on a 3xx never sees it; a client reading the body
+# gets an anchor tag.
+#
+# **A wrong verb is reported as a missing page.** PUT on a path that exists
+# answers the same `404 page not found` as a path that does not, so a client
+# cannot tell a typo in the URL from a typo in the method.
+#
+# **The status endpoint ignores the credential it is documented to describe.**
+# `/status` is summarised "Obtain the overall status of the account tied to the
+# API token in use", is covered by the document's global
+# `security: [{tokenAuth: []}]`, and answers 200 to a request with no
+# Authorization header, with a wrong token, and with the wrong scheme. `user`
+# comes back null in all three.
+#
+# **And it breaks its own schema on the way.** `version` is declared
+# `{"type": "string"}` with no `nullable`, and every live response sends
+# `"version": null`. `apiVersion` is declared with the example "4" and sends
+# "1".
+#
+# **`uptime` is nanoseconds, per replica, and its example is a wall clock.**
+# Four consecutive unauthenticated calls returned four `clusterNode` values --
+# ztc-central-69848ffd6d-gsjpz, -dht4v, -gsjpz, -fw7d7 -- and uptimes differing
+# by 2.3e11 between pods. Two calls landing on the same pod 259 ms apart
+# differed by 258,385,669, which is 1e9 per second. The document says only
+# "Uptime on server" and gives the example 1613067920454 -- the same number it
+# gives for `clock`, which is a Unix timestamp in milliseconds.
+#
+# **A member count is documented to be wrong on the listing.**
+# `onlineMemberCount` carries the note "May be 0 on endpoints returning lists of
+# Networks", so the count in a listing is not the count, and the only way to
+# learn it is to fetch each network on its own.
+#
+# **Nothing on a network is required.** `Network` has no `required` array, so
+# `id` is optional in the schema that describes it, and neither does
+# `NetworkConfig`.
+#
+# **The security scheme is an HTTP scheme that does not exist.**
+# `{"type": "http", "scheme": "token"}`. `token` is not in the IANA HTTP
+# Authentication Scheme Registry, and live confirms it is load-bearing: `token`
+# reaches the authenticator and `Bearer` does not.
+#
+# **The same document ships under two names.**
+# zerotier/zerotier-rust-api holds zerotier-central-api/openapi.json and
+# zerotier-one-api/openapi.json, byte for byte identical (md5
+# 03047936668a49ff3e32a581b30c1e7e), both titled "ZeroTier Legacy Central API"
+# and both declaring `servers: [{"url": "https://api.zerotier.com/api/v1"}]`.
+# The crate named for ZeroTier One -- the local node service, reached on
+# 127.0.0.1:9993 -- is generated from the cloud API's document. And that copy
+# differs from the one in the Go client: 15 paths against 14, a different
+# `Network.permissions`, the same version string "v1".
+#
+# **And five fields of the live status response are not in its schema.**
+# `cauldron drift` reports `online`, `secondFactor`, `stripePublishableKey`,
+# `supportEmbedCode` and `clusterNode` as not backed by the `Status` schema.
+# Every one of them was struck live, unauthenticated, on the first request.
+#
+# Also pinned: the listing takes no parameters at all -- no page, no limit, no
+# filter, every network in one array; `id` appears both on the network and
+# again inside `config`; the unauthenticated status response carries a live
+# `pk_live_` Stripe publishable key, a Kubernetes pod name, and a `<script>`
+# tag as the value of a JSON string; and `x-envoy-decorator-operation` returns
+# `ztc-central-service.default.svc.cluster.local:80/*` on every refusal.
+
+recipe: zerotier
+capability: infrastructure
+version: 1.0.0
+
+upstream:
+  api: v1
+  docs: https://docs.zerotier.com/central/v1
+  spec: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+  spec_hash: 50ce5df879c8329aebed567d7c9d8e54349106c51b01be769ae5ceed5df4ceff
+  spec_seen: "2026-09-13"
+
+auth:
+  scheme: header
+  header: Authorization
+  # "token", which is not a registered HTTP authentication scheme.
+  prefix: "token "
+  keys:
+    - cauldr0nzerotierfixturet0ken0000
+  absent_error: forbidden_login
+  # Bearer reaches a different refusal than token does.
+  malformed_error: forbidden_scheme
+  rejected_error: access_denied
+  # An unrouted path 404s with no credential at all.
+  after_routing: true
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # "internal", on a refusal about the caller's credential.
+    type_field: type
+    code_field: "-"
+
+resources:
+  network:
+    id:
+      field: id
+      style: hex
+      length: 16
+    fields:
+      clock:
+        type: integer
+      config:
+        type: map
+      description:
+        type: string
+      rulesSource:
+        type: string
+      permissions:
+        type: map
+      ownerId:
+        type: string
+      # "May be 0 on endpoints returning lists of Networks."
+      onlineMemberCount:
+        type: integer
+      authorizedMemberCount:
+        type: integer
+      totalMemberCount:
+        type: integer
+      capabilitiesByName:
+        type: map
+      tagsByName:
+        type: map
+
+  status:
+    id:
+      field: id
+      style: opaque
+      length: 14
+    fields:
+      type:
+        type: string
+      online:
+        type: boolean
+      clock:
+        type: integer
+      # Declared "type": "string" with no nullable. Live sends null.
+      version:
+      # Declared with the example "4".
+      apiVersion:
+        type: string
+      # Nanoseconds, per replica, documented as "Uptime on server".
+      uptime:
+        type: integer
+      secondFactor:
+        type: boolean
+      stripePublishableKey:
+        type: string
+      clusterNode:
+        type: string
+      supportEmbedCode:
+        type: string
+      user:
+      loginMethods:
+        type: map
+
+routes:
+  - method: GET
+    path: /api/v1/status
+    resource: status
+    operation: list
+    # 200 with no header, with a wrong token, and with the wrong scheme.
+    public: true
+    list:
+      style: bare
+      collapse_single: true
+    pagination:
+      style: none
+
+  - method: GET
+    path: /api/v1/network
+    resource: network
+    operation: list
+    # No page, no limit, no filter: the listing declares no parameters.
+    pagination:
+      style: none
+
+  - method: GET
+    path: /api/v1/network/{id}
+    resource: network
+    operation: get
+    not_found: network_missing
+
+errors:
+  forbidden_login:
+    status: 403
+    # Go's redirect body, on a status no client follows a Location on.
+    style: text
+    message: "<a href=\"/login\">Forbidden</a>.\n\n"
+    headers:
+      Content-Type: text/html; charset=utf-8
+      Location: /login
+      X-Frame-Options: SAMEORIGIN
+      X-Envoy-Decorator-Operation: ztc-central-service.default.svc.cluster.local:80/*
+
+  forbidden_scheme:
+    status: 403
+    style: text
+    message: "forbidden\n"
+    headers:
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+
+  access_denied:
+    status: 401
+    type: internal
+    message: Access Denied
+    headers:
+      X-RateLimit-Limit: "20"
+      X-RateLimit-Remaining: "19"
+
+  unknown_route:
+    status: 404
+    style: text
+    message: "404 page not found\n"
+    headers:
+      X-Content-Type-Options: nosniff
+
+  # A verb the path does not take is answered as a path that is not there.
+  method_not_allowed:
+    status: 404
+    style: text
+    message: "404 page not found\n"
+    headers:
+      X-Content-Type-Options: nosniff
+
+  network_missing:
+    status: 404
+    type: internal
+    message: Network not found
+
+fixtures:
+  empty:
+    network: []
+    status:
+      - id: central_status
+        type: CentralStatus
+        online: true
+        clock: 1789351767601
+        version: null
+        apiVersion: "1"
+        uptime: 443946516007781
+        secondFactor: false
+        stripePublishableKey: pk_live_cauldronfixture0000000000000
+        clusterNode: ztc-central-69848ffd6d-gsjpz
+        supportEmbedCode: "<script data-jsd-embedded data-key=00000000-0000-0000-0000-000000000000 data-base-url=https://jsd-widget.example.com src=https://jsd-widget.example.com/assets/embed.js></script>"
+        user: null
+        loginMethods:
+          local: false
+          google: false
+          github: false
+
+  networks:
+    status:
+      - id: central_status
+        type: CentralStatus
+        online: true
+        clock: 1789351767601
+        version: null
+        apiVersion: "1"
+        uptime: 443946516007781
+        secondFactor: false
+        stripePublishableKey: pk_live_cauldronfixture0000000000000
+        clusterNode: ztc-central-69848ffd6d-gsjpz
+        supportEmbedCode: "<script data-jsd-embedded data-key=00000000-0000-0000-0000-000000000000 data-base-url=https://jsd-widget.example.com src=https://jsd-widget.example.com/assets/embed.js></script>"
+        user: null
+        loginMethods:
+          local: false
+          google: false
+          github: false
+    network:
+      - id: 8056c2e21c000001
+        clock: 1789351767601
+        config:
+          # The identifier again, one level down.
+          id: 8056c2e21c000001
+          creationTime: 1742318400000
+          name: office
+          # "If false, members will *NOT* need to be authorized to join."
+          private: true
+          enableBroadcast: true
+          # "Setting this to 0 will disable IPv4 communication."
+          multicastLimit: 32
+          mtu: 2800
+          lastModified: 1789300000000
+          routes:
+            - target: 10.147.17.0/24
+              via: null
+          ipAssignmentPools:
+            - ipRangeStart: 10.147.17.1
+              ipRangeEnd: 10.147.17.254
+        description: ""
+        rulesSource: "accept;"
+        permissions:
+          a: true
+        ownerId: 9f2e4c7a-3b18-4d60-9a55-0c1e7b2d8f43
+        # Zero on the listing, because the document says it may be.
+        onlineMemberCount: 0
+        authorizedMemberCount: 12
+        totalMemberCount: 14
+        capabilitiesByName: {}
+        tagsByName: {}
+
+  counted:
+    network:
+      - id: 8056c2e21c000001
+        clock: 1789351767601
+        config:
+          id: 8056c2e21c000001
+          creationTime: 1742318400000
+          name: office
+          private: true
+          enableBroadcast: true
+          multicastLimit: 32
+          mtu: 2800
+          lastModified: 1789300000000
+          routes:
+            - target: 10.147.17.0/24
+              via: null
+          ipAssignmentPools:
+            - ipRangeStart: 10.147.17.1
+              ipRangeEnd: 10.147.17.254
+        description: ""
+        rulesSource: "accept;"
+        permissions:
+          a: true
+        ownerId: 9f2e4c7a-3b18-4d60-9a55-0c1e7b2d8f43
+        # The same network, fetched on its own: the number the listing zeroed.
+        onlineMemberCount: 9
+        authorizedMemberCount: 12
+        totalMemberCount: 14
+        capabilitiesByName: {}
+        tagsByName: {}
+
+conformance:
+  - name: no credential is html with a location header and a 403
+    source: https://api.zerotier.com/api/v1/network
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network
+      headers: {}
+    expect:
+      status: 403
+      headers:
+        # A redirect target on a status nothing redirects on.
+        Location: /login
+        Content-Type: text/html; charset=utf-8
+      body_matches: '\A<a href="/login">Forbidden</a>\.\s*\z'
+
+  - name: the wrong scheme is plain text and a different sentence
+    source: https://api.zerotier.com/api/v1/network
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network
+      headers:
+        Authorization: "Bearer notarealtoken"
+    expect:
+      status: 403
+      headers:
+        Content-Type: text/plain; charset=utf-8
+        X-Content-Type-Options: nosniff
+      # Lowercase, one word, no markup.
+      body_matches: '\Aforbidden\s*\z'
+      absent_headers:
+        - Location
+
+  - name: the right scheme with a wrong token is json and a third status
+    source: https://api.zerotier.com/api/v1/network
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network
+      headers:
+        Authorization: "token notarealtoken"
+    expect:
+      status: 401
+      body:
+        # A caller's bad credential, categorised as internal.
+        type: internal
+        message: Access Denied
+
+  - name: an unrouted path is go's default not found
+    source: https://api.zerotier.com/api/v1/cauldron-nope
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/cauldron-nope
+      headers: {}
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '\A404 page not found\s*\z'
+
+  - name: and a wrong method is reported as a missing page
+    source: https://api.zerotier.com/api/v1/network
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: PUT
+      path: /api/v1/network
+      headers: {}
+    expect:
+      status: 404
+      # The same body as a path that does not exist.
+      body_matches: '\A404 page not found\s*\z'
+
+  - name: status answers a caller with no credential at all
+    source: https://api.zerotier.com/api/v1/status
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/status
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # "the account tied to the API token in use", with no token in use.
+        id: central_status
+        type: CentralStatus
+        online: true
+        user: null
+        # Declared "type": "string" with no nullable.
+        version: null
+        # Declared with the example "4".
+        apiVersion: "1"
+
+  - name: and answers a wrong token the same way
+    source: https://api.zerotier.com/api/v1/status
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/status
+      headers:
+        Authorization: "token notarealtoken"
+    expect:
+      status: 200
+      body:
+        # The credential is not examined here at all.
+        user: null
+        version: null
+        secondFactor: false
+        clock: 1789351767601
+
+  - name: uptime is nanoseconds on whichever replica answered
+    source: https://api.zerotier.com/api/v1/status
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/status
+      headers: {}
+    expect:
+      status: 200
+      body:
+        # Two calls 259 ms apart on one pod differed by 258,385,669.
+        uptime: 443946516007781
+        # Four consecutive calls named three different pods.
+        clusterNode: ztc-central-69848ffd6d-gsjpz
+        loginMethods.local: false
+        loginMethods.github: false
+
+  - name: an unauthenticated status carries a payment key and a script tag
+    source: https://api.zerotier.com/api/v1/status
+    verified: "2026-09-13"
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/status
+      headers: {}
+    expect:
+      status: 200
+      matches:
+        # Live, this is a real pk_live_ publishable key. The fixture's is not.
+        stripePublishableKey: '\Apk_live_\S+\z'
+        # A <script> element, as the value of a JSON string.
+        supportEmbedCode: '\A<script .*</script>\z'
+
+  - name: the listing takes no page no limit and no filter
+    source: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network
+      headers:
+        Authorization: "token cauldr0nzerotierfixturet0ken0000"
+    expect:
+      status: 200
+      body:
+        # A bare array, every network in it.
+        '[0].id': 8056c2e21c000001
+        '[0].description': ""
+        '[0].rulesSource': "accept;"
+        '[0].ownerId': 9f2e4c7a-3b18-4d60-9a55-0c1e7b2d8f43
+        '[0].clock': 1789351767601
+        '[0].permissions.a': true
+        '[0].capabilitiesByName': {}
+        '[0].tagsByName': {}
+
+  - name: the member count in a listing is documented to be zero
+    source: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network
+      headers:
+        Authorization: "token cauldr0nzerotierfixturet0ken0000"
+    expect:
+      status: 200
+      body:
+        # "May be 0 on endpoints returning lists of Networks."
+        '[0].onlineMemberCount': 0
+        '[0].authorizedMemberCount': 12
+        '[0].totalMemberCount': 14
+        # The identifier again, one level down.
+        '[0].config.id': 8056c2e21c000001
+        '[0].config.name': office
+        '[0].config.private': true
+
+  - name: and fetching the same network on its own is where the number lives
+    source: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+    fixture: counted
+    request:
+      method: GET
+      path: /api/v1/network/8056c2e21c000001
+      headers:
+        Authorization: "token cauldr0nzerotierfixturet0ken0000"
+    expect:
+      status: 200
+      body:
+        # The listing served 0 for this field on this network.
+        onlineMemberCount: 9
+        authorizedMemberCount: 12
+        totalMemberCount: 14
+        # "Setting this to 0 will disable IPv4 communication."
+        config.multicastLimit: 32
+        config.creationTime: 1742318400000
+
+  - name: an account with no networks gets a bare empty array
+    source: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/network
+      headers:
+        Authorization: "token cauldr0nzerotierfixturet0ken0000"
+    expect:
+      status: 200
+      body_matches: '\A\[\s*\]\s*\z'
+
+  - name: a network that is not there keeps the json envelope
+    source: https://raw.githubusercontent.com/zerotier/go-ztcentral/main/spec.json
+    fixture: networks
+    request:
+      method: GET
+      path: /api/v1/network/8056c2e21c0009ff
+      headers:
+        Authorization: "token cauldr0nzerotierfixturet0ken0000"
+    expect:
+      status: 404
+      body:
+        type: internal
+        message: Network not found
