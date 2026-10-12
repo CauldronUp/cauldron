@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/cauldron.png" alt="Cauldron" width="240">
+<picture>
+  <!-- cauldron-light = light (white) text for dark mode; cauldron-dark = black text for light mode -->
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cauldron-light.png">
+  <img src="docs/assets/cauldron-dark.png" alt="Cauldron" width="240">
+</picture>
 
 **Your code. One command. Every dependency.**
 
