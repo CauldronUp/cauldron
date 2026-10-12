@@ -1,11 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cauldron-dark.svg">
-  <img src="docs/assets/cauldron-light.svg" alt="Cauldron" height="64">
-</picture>
-
-# Cauldron
+<img src="docs/assets/cauldron.png" alt="Cauldron" width="240">
 
 **Your code. One command. Every dependency.**
 
