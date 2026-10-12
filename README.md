@@ -1,10 +1,15 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cauldron-dark.svg">
+  <img src="docs/assets/cauldron-light.svg" alt="Cauldron" height="64">
+</picture>
+
 # Cauldron
 
 **Your code. One command. Every dependency.**
 
-The open-source environment compiler. It boots your application *and the third-party APIs it depends on*, , locally, from one command.
+The open-source environment compiler. It boots your application *and the third-party APIs it depends on*, locally, from one command.
 
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
