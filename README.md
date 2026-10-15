@@ -80,12 +80,32 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 ## Try it
 
+Requires the Go version declared in [go.mod](go.mod) (currently 1.26). Run the build
+from the Cauldron checkout, then keep the binary's absolute path when switching to
+the application you want to inspect:
+
 ```bash
 go build -o cauldron ./cmd/cauldron
+cauldron_bin="$PWD/cauldron"
 
 cd /path/to/your/project
-./cauldron up --fixture small-shop
+"$cauldron_bin" up --fixture small-shop
 ```
+
+In PowerShell:
+
+```powershell
+go build -o cauldron.exe ./cmd/cauldron
+$cauldronBin = (Resolve-Path ./cauldron.exe).Path
+
+Set-Location C:/path/to/your/project
+& $cauldronBin up --fixture small-shop
+```
+
+Container-backed services also require a running Docker daemon. For provider
+emulation without containers, use [headless mode](#headless-just-the-providers).
+Run later `status` and `down` commands from the same application directory so
+Cauldron finds that project's environment.
 
 ```
 Detected a Laravel project.
