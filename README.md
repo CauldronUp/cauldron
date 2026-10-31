@@ -747,4 +747,4 @@ The most valuable contribution is a Recipe for an API you actually use, especial
 
 [Apache-2.0](LICENSE).
 
-A [Brilliance Digital](https://github.com/BrillianceDigital) project.
+A project of [Artifact](https://artifactbrands.com).
